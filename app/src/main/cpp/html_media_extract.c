@@ -16,9 +16,93 @@
  * QuickJS Integration for Signature Deciphering
  * ============================================================================ */
 
+#define MAX_ADDITIONAL_SCRIPTS 8
+#define SCRIPT_URL_MAX_LEN 512
+
+/* Extract additional JS script URLs from YouTube page */
+static int extract_additional_script_urls(const char *html, const char *base_url,
+                                           char out_urls[][SCRIPT_URL_MAX_LEN], int max_urls) {
+    LOGI("Looking for additional script URLs in HTML...");
+    int count = 0;
+    
+    /* Look for script src patterns */
+    const char *patterns[] = {
+        "script src=\"",
+        "script src='",
+        "src=\"",
+        "src='",
+        NULL
+    };
+    
+    for (int p = 0; patterns[p] != NULL && count < max_urls; p++) {
+        const char *search = html;
+        const char *pattern = patterns[p];
+        char quote = pattern[strlen(pattern) - 1];
+        
+        while ((search = strstr(search, pattern)) != NULL && count < max_urls) {
+            search += strlen(pattern);
+            
+            /* Find end of URL */
+            const char *end = strchr(search, quote);
+            if (!end || end <= search) continue;
+            
+            size_t len = (size_t)(end - search);
+            if (len < 5 || len >= SCRIPT_URL_MAX_LEN) continue;
+            
+            /* Check if it's a JS file */
+            if (strstr(search, ".js") == NULL) continue;
+            
+            /* Skip if it's the player script (we already have that) */
+            if (strstr(search, "player") != NULL) continue;
+            
+            /* Skip common non-decipher scripts */
+            if (strstr(search, "www-player") != NULL) continue;
+            if (strstr(search, "embed") != NULL) continue;
+            if (strstr(search, "scheduler") != NULL) continue;
+            
+            char url[SCRIPT_URL_MAX_LEN];
+            memcpy(url, search, len);
+            url[len] = '\0';
+            
+            /* Convert relative URLs to absolute */
+            if (strncmp(url, "//", 2) == 0) {
+                char temp[SCRIPT_URL_MAX_LEN];
+                snprintf(temp, sizeof(temp), "https:%s", url);
+                strncpy(url, temp, SCRIPT_URL_MAX_LEN - 1);
+            } else if (url[0] == '/' && url[1] != '/') {
+                char temp[SCRIPT_URL_MAX_LEN];
+                snprintf(temp, sizeof(temp), "https://www.youtube.com%s", url);
+                strncpy(url, temp, SCRIPT_URL_MAX_LEN - 1);
+            } else if (strncmp(url, "http", 4) != 0) {
+                /* Skip non-absolute URLs we can't resolve */
+                continue;
+            }
+            
+            /* Check for duplicates */
+            bool duplicate = false;
+            for (int i = 0; i < count; i++) {
+                if (strcmp(out_urls[i], url) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+            
+            strncpy(out_urls[count], url, SCRIPT_URL_MAX_LEN - 1);
+            out_urls[count][SCRIPT_URL_MAX_LEN - 1] = '\0';
+            LOGI("Found additional script %d: %.100s...", count, out_urls[count]);
+            count++;
+        }
+    }
+    
+    LOGI("Found %d additional script URLs", count);
+    return count;
+}
+
 /* Fetch player JS and decrypt signature using QuickJS */
-static bool fetch_and_decrypt_signature(const char *player_js_url, const char *encrypted_sig,
-                                         char *out_decrypted, size_t out_len) {
+static bool fetch_and_decrypt_signature_ex(const char *player_js_url, const char *html,
+                                            const char *encrypted_sig,
+                                            char *out_decrypted, size_t out_len) {
     if (!player_js_url || !player_js_url[0] || !encrypted_sig) {
         return false;
     }
@@ -36,18 +120,69 @@ static bool fetch_and_decrypt_signature(const char *player_js_url, const char *e
     
     LOGI("Player JS fetched: %zu bytes", player_js.size);
     
-    /* Use QuickJS to decrypt signature */
+    /* Look for additional scripts */
+    char additional_urls[MAX_ADDITIONAL_SCRIPTS][SCRIPT_URL_MAX_LEN];
+    int additional_count = 0;
+    if (html) {
+        additional_count = extract_additional_script_urls(html, player_js_url,
+                                                           additional_urls, MAX_ADDITIONAL_SCRIPTS);
+    }
+    
+    /* Fetch additional scripts */
+    HttpBuffer additional_scripts[MAX_ADDITIONAL_SCRIPTS];
+    const char *add_scripts_ptrs[MAX_ADDITIONAL_SCRIPTS];
+    size_t add_scripts_lens[MAX_ADDITIONAL_SCRIPTS];
+    int fetched_count = 0;
+    
+    for (int i = 0; i < additional_count && fetched_count < MAX_ADDITIONAL_SCRIPTS; i++) {
+        memset(&additional_scripts[fetched_count], 0, sizeof(HttpBuffer));
+        if (http_get_to_memory(additional_urls[i], &additional_scripts[fetched_count], 
+                               err, sizeof(err))) {
+            LOGI("Fetched additional script %d: %zu bytes from %.100s...",
+                 fetched_count, additional_scripts[fetched_count].size, additional_urls[i]);
+            add_scripts_ptrs[fetched_count] = additional_scripts[fetched_count].data;
+            add_scripts_lens[fetched_count] = additional_scripts[fetched_count].size;
+            fetched_count++;
+        } else {
+            LOGE("Failed to fetch additional script %d: %s", i, err);
+        }
+    }
+    
+    /* Use QuickJS to decrypt signature with additional scripts */
     if (!js_quickjs_init()) {
         LOGE("Failed to initialize QuickJS");
         http_free_buffer(&player_js);
+        for (int i = 0; i < fetched_count; i++) {
+            http_free_buffer(&additional_scripts[i]);
+        }
         return false;
     }
     
+    JsExecResult exec_result = {0};
     size_t decrypted_len = 0;
-    char *decrypted = js_quickjs_decrypt_signature(player_js.data, player_js.size,
-                                                    encrypted_sig, &decrypted_len);
+    char *decrypted = js_quickjs_decrypt_signature_ex(
+        player_js.data, player_js.size,
+        fetched_count > 0 ? add_scripts_ptrs : NULL,
+        fetched_count > 0 ? add_scripts_lens : NULL,
+        fetched_count,
+        encrypted_sig, &decrypted_len, &exec_result);
     
+    /* Log captured URLs */
+    if (exec_result.captured_count > 0) {
+        LOGI("Captured %d URLs during JS execution:", exec_result.captured_count);
+        for (int i = 0; i < exec_result.captured_count && i < 10; i++) {
+            LOGI("  [%s %s] %.150s...", 
+                 exec_result.captured_urls[i].method,
+                 exec_result.captured_urls[i].type,
+                 exec_result.captured_urls[i].url);
+        }
+    }
+    
+    /* Cleanup */
     http_free_buffer(&player_js);
+    for (int i = 0; i < fetched_count; i++) {
+        http_free_buffer(&additional_scripts[i]);
+    }
     
     if (!decrypted || decrypted_len == 0) {
         LOGE("Failed to decrypt signature");
@@ -62,8 +197,16 @@ static bool fetch_and_decrypt_signature(const char *player_js_url, const char *e
     out_decrypted[decrypted_len] = '\0';
     
     free(decrypted);
-    LOGI("Successfully decrypted signature with QuickJS");
+    LOGI("Successfully decrypted signature with QuickJS (executed %d additional scripts)", 
+         fetched_count);
     return true;
+}
+
+/* Legacy function - simple player JS decryption without additional scripts */
+static bool fetch_and_decrypt_signature(const char *player_js_url, const char *encrypted_sig,
+                                         char *out_decrypted, size_t out_len) {
+    return fetch_and_decrypt_signature_ex(player_js_url, NULL, encrypted_sig, 
+                                           out_decrypted, out_len);
 }
 
 /* Extract player JavaScript URL from YouTube page */
@@ -442,7 +585,7 @@ static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t out
                                                 
                                                 if (extract_player_js_url(html, player_js_url, sizeof(player_js_url))) {
                                                     LOGI("Found player JS URL: %s", player_js_url);
-                                                    if (fetch_and_decrypt_signature(player_js_url, sig, 
+                                                    if (fetch_and_decrypt_signature_ex(player_js_url, html, sig, 
                                                                                     decrypted_sig, sizeof(decrypted_sig))) {
                                                         LOGI("Signature decrypted successfully");
                                                         /* Replace encrypted sig with decrypted one in URL */
@@ -535,7 +678,7 @@ static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t out
                                                         char player_js_url[512] = {0};
                                                         if (extract_player_js_url(html, player_js_url, sizeof(player_js_url))) {
                                                             /* Fetch player JS and decrypt signature */
-                                                            if (fetch_and_decrypt_signature(player_js_url, sig, 
+                                                            if (fetch_and_decrypt_signature_ex(player_js_url, html, sig, 
                                                                                             decrypted_sig, sizeof(decrypted_sig))) {
                                                                 decrypted = true;
                                                                 LOGI("Signature decrypted using player JS");
@@ -742,7 +885,7 @@ static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t out
                                             
                                             /* Decrypt signature */
                                             char decrypted_sig[512] = {0};
-                                            if (fetch_and_decrypt_signature(full_player_js_url, sig,
+                                            if (fetch_and_decrypt_signature_ex(full_player_js_url, html, sig,
                                                                             decrypted_sig, sizeof(decrypted_sig))) {
                                                 LOGI("Fallback: Signature decrypted successfully");
                                                 /* Replace encrypted sig with decrypted one */
