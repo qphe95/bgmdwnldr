@@ -37,6 +37,44 @@ typedef struct Cookie {
 static Cookie *g_cookieJar = NULL;
 static pthread_mutex_t g_cookieMutex = PTHREAD_MUTEX_INITIALIZER;
 
+// Consistent device fingerprint (one device identity)
+typedef struct DeviceFingerprint {
+    char user_agent[256];
+    char platform[32];
+    char sec_ch_ua[128];
+    char sec_ch_ua_mobile[8];
+    char sec_ch_ua_platform[16];
+    char accept_ch[256];
+    int screen_width;
+    int screen_height;
+    int device_memory_gb;
+    int hardware_concurrency;
+    char timezone[32];
+    char accept_language[64];
+    time_t session_start;
+    int request_count;
+    char last_referer[512];
+} DeviceFingerprint;
+
+// Global device fingerprint (consistent across all requests)
+static DeviceFingerprint g_deviceFingerprint = {
+    .user_agent = "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    .platform = "Android",
+    .sec_ch_ua = "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+    .sec_ch_ua_mobile = "?1",
+    .sec_ch_ua_platform = "\"Android\"",
+    .accept_ch = "viewport-width, dpr, device-memory, rtt, downlink, ect, ua, ua-full-version, ua-platform, ua-platform-version, ua-arch, ua-model, ua-mobile",
+    .screen_width = 1080,
+    .screen_height = 2340,
+    .device_memory_gb = 4,
+    .hardware_concurrency = 8,
+    .timezone = "America/Los_Angeles",
+    .accept_language = "en-US,en;q=0.9",
+    .session_start = 0,
+    .request_count = 0,
+    .last_referer = ""
+};
+
 typedef struct UrlParts {
     char scheme[8];
     char host[256];
@@ -48,6 +86,75 @@ static void set_err(char *err, size_t errLen, const char *msg) {
     if (err && errLen > 0) {
         snprintf(err, errLen, "%s", msg);
     }
+}
+
+// Initialize device session
+static void initialize_device_session() {
+    if (g_deviceFingerprint.session_start == 0) {
+        g_deviceFingerprint.session_start = time(NULL);
+        // Seed random number generator for natural timing variation
+        srand(time(NULL) ^ getpid());
+        LOGI("Device session initialized: Android SM-G973F, Chrome 120");
+    }
+}
+
+// Update referer chain for proper navigation history
+static void update_referer_chain(const char *current_url) {
+    // Build realistic navigation history
+    if (strstr(current_url, "googlevideo.com")) {
+        // Video requests come from YouTube watch page
+        if (strlen(g_deviceFingerprint.last_referer) == 0) {
+            strcpy(g_deviceFingerprint.last_referer, "https://www.youtube.com/watch");
+        }
+    } else if (strstr(current_url, "youtube.com/watch")) {
+        // Watch page came from short URL or direct navigation
+        strcpy(g_deviceFingerprint.last_referer, "https://youtu.be/");
+    } else if (strstr(current_url, "youtu.be")) {
+        // Short URL has no referer (direct navigation)
+        g_deviceFingerprint.last_referer[0] = '\0';
+    }
+
+    g_deviceFingerprint.request_count++;
+}
+
+// Add natural microsecond timing variation (not artificial delays)
+static void add_natural_timing_variation() {
+    // Real browsers have natural timing variation due to:
+    // - Network stack processing
+    // - JavaScript execution
+    // - Resource loading
+    // Add 0-50ms variation between requests
+    int variation_us = (rand() % 50) * 1000; // 0-50ms in microseconds
+    if (variation_us > 0) {
+        usleep(variation_us);
+    }
+}
+
+// Build browser capability headers that indicate real device behavior
+static void add_browser_capability_headers(char *extraHeadersBuf, size_t bufSize) {
+    char headerBuf[1024];
+
+    // Device capability headers (consistent for this device)
+    snprintf(headerBuf, sizeof(headerBuf),
+             "Sec-Ch-Ua: %s\r\n"
+             "Sec-Ch-Ua-Mobile: %s\r\n"
+             "Sec-Ch-Ua-Platform: %s\r\n"
+             "Accept-CH: %s\r\n"
+             "Accept-CH-Lifetime: 86400\r\n"
+             "Sec-Purpose: prefetch\r\n"  // Video prefetch behavior
+             "DPR: 2.625\r\n"            // Device pixel ratio
+             "Viewport-Width: %d\r\n"    // Screen width
+             "Device-Memory: %d\r\n"     // RAM in GB
+             "ECT: 4g\r\n"               // Effective connection type
+             "RTT: 50\r\n",              // Round trip time
+             g_deviceFingerprint.sec_ch_ua,
+             g_deviceFingerprint.sec_ch_ua_mobile,
+             g_deviceFingerprint.sec_ch_ua_platform,
+             g_deviceFingerprint.accept_ch,
+             g_deviceFingerprint.screen_width,
+             g_deviceFingerprint.device_memory_gb);
+
+    strncat(extraHeadersBuf, headerBuf, bufSize - strlen(extraHeadersBuf) - 1);
 }
 
 static bool parse_url(const char *url, UrlParts *parts, char *err, size_t errLen) {
@@ -838,6 +945,15 @@ static bool read_chunked_to_buffer(HttpStream *stream, HttpBuffer *outBuffer,
 static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffer,
                             DownloadProgressCallback progress, void *user,
                             char *err, size_t errLen) {
+    // Initialize device session (consistent identity)
+    initialize_device_session();
+
+    // Update referer chain for proper navigation history
+    update_referer_chain(url);
+
+    // Add natural timing variation (not artificial delays)
+    add_natural_timing_variation();
+
     // Don't modify googlevideo.com URLs - they have cryptographic signatures
     // that break if any parameters are changed. Use URLs exactly as extracted.
     char cleanedUrl[4096];
@@ -860,14 +976,13 @@ static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffe
     char request[8192];  // Increased buffer size for long URLs
     // Add YouTube-specific headers to avoid 403 errors
     char extraHeadersBuf[8192] = {0};
-    const char *userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
+    const char *userAgent = g_deviceFingerprint.user_agent; // Consistent device user agent
 
     // Build cookie header
     char cookieHeader[4096] = {0};
     build_cookie_header(cookieHeader, sizeof(cookieHeader), parts.host, parts.path);
 
     if (strstr(parts.host, "googlevideo.com")) {
-        userAgent = "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Mobile Safari/537.36";
         // Extract visitor ID from cookies for X-Goog-Visitor-Id header
         char visitorHeader[512] = {0};
         Cookie *currCookie = g_cookieJar;
@@ -880,11 +995,12 @@ static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffe
             currCookie = currCookie->next;
         }
 
+        // Build base headers for video requests
         snprintf(extraHeadersBuf, sizeof(extraHeadersBuf),
-                 "Referer: https://www.youtube.com/\r\n"
+                 "Referer: %s\r\n"  // Use proper referer from navigation history
                  "Origin: https://www.youtube.com\r\n"
                  "Accept: */*\r\n"
-                 "Accept-Language: en-US,en;q=0.9\r\n"
+                 "Accept-Language: %s\r\n"
                  "Accept-Encoding: identity\r\n"
                  "Cache-Control: no-cache\r\n"
                  "Pragma: no-cache\r\n"
@@ -897,18 +1013,22 @@ static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffe
                  "X-YouTube-Client-Version: 2.20240101.01.00\r\n"
                  "%s"
                  "X-Goog-AuthUser: 0\r\n",
+                 strlen(g_deviceFingerprint.last_referer) > 0 ? g_deviceFingerprint.last_referer : "https://www.youtube.com/",
+                 g_deviceFingerprint.accept_language,
                  visitorHeader);
+
+        // Add browser capability headers
+        add_browser_capability_headers(extraHeadersBuf, sizeof(extraHeadersBuf));
         if (cookieHeader[0] != '\0') {
             char cookieLine[4096];
             snprintf(cookieLine, sizeof(cookieLine), "Cookie: %s\r\n", cookieHeader);
             strncat(extraHeadersBuf, cookieLine, sizeof(extraHeadersBuf) - strlen(extraHeadersBuf) - 1);
         }
     } else if (strstr(parts.host, "youtube.com") || strstr(parts.host, "youtu.be")) {
-        // Use Android client headers to get ANDROID format URLs instead of WEB
-        userAgent = "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Mobile Safari/537.36";
+        // Use Android client headers to get mobile format URLs
         snprintf(extraHeadersBuf, sizeof(extraHeadersBuf),
                  "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9\r\n"
-                 "Accept-Language: en-US,en;q=0.9\r\n"
+                 "Accept-Language: %s\r\n"
                  "Accept-Encoding: identity\r\n"
                  "DNT: 1\r\n"
                  "Connection: keep-alive\r\n"
@@ -916,10 +1036,16 @@ static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffe
                  "Sec-Fetch-Dest: document\r\n"
                  "Sec-Fetch-Mode: navigate\r\n"
                  "Sec-Fetch-Site: none\r\n"
+                 "Sec-Fetch-User: ?1\r\n"
                  "Cache-Control: max-age=0\r\n"
                  "X-Requested-With: XMLHttpRequest\r\n"
                  "X-YouTube-Client-Name: 16\r\n"  // Android client
-                 "X-YouTube-Client-Version: 17.31.35\r\n");
+                 "X-YouTube-Client-Version: 17.31.35\r\n",
+                 g_deviceFingerprint.accept_language);
+
+        // Add browser capability headers
+        add_browser_capability_headers(extraHeadersBuf, sizeof(extraHeadersBuf));
+
         if (cookieHeader[0] != '\0') {
             char cookieLine[4096];
             snprintf(cookieLine, sizeof(cookieLine), "Cookie: %s\r\n", cookieHeader);
