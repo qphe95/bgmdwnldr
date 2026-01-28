@@ -838,126 +838,15 @@ static bool read_chunked_to_buffer(HttpStream *stream, HttpBuffer *outBuffer,
 static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffer,
                             DownloadProgressCallback progress, void *user,
                             char *err, size_t errLen) {
-    // For googlevideo.com URLs, clean up the URL to remove problematic parameters
+    // Don't modify googlevideo.com URLs - they have cryptographic signatures
+    // that break if any parameters are changed. Use URLs exactly as extracted.
     char cleanedUrl[4096];
     if (strstr(url, "googlevideo.com")) {
-        // Copy the URL and remove problematic parameters
+        // Keep the URL exactly as extracted - don't modify any parameters
+        // The signatures depend on all parameters being intact
         strcpy(cleanedUrl, url);
-
-        // Remove ip parameter
-        char *ipParam = strstr(cleanedUrl, "&ip=");
-        if (ipParam) {
-            char *nextParam = strchr(ipParam + 1, '&');
-            if (nextParam) {
-                memmove(ipParam, nextParam, strlen(nextParam) + 1);
-            } else {
-                *ipParam = '\0'; // Truncate at ip parameter
-            }
-        }
-
-        // Remove ei parameter (session identifier)
-        char *eiParam = strstr(cleanedUrl, "&ei=");
-        if (eiParam) {
-            char *nextParam = strchr(eiParam + 1, '&');
-            if (nextParam) {
-                memmove(eiParam, nextParam, strlen(nextParam) + 1);
-            } else {
-                *eiParam = '\0';
-            }
-        }
-
-        // Remove bui parameter (browser identifier)
-        char *buiParam = strstr(cleanedUrl, "&bui=");
-        if (buiParam) {
-            char *nextParam = strchr(buiParam + 1, '&');
-            if (nextParam) {
-                memmove(buiParam, nextParam, strlen(nextParam) + 1);
-            } else {
-                *buiParam = '\0';
-            }
-        }
-
-        // Remove spc parameter (security parameter)
-        char *spcParam = strstr(cleanedUrl, "&spc=");
-        if (spcParam) {
-            char *nextParam = strchr(spcParam + 1, '&');
-            if (nextParam) {
-                memmove(spcParam, nextParam, strlen(nextParam) + 1);
-            } else {
-                *spcParam = '\0';
-            }
-        }
-
-        // Change client from WEB to ANDROID to bypass restrictions
-        // Replace "c=WEB" with "c=ANDROID" in the URL
-        char *clientPos = strstr(cleanedUrl, "c=WEB");
-        if (clientPos) {
-            LOGI("Found c=WEB, replacing with c=ANDROID");
-            // Replace "WEB" with "ANDROID" (7 characters vs 3, so shift the rest)
-            char *afterWeb = clientPos + 5; // "c=WEB" is 5 chars, points to char after 'B'
-            char *afterAndroid = clientPos + 9; // "c=ANDROID" is 9 chars, points to where rest should go
-
-            // Shift everything after "WEB" to make room for "ANDROID"
-            size_t remainingLen = strlen(afterWeb);
-            memmove(afterAndroid, afterWeb, remainingLen + 1);
-
-            // Now replace "WEB" with "ANDROID"
-            memcpy(clientPos + 2, "ANDROID", 7); // +2 to skip "c="
-            LOGI("Changed client type to ANDROID");
-        }
-
-        // Remove fvip parameter (forced video IP)
-        char *fvipParam = strstr(cleanedUrl, "&fvip=");
-        if (fvipParam) {
-            char *nextParam = strchr(fvipParam + 1, '&');
-            if (nextParam) {
-                memmove(fvipParam, nextParam, strlen(nextParam) + 1);
-            } else {
-                *fvipParam = '\0';
-            }
-        }
-
-        // Remove fexp parameter (feature experiments)
-        char *fexpParam = strstr(cleanedUrl, "&fexp=");
-        if (fexpParam) {
-            char *nextParam = strchr(fexpParam + 1, '&');
-            if (nextParam) {
-                memmove(fexpParam, nextParam, strlen(nextParam) + 1);
-            } else {
-                *fexpParam = '\0';
-            }
-        }
-
-        // Try removing signature parameters to see if they work without signature
-        char *sigParam = strstr(cleanedUrl, "&sig=");
-        if (sigParam) {
-            char *nextParam = strchr(sigParam + 1, '&');
-            if (nextParam) {
-                memmove(sigParam, nextParam, strlen(nextParam) + 1);
-            } else {
-                *sigParam = '\0';
-            }
-        }
-
-        char *sparamsParam = strstr(cleanedUrl, "&sparams=");
-        if (sparamsParam) {
-            char *nextParam = strchr(sparamsParam + 1, '&');
-            if (nextParam) {
-                memmove(sparamsParam, nextParam, strlen(nextParam) + 1);
-            } else {
-                *sparamsParam = '\0';
-            }
-        }
-
         url = cleanedUrl;
-        LOGI("Cleaned URL: %s", url);
-
-        // Log if client type was changed
-        if (strstr(url, "&c=ANDROID")) {
-            LOGI("Client type successfully changed to ANDROID");
-        } else if (strstr(url, "&c=WEB")) {
-            LOGI("Client type still WEB - change failed");
-        }
+        LOGI("Using original googlevideo URL (no parameter modifications to preserve signatures)");
     }
 
     UrlParts parts;
@@ -979,6 +868,18 @@ static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffe
 
     if (strstr(parts.host, "googlevideo.com")) {
         userAgent = "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Mobile Safari/537.36";
+        // Extract visitor ID from cookies for X-Goog-Visitor-Id header
+        char visitorHeader[512] = {0};
+        Cookie *currCookie = g_cookieJar;
+        while (currCookie) {
+            if (strcmp(currCookie->name, "VISITOR_INFO1_LIVE") == 0) {
+                snprintf(visitorHeader, sizeof(visitorHeader),
+                        "X-Goog-Visitor-Id: %s\r\n", currCookie->value);
+                break;
+            }
+            currCookie = currCookie->next;
+        }
+
         snprintf(extraHeadersBuf, sizeof(extraHeadersBuf),
                  "Referer: https://www.youtube.com/\r\n"
                  "Origin: https://www.youtube.com\r\n"
@@ -990,14 +891,21 @@ static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffe
                  "Sec-Fetch-Dest: video\r\n"
                  "Sec-Fetch-Mode: cors\r\n"
                  "Sec-Fetch-Site: cross-site\r\n"
-                 "DNT: 1\r\n");
+                 "DNT: 1\r\n"
+                 "X-Requested-With: XMLHttpRequest\r\n"
+                 "X-YouTube-Client-Name: 1\r\n"
+                 "X-YouTube-Client-Version: 2.20240101.01.00\r\n"
+                 "%s"
+                 "X-Goog-AuthUser: 0\r\n",
+                 visitorHeader);
         if (cookieHeader[0] != '\0') {
             char cookieLine[4096];
             snprintf(cookieLine, sizeof(cookieLine), "Cookie: %s\r\n", cookieHeader);
             strncat(extraHeadersBuf, cookieLine, sizeof(extraHeadersBuf) - strlen(extraHeadersBuf) - 1);
         }
     } else if (strstr(parts.host, "youtube.com") || strstr(parts.host, "youtu.be")) {
-        // Use desktop user agent and complete headers for YouTube HTML pages
+        // Use Android client headers to get ANDROID format URLs instead of WEB
+        userAgent = "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Mobile Safari/537.36";
         snprintf(extraHeadersBuf, sizeof(extraHeadersBuf),
                  "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9\r\n"
                  "Accept-Language: en-US,en;q=0.9\r\n"
@@ -1008,7 +916,10 @@ static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffe
                  "Sec-Fetch-Dest: document\r\n"
                  "Sec-Fetch-Mode: navigate\r\n"
                  "Sec-Fetch-Site: none\r\n"
-                 "Cache-Control: max-age=0\r\n");
+                 "Cache-Control: max-age=0\r\n"
+                 "X-Requested-With: XMLHttpRequest\r\n"
+                 "X-YouTube-Client-Name: 16\r\n"  // Android client
+                 "X-YouTube-Client-Version: 17.31.35\r\n");
         if (cookieHeader[0] != '\0') {
             char cookieLine[4096];
             snprintf(cookieLine, sizeof(cookieLine), "Cookie: %s\r\n", cookieHeader);
