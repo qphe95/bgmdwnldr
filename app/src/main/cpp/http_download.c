@@ -22,7 +22,14 @@ typedef struct HttpResponse {
     size_t body_len;
     size_t body_capacity;
     char location[2048];
+    char cookies[4096];  /* Store cookies from response */
 } HttpResponse;
+
+/* Forward declarations */
+static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
+                                      char *err, size_t errLen, const char *cookies);
+static bool http_request(const char *url, HttpBuffer *outBuffer,
+                         char *err, size_t errLen);
 
 static bool parse_url(const char *url, char *host, size_t host_len,
                       char *path, size_t path_len, char *port, size_t port_len) {
@@ -58,8 +65,27 @@ static bool parse_url(const char *url, char *host, size_t host_len,
     return true;
 }
 
-static bool http_request(const char *url, HttpBuffer *outBuffer,
-                         char *err, size_t errLen) {
+/* Global context to pass cookies between requests */
+static char g_youtube_cookies[4096] = {0};
+
+void http_set_youtube_cookies(const char *cookies) {
+    if (cookies) {
+        strncpy(g_youtube_cookies, cookies, sizeof(g_youtube_cookies) - 1);
+        g_youtube_cookies[sizeof(g_youtube_cookies) - 1] = '\0';
+        LOGI("Set YouTube cookies: %.100s...", g_youtube_cookies);
+    }
+}
+
+const char* http_get_youtube_cookies(void) {
+    return g_youtube_cookies[0] ? g_youtube_cookies : NULL;
+}
+
+void http_clear_youtube_cookies(void) {
+    g_youtube_cookies[0] = '\0';
+}
+
+static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
+                         char *err, size_t errLen, const char *cookies) {
     char host[256] = {0};
     char path[2048] = {0};
     char port[8] = {0};
@@ -77,8 +103,8 @@ static bool http_request(const char *url, HttpBuffer *outBuffer,
     }
     
     /* Build HTTP request with YouTube-compatible headers */
-    char request[4096];
-    snprintf(request, sizeof(request),
+    char request[8192];
+    int req_len = snprintf(request, sizeof(request),
              "GET %s HTTP/1.1\r\n"
              "Host: %s\r\n"
              "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
@@ -91,9 +117,24 @@ static bool http_request(const char *url, HttpBuffer *outBuffer,
              "Sec-Fetch-Dest: document\r\n"
              "Sec-Fetch-Mode: navigate\r\n"
              "Sec-Fetch-Site: none\r\n"
-             "Cache-Control: max-age=0\r\n"
-             "\r\n",
+             "Cache-Control: max-age=0\r\n",
              path, host);
+    
+    /* Add Referer for googlevideo.com */
+    if (strstr(host, "googlevideo.com")) {
+        req_len += snprintf(request + req_len, sizeof(request) - req_len,
+                           "Referer: https://www.youtube.com/\r\n");
+    }
+    
+    /* Add cookies if provided */
+    if (cookies && cookies[0]) {
+        req_len += snprintf(request + req_len, sizeof(request) - req_len,
+                           "Cookie: %s\r\n", cookies);
+        LOGI("Adding cookies to request for %s", host);
+    }
+    
+    /* Add final CRLF */
+    req_len += snprintf(request + req_len, sizeof(request) - req_len, "\r\n");
     
     ssize_t sent = tls_client_write(&client, (unsigned char *)request, strlen(request));
     if (sent < 0) {
@@ -149,6 +190,80 @@ static bool http_request(const char *url, HttpBuffer *outBuffer,
     
     LOGI("HTTP status: %d", status);
     
+    /* Log what cookies we're sending (for debugging) */
+    if (cookies && cookies[0]) {
+        LOGI("Sending cookies: %.200s...", cookies);
+    }
+    
+    /* Extract cookies from response headers */
+    /* Format: Set-Cookie: NAME=VALUE; Domain=...; Path=...; Expires=... */
+    /* We only want NAME=VALUE pairs */
+    char *set_cookie = strstr(outBuffer->data, "Set-Cookie:");
+    while (set_cookie) {
+        set_cookie += 11; /* Skip "Set-Cookie:" */
+        while (*set_cookie == ' ') set_cookie++;
+        
+        /* Find end of cookie definition (end of line) */
+        char *line_end = strchr(set_cookie, '\r');
+        if (!line_end) line_end = strchr(set_cookie, '\n');
+        if (!line_end) line_end = set_cookie + strlen(set_cookie);
+        
+        /* Find the NAME=VALUE part (before first semicolon) */
+        char *first_semi = strchr(set_cookie, ';');
+        if (first_semi && first_semi < line_end) {
+            /* Extract just the NAME=VALUE part */
+            size_t nv_len = (size_t)(first_semi - set_cookie);
+            if (nv_len > 0 && nv_len < 2000) {
+                char name_value[2048];
+                memcpy(name_value, set_cookie, nv_len);
+                name_value[nv_len] = '\0';
+                
+                /* Check for = sign */
+                char *eq = strchr(name_value, '=');
+                if (eq && eq > name_value) {
+                    *eq = '\0';
+                    char *cookie_name = name_value;
+                    char *cookie_value = eq + 1;
+                    
+                    /* Skip cookie attributes that sometimes appear as separate Set-Cookie values */
+                    if (strcmp(cookie_name, "Domain") != 0 && 
+                        strcmp(cookie_name, "Path") != 0 &&
+                        strcmp(cookie_name, "Expires") != 0 &&
+                        strcmp(cookie_name, "Max-Age") != 0 &&
+                        strcmp(cookie_name, "HttpOnly") != 0 &&
+                        strcmp(cookie_name, "Secure") != 0 &&
+                        strcmp(cookie_name, "SameSite") != 0) {
+                        
+                        /* Check for duplicate */
+                        bool duplicate = false;
+                        char *search = g_youtube_cookies;
+                        while ((search = strstr(search, cookie_name)) != NULL) {
+                            if (search == g_youtube_cookies || search[-1] == ' ' && search[-2] == ';') {
+                                if (search[strlen(cookie_name)] == '=') {
+                                    duplicate = true;
+                                    break;
+                                }
+                            }
+                            search++;
+                        }
+                        
+                        if (!duplicate) {
+                            if (g_youtube_cookies[0]) {
+                                strncat(g_youtube_cookies, "; ", sizeof(g_youtube_cookies) - strlen(g_youtube_cookies) - 1);
+                            }
+                            strncat(g_youtube_cookies, cookie_name, sizeof(g_youtube_cookies) - strlen(g_youtube_cookies) - 1);
+                            strncat(g_youtube_cookies, "=", sizeof(g_youtube_cookies) - strlen(g_youtube_cookies) - 1);
+                            strncat(g_youtube_cookies, cookie_value, sizeof(g_youtube_cookies) - strlen(g_youtube_cookies) - 1);
+                            LOGI("Captured cookie: %s=...", cookie_name);
+                        }
+                    }
+                }
+            }
+        }
+        /* Look for next Set-Cookie */
+        set_cookie = strstr(line_end, "Set-Cookie:");
+    }
+    
     /* Handle redirects */
     if (status >= 300 && status < 400) {
         char *location = strstr(outBuffer->data, "Location:");
@@ -165,7 +280,7 @@ static bool http_request(const char *url, HttpBuffer *outBuffer,
             LOGI("Redirect to: %s", redirect_url);
             free(outBuffer->data);
             outBuffer->data = NULL;
-            return http_request(redirect_url, outBuffer, err, errLen);
+            return http_request_with_cookies(redirect_url, outBuffer, err, errLen, NULL);
         }
     }
     
@@ -184,6 +299,15 @@ static bool http_request(const char *url, HttpBuffer *outBuffer,
     outBuffer->size = body_len;
     
     return true;
+}
+
+static bool http_request(const char *url, HttpBuffer *outBuffer,
+                         char *err, size_t errLen) {
+    /* For googlevideo.com URLs, use the saved cookies */
+    if (strstr(url, "googlevideo.com")) {
+        return http_request_with_cookies(url, outBuffer, err, errLen, g_youtube_cookies);
+    }
+    return http_request_with_cookies(url, outBuffer, err, errLen, NULL);
 }
 
 bool http_get_to_memory(const char *url, HttpBuffer *outBuffer,

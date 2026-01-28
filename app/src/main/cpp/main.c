@@ -1100,6 +1100,9 @@ static void *worker_thread(void *arg) {
 
     LOGI("Processing URL: %s", args->url);
     ui_set_status(app, "Analyzing URL...");
+    
+    /* Clear any previous session cookies */
+    http_clear_youtube_cookies();
 
     /* Step 1: Analyze URL and extract media info */
     char err[512] = {0};

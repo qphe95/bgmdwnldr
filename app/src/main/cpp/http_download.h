@@ -30,6 +30,11 @@ void http_download_load_youtube_page(const char *url);
 void http_download_set_youtube_cookies(const char *cookies);
 void http_download_set_js_session_data(const char *session);
 
+// Cookie management for YouTube media downloads
+void http_set_youtube_cookies(const char *cookies);
+const char* http_get_youtube_cookies(void);
+void http_clear_youtube_cookies(void);
+
 #ifdef __cplusplus
 }
 #endif
