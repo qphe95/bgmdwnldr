@@ -15,14 +15,11 @@
 #include <math.h>
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
 
-#include "audio_extract.h"
 #include "http_download.h"
-#include "jobs.h"
-#include "media_store.h"
-#include "url_analyzer.h"
 
 #define LOG_TAG "minimalvulkan"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -1099,66 +1096,23 @@ static void *worker_thread(void *arg) {
     WorkerArgs *args = (WorkerArgs *)arg;
     VulkanApp *app = args->app;
     ui_set_progress(app, 0.0f);
-    ui_set_status(app, "Analyzing URL...");
 
-    MediaUrl media = {0};
-    char err[256] = {0};
-    if (!url_analyze(args->url, &media, err, sizeof(err))) {
-        ui_set_status(app, err[0] ? err : "URL analysis failed");
-        app->workerRunning = false;
-        free(args);
-        return NULL;
-    }
+    LOGI("Processing URL: %s", args->url);
 
-    LOGI("URL analysis result: media.url=%s, media.mime=%s", media.url, media.mime);
-    if (media.url[0] == '\0') {
-        ui_set_status(app, "No media URL found");
-        app->workerRunning = false;
-        free(args);
-        return NULL;
-    }
+    // Load YouTube page first to establish session
+    ui_set_status(app, "Loading page for session...");
+    http_download_load_youtube_page(args->url);
 
-    ui_set_status(app, "Downloading...");
-    char tempPath[2048];
-    snprintf(tempPath, sizeof(tempPath), "%s/tmp_media.bin",
-             app->androidApp->activity->internalDataPath);
-    LOGI("Downloading to: %s from: %s", tempPath, media.url);
-    if (!http_download_to_file(media.url, tempPath, download_progress, app,
-                               err, sizeof(err))) {
-        ui_set_status(app, err[0] ? err : "Download failed");
-        app->workerRunning = false;
-        free(args);
-        return NULL;
-    }
+    // Wait for page to load and session to be established
+    sleep(3);
 
-    ui_set_status(app, "Extracting audio...");
-    MediaStoreHandle handle = {0};
-    char filename[128];
-    time_t now = time(NULL);
-    snprintf(filename, sizeof(filename), "bgmdwldr_%ld.m4a", (long)now);
-    if (!media_store_create_audio(app->javaVm, app->androidApp->activity->clazz,
-                                  filename, "audio/mp4", &handle,
-                                  err, sizeof(err))) {
-        ui_set_status(app, err[0] ? err : "MediaStore create failed");
-        app->workerRunning = false;
-        free(args);
-        return NULL;
-    }
+    // Now download the video via WebView
+    ui_set_status(app, "Downloading via WebView...");
+    http_download_via_webview(args->url, app);
 
-    if (!audio_extract_to_fd(tempPath, handle.fd, err, sizeof(err))) {
-        ui_set_status(app, err[0] ? err : "Audio extraction failed");
-        media_store_close(app->javaVm, &handle);
-        app->workerRunning = false;
-        free(args);
-        return NULL;
-    }
-
-    media_store_close(app->javaVm, &handle);
-    media_store_finalize(app->javaVm, app->androidApp->activity->clazz,
-                         &handle, err, sizeof(err));
-    remove(tempPath);
+    // WebView handles authentication, cookies, and download automatically
     ui_set_progress(app, 1.0f);
-    ui_set_status(app, "Saved to Music/BGMDWLDR");
+    ui_set_status(app, "Download initiated via WebView");
 
     app->workerRunning = false;
     free(args);
@@ -1183,7 +1137,7 @@ static void start_worker(VulkanApp *app) {
         free(args);
         return;
     }
-    app->workerRunning = jobs_start_thread(&app->workerThread, worker_thread, args);
+    app->workerRunning = (pthread_create(&app->workerThread, NULL, worker_thread, args) == 0);
     if (!app->workerRunning) {
         ui_set_status(app, "Worker start failed");
         free(args);
@@ -1994,6 +1948,18 @@ JNIEXPORT void JNICALL
 Java_com_bgmdwldr_vulkan_MainActivity_nativeOnTextChanged(JNIEnv *env, jclass clazz,
                                                           jstring text) {
     (void)clazz;
+
+    // Set JNI references for WebView communication (only once)
+    static bool jniRefsSet = false;
+    if (!jniRefsSet) {
+        JavaVM *vm;
+        (*env)->GetJavaVM(env, &vm);
+        // We need to pass the activity instance, but we don't have it here
+        // We'll set it in a method that has the activity reference
+        http_download_set_jni_refs(vm, NULL); // Just set VM for now
+        jniRefsSet = true;
+    }
+
     if (!g_app || !text) {
         return;
     }
@@ -2042,4 +2008,58 @@ Java_com_bgmdwldr_vulkan_MainActivity_nativeOnKeyboardHeight(JNIEnv *env, jclass
         return;
     }
     g_app->keyboardHeightPx = (float)heightPx;
+}
+
+JNIEXPORT void JNICALL
+Java_com_bgmdwldr_vulkan_MainActivity_nativeSetYouTubeCookies(JNIEnv *env, jclass clazz,
+                                                             jstring cookies) {
+    (void)clazz;
+    if (!cookies) {
+        LOGE("Received null YouTube cookies");
+        return;
+    }
+
+    const char *cookies_utf = (*env)->GetStringUTFChars(env, cookies, NULL);
+    if (!cookies_utf) {
+        LOGE("Failed to get UTF chars from YouTube cookies");
+        return;
+    }
+
+    LOGI("Received YouTube cookies from WebView: %zu chars", strlen(cookies_utf));
+
+    // Store the cookies for use in HTTP requests
+    // We'll merge these with our existing cookie jar
+    http_download_set_youtube_cookies(cookies_utf);
+
+    (*env)->ReleaseStringUTFChars(env, cookies, cookies_utf);
+}
+
+JNIEXPORT void JNICALL
+Java_com_bgmdwldr_vulkan_MainActivity_nativeSetJavaScriptSessionData(JNIEnv *env, jclass clazz,
+                                                                   jstring sessionData) {
+    (void)clazz;
+    if (!sessionData) {
+        LOGE("Received null JavaScript session data");
+        return;
+    }
+
+    const char *session_utf = (*env)->GetStringUTFChars(env, sessionData, NULL);
+    if (!session_utf) {
+        LOGE("Failed to get UTF chars from JavaScript session data");
+        return;
+    }
+
+    LOGI("Received JavaScript session data: %s", session_utf);
+
+    // Store the session data for use in requests
+    http_download_set_js_session_data(session_utf);
+
+    (*env)->ReleaseStringUTFChars(env, sessionData, session_utf);
+}
+
+JNIEXPORT void JNICALL
+Java_com_bgmdwldr_vulkan_MainActivity_nativeSetActivityRef(JNIEnv *env, jobject activity) {
+    JavaVM *vm;
+    (*env)->GetJavaVM(env, &vm);
+    http_download_set_jni_refs(vm, activity);
 }

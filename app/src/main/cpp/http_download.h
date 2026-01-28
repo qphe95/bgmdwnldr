@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <jni.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,11 +19,14 @@ typedef struct HttpBuffer {
 bool http_get_to_memory(const char *url, HttpBuffer *outBuffer,
                         char *err, size_t errLen);
 
-bool http_download_to_file(const char *url, const char *filePath,
-                           DownloadProgressCallback progress, void *user,
-                           char *err, size_t errLen);
-
 void http_free_buffer(HttpBuffer *buffer);
+
+// WebView-based downloading
+void http_download_via_webview(const char *url, void *app);
+
+// WebView session management
+void http_download_set_jni_refs(JavaVM *vm, jobject activity);
+void http_download_load_youtube_page(const char *url);
 
 #ifdef __cplusplus
 }
