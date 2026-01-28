@@ -24,6 +24,8 @@ LOCAL_SRC_FILES := \
     media_store.c \
     tls_client.c \
     url_analyzer.c \
+    js_engine.c \
+    js_builtins.c \
     $(MBEDTLS_SRC) \
     $(TF_PSA_CORE) \
     $(TF_PSA_DRIVERS) \

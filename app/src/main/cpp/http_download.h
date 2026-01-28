@@ -27,6 +27,8 @@ void http_download_via_webview(const char *url, void *app);
 // WebView session management
 void http_download_set_jni_refs(JavaVM *vm, jobject activity);
 void http_download_load_youtube_page(const char *url);
+void http_download_set_youtube_cookies(const char *cookies);
+void http_download_set_js_session_data(const char *session);
 
 #ifdef __cplusplus
 }

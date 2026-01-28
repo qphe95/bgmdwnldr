@@ -138,3 +138,13 @@ void http_free_buffer(HttpBuffer *buffer) {
     (void)buffer;
     // No-op in WebView mode
 }
+
+void http_download_set_youtube_cookies(const char *cookies) {
+    (void)cookies;
+    LOGI("Setting YouTube cookies (WebView mode - no-op)");
+}
+
+void http_download_set_js_session_data(const char *session) {
+    (void)session;
+    LOGI("Setting JS session data (WebView mode - no-op)");
+}
