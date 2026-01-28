@@ -237,107 +237,6 @@ void js_quickjs_clear_captured_urls(void) {
     memset(g_captured_urls, 0, sizeof(g_captured_urls));
 }
 
-/* The find and decrypt function that will be called after all scripts are loaded */
-static char *find_and_decrypt_signature(JSContext *decrypt_ctx, const char *encrypted_sig, size_t *out_len) {
-    const char *find_and_decrypt = 
-        "(function() {"
-        "  var sig = arguments[0];"
-        "  var global = this;"
-        "  var candidates = [];"
-        "  var debugInfo = [];"
-        "  var shortNamedFuncs = [];"
-        "  "
-        "  /* Helper: is this a valid signature result? */"
-        "  var isValidResult = function(s) {"
-        "    if (typeof s !== 'string') return false;"
-        "    if (s === sig) return false;"
-        "    if (s.length < 50 || s.length > 200) return false;"
-        "    if (!/^[A-Za-z0-9_=-]+$/.test(s)) return false;"
-        "    if (s.indexOf('http') >= 0 || s.indexOf('%') >= 0) return false;"
-        "    return true;"
-        "  };"
-        "  "
-        "  var keys = Object.getOwnPropertyNames(global);"
-        "  debugInfo.push('Total keys: ' + keys.length);"
-        "  "
-        "  /* Collect all short-named functions */"
-        "  for (var i = 0; i < keys.length; i++) {"
-        "    var key = keys[i];"
-        "    if (key.length > 3) continue;"
-        "    try {"
-        "      var val = global[key];"
-        "      if (typeof val === 'function') {"
-        "        shortNamedFuncs.push(key);"
-        "      }"
-        "    } catch(e) {}"
-        "  }"
-        "  debugInfo.push('Short funcs: ' + shortNamedFuncs.join(','));"
-        "  "
-        "  /* Try all short-named global functions */"
-        "  for (var i = 0; i < shortNamedFuncs.length; i++) {"
-        "    var key = shortNamedFuncs[i];"
-        "    try {"
-        "      var fn = global[key];"
-        "      var result = fn(sig);"
-        "      var resultType = typeof result;"
-        "      var resultPreview = resultType === 'string' ? result.substring(0, 30) : String(result);"
-        "      if (isValidResult(result)) {"
-        "        candidates.push({name: key, result: result});"
-        "      } else if (resultType === 'string' && result !== sig) {"
-        "        debugInfo.push(key + '->' + resultType + '(' + result.length + '):' + resultPreview);"
-        "      }"
-        "    } catch(e) {"
-        "      debugInfo.push(key + ':ERROR:' + e.message);"
-        "    }"
-        "  }"
-        "  "
-        "  if (candidates.length === 0) {"
-        "    return 'DEBUG_NO_CANDIDATES:' + debugInfo.slice(0, 10).join(';');"
-        "  }"
-        "  "
-        "  candidates.sort(function(a, b) {"
-        "    return Math.abs(a.result.length - sig.length) - Math.abs(b.result.length - sig.length);"
-        "  });"
-        "  "
-        "  return candidates[0].result;"
-        "})";
-    
-    JSValue find_func = JS_Eval(decrypt_ctx, find_and_decrypt, strlen(find_and_decrypt), "<find>", 0);
-    
-    if (JS_IsFunction(decrypt_ctx, find_func)) {
-        JSValue sig_val = JS_NewString(decrypt_ctx, encrypted_sig);
-        JSValue result = JS_Call(decrypt_ctx, find_func, JS_UNDEFINED, 1, &sig_val);
-        JS_FreeValue(decrypt_ctx, sig_val);
-        JS_FreeValue(decrypt_ctx, find_func);
-        
-        if (!JS_IsException(result) && !JS_IsNull(result) && !JS_IsUndefined(result)) {
-            const char *str = JS_ToCString(decrypt_ctx, result);
-            if (str) {
-                if (strncmp(str, "DEBUG_NO_CANDIDATES:", 20) == 0) {
-                    LOGE("No decryption candidates found. Debug: %s", str + 20);
-                } else if (strlen(str) > 10) {
-                    LOGI("Found decrypted sig: %.50s...", str);
-                    size_t len = strlen(str);
-                    char *out = malloc(len + 1);
-                    if (out) {
-                        memcpy(out, str, len + 1);
-                        *out_len = len;
-                        JS_FreeCString(decrypt_ctx, str);
-                        JS_FreeValue(decrypt_ctx, result);
-                        return out;
-                    }
-                }
-            }
-            JS_FreeCString(decrypt_ctx, str);
-        }
-        JS_FreeValue(decrypt_ctx, result);
-    } else {
-        JS_FreeValue(decrypt_ctx, find_func);
-    }
-    
-    return NULL;
-}
-
 char *js_quickjs_decrypt_signature_ex(const char *player_js, size_t player_js_len,
                                        const char **additional_scripts, const size_t *additional_lens,
                                        int additional_count,
@@ -417,39 +316,84 @@ char *js_quickjs_decrypt_signature_ex(const char *player_js, size_t player_js_le
         JS_FreeValue(decrypt_ctx, add_result);
     }
     
-    /* Extract captured URLs before finding the decrypt function */
+    /* Extract captured URLs */
+    JsCapturedUrl local_captured[JS_CAPTURED_URLS_MAX];
+    int captured_count = extract_captured_urls(decrypt_ctx, local_captured, JS_CAPTURED_URLS_MAX);
+    
     if (out_result) {
-        out_result->captured_count = extract_captured_urls(decrypt_ctx, out_result->captured_urls,
-                                                            JS_CAPTURED_URLS_MAX);
-        g_captured_count = out_result->captured_count;
-        memcpy(g_captured_urls, out_result->captured_urls,
-               sizeof(JsCapturedUrl) * out_result->captured_count);
+        out_result->captured_count = captured_count;
+        memcpy(out_result->captured_urls, local_captured, sizeof(JsCapturedUrl) * captured_count);
+    }
+    g_captured_count = captured_count;
+    memcpy(g_captured_urls, local_captured, sizeof(JsCapturedUrl) * captured_count);
+    
+    if (captured_count > 0) {
+        LOGI("Captured %d URLs during JS execution", captured_count);
+        for (int i = 0; i < captured_count && i < 5; i++) {
+            LOGI("  URL %d: %.100s...", i, local_captured[i].url);
+        }
+    }
+    
+    JS_FreeContext(decrypt_ctx);
+    
+    /* 
+     * Check captured URLs for a valid googlevideo URL with decrypted signature.
+     * The player JS may have made an XHR/fetch request with the decrypted URL.
+     */
+    for (int i = 0; i < captured_count; i++) {
+        const char *url = local_captured[i].url;
         
-        if (out_result->captured_count > 0) {
-            LOGI("Captured %d URLs during JS execution", out_result->captured_count);
-            for (int i = 0; i < out_result->captured_count && i < 5; i++) {
-                LOGI("  URL %d: %.100s...", i, out_result->captured_urls[i].url);
+        /* Check if it's a googlevideo URL */
+        if (strstr(url, "googlevideo.com") == NULL) {
+            continue;
+        }
+        
+        /* Look for sig or signature parameter */
+        const char *sig_start = strstr(url, "sig=");
+        if (!sig_start) {
+            sig_start = strstr(url, "signature=");
+        }
+        if (!sig_start) {
+            continue;
+        }
+        
+        /* Extract the signature value */
+        sig_start = strchr(sig_start, '=');
+        if (!sig_start) continue;
+        sig_start++; /* Move past '=' */
+        
+        const char *sig_end = strchr(sig_start, '&');
+        size_t sig_len = sig_end ? (size_t)(sig_end - sig_start) : strlen(sig_start);
+        
+        /* Sanity check: signature should be reasonable length */
+        if (sig_len < 20 || sig_len > 500) {
+            continue;
+        }
+        
+        /* Check if this signature is different from input (decrypted) */
+        if (sig_len != strlen(encrypted_sig) || 
+            strncmp(sig_start, encrypted_sig, sig_len) != 0) {
+            /* Found a different signature - likely decrypted */
+            char *decrypted_sig = malloc(sig_len + 1);
+            if (decrypted_sig) {
+                memcpy(decrypted_sig, sig_start, sig_len);
+                decrypted_sig[sig_len] = '\0';
+                *out_len = sig_len;
+                LOGI("Found decrypted signature in captured URL %d: %.50s...", i, decrypted_sig);
+                return decrypted_sig;
             }
         }
     }
     
-    /* Find and call the decipher function */
-    char *decrypted = find_and_decrypt_signature(decrypt_ctx, encrypted_sig, out_len);
-    
-    JS_FreeContext(decrypt_ctx);
-    
-    if (decrypted) {
-        return decrypted;
-    }
-    
-    /* Fallback */
+    /* No valid decrypted signature found in captured URLs, return original */
     size_t len = strlen(encrypted_sig);
-    char *fallback = malloc(len + 1);
-    if (fallback) {
-        memcpy(fallback, encrypted_sig, len + 1);
+    char *result = malloc(len + 1);
+    if (result) {
+        memcpy(result, encrypted_sig, len + 1);
         *out_len = len;
+        LOGI("No decrypted signature found in captured URLs, returning original");
     }
-    return fallback;
+    return result;
 }
 
 char *js_quickjs_decrypt_signature(const char *player_js, size_t player_js_len,
