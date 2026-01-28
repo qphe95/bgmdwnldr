@@ -239,8 +239,10 @@ static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t out
                                 cursor++;
                                 continue;
                             }
-                            // Must be audio, not video
-                            if (!strstr(mime, "audio/")) {
+                            // Accept pure audio formats OR combined video+audio formats (for direct download)
+                            bool isAudio = strstr(mime, "audio/") != NULL;
+                            bool isVideoWithAudio = strstr(mime, "video/") != NULL && strstr(mime, "mp4a") != NULL;
+                            if (!isAudio && !isVideoWithAudio) {
                                 LOGI("Skipping non-audio mimeType: %s", mime);
                                 cursor++;
                                 continue;
@@ -273,14 +275,14 @@ static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t out
                                         LOGI("After json_unescape_repeat: %s", unescaped);
                                         url_decode_inplace(unescaped);
                                         LOGI("After url_decode: %s", unescaped);
-                                        // Make sure it's an audio stream (check mime parameter)
-                                        // Reject video streams explicitly
-                                        if (strstr(unescaped, "mime=video")) {
-                                            LOGI("Rejected URL (video stream): %s", unescaped);
-                                        } else if (strstr(unescaped, "mime=audio") || 
-                                                   strstr(unescaped, "itag=140") || strstr(unescaped, "itag=251") || 
-                                                   strstr(unescaped, "itag=250") || strstr(unescaped, "itag=249") ||
-                                                   strstr(unescaped, "itag=171") || strstr(unescaped, "itag=172")) {
+                                        // Accept audio streams, or video streams that contain audio (for direct download)
+                                        bool hasAudio = strstr(unescaped, "mime=audio") ||
+                                                       strstr(unescaped, "itag=140") || strstr(unescaped, "itag=251") ||
+                                                       strstr(unescaped, "itag=250") || strstr(unescaped, "itag=249") ||
+                                                       strstr(unescaped, "itag=171") || strstr(unescaped, "itag=172") ||
+                                                       strstr(unescaped, "itag=18") || strstr(unescaped, "itag=22") ||
+                                                       strstr(unescaped, "itag=43");
+                                        if (hasAudio) {
                                             // Replace any remaining \u0026 with & (in case unescaping missed some)
                                             char final[2048];
                                             size_t j = 0;
@@ -299,7 +301,7 @@ static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t out
                                             LOGI("Found YouTube audio URL from player response: %s", outUrl);
                                             return true;
                                         } else {
-                                            LOGI("Rejected URL (not audio stream): %s", unescaped);
+                                            LOGI("Rejected URL (no audio): %s", unescaped);
                                         }
                                     }
                                 }
@@ -323,12 +325,13 @@ static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t out
                                                 char urlUnescaped[2048];
                                                 json_unescape_repeat(url, urlUnescaped, sizeof(urlUnescaped));
                                                 url_decode_inplace(urlUnescaped);
-                                                // Reject video streams
-                                                if (strstr(urlUnescaped, "mime=video")) {
-                                                    LOGI("Rejected signatureCipher URL (video stream): %s", urlUnescaped);
-                                                } else if (strstr(urlUnescaped, "mime=audio") ||
-                                                           strstr(urlUnescaped, "itag=140") || strstr(urlUnescaped, "itag=251") ||
-                                                           strstr(urlUnescaped, "itag=250") || strstr(urlUnescaped, "itag=249")) {
+                                                // Accept audio streams or video streams with audio
+                                                bool hasAudio = strstr(urlUnescaped, "mime=audio") ||
+                                                               strstr(urlUnescaped, "itag=140") || strstr(urlUnescaped, "itag=251") ||
+                                                               strstr(urlUnescaped, "itag=250") || strstr(urlUnescaped, "itag=249") ||
+                                                               strstr(urlUnescaped, "itag=18") || strstr(urlUnescaped, "itag=22") ||
+                                                               strstr(urlUnescaped, "itag=43");
+                                                if (hasAudio) {
                                                     query_get_param(unescaped, "sp", sp, sizeof(sp));
                                                     if (!query_get_param(unescaped, "sig", sig, sizeof(sig))) {
                                                         query_get_param(unescaped, "signature", sig, sizeof(sig));
@@ -357,6 +360,8 @@ static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t out
                                                         LOGI("Found YouTube audio URL from signatureCipher: %s", outUrl);
                                                         return true;
                                                     }
+                                                } else {
+                                                    LOGI("Rejected signatureCipher URL (no audio): %s", urlUnescaped);
                                                 }
                                             }
                                         }
@@ -480,17 +485,17 @@ static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t out
                             char unescaped[2048];
                             json_unescape_repeat(tempUrl, unescaped, sizeof(unescaped));
                             url_decode_inplace(unescaped);
-                            // Check if it has audio-related parameters (only audio itags)
-                            if (strstr(unescaped, "mime=audio") || 
-                                strstr(unescaped, "itag=140") || strstr(unescaped, "itag=251") ||
-                                strstr(unescaped, "itag=250") || strstr(unescaped, "itag=249") ||
-                                strstr(unescaped, "itag=171") || strstr(unescaped, "itag=172")) {
-                                // Make sure it's NOT a video stream
-                                if (!strstr(unescaped, "mime=video")) {
-                                    snprintf(outUrl, outLen, "%s", unescaped);
-                                    LOGI("Found googlevideo.com audio URL: %s", outUrl);
-                                    return true;
-                                }
+                            // Check if it has audio-related parameters
+                            bool hasAudio = strstr(unescaped, "mime=audio") ||
+                                           strstr(unescaped, "itag=140") || strstr(unescaped, "itag=251") ||
+                                           strstr(unescaped, "itag=250") || strstr(unescaped, "itag=249") ||
+                                           strstr(unescaped, "itag=171") || strstr(unescaped, "itag=172") ||
+                                           strstr(unescaped, "itag=18") || strstr(unescaped, "itag=22") ||
+                                           strstr(unescaped, "itag=43");
+                            if (hasAudio) {
+                                snprintf(outUrl, outLen, "%s", unescaped);
+                                LOGI("Found googlevideo.com audio URL: %s", outUrl);
+                                return true;
                             }
                         }
                     }

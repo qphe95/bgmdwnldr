@@ -420,6 +420,60 @@ static bool read_chunked_to_buffer(HttpStream *stream, HttpBuffer *outBuffer,
 static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffer,
                             DownloadProgressCallback progress, void *user,
                             char *err, size_t errLen) {
+    // For googlevideo.com URLs, clean up the URL to remove problematic parameters
+    char cleanedUrl[4096];
+    if (strstr(url, "googlevideo.com")) {
+        // Copy the URL and remove problematic parameters
+        strcpy(cleanedUrl, url);
+
+        // Remove ip parameter
+        char *ipParam = strstr(cleanedUrl, "&ip=");
+        if (ipParam) {
+            char *nextParam = strchr(ipParam + 1, '&');
+            if (nextParam) {
+                memmove(ipParam, nextParam, strlen(nextParam) + 1);
+            } else {
+                *ipParam = '\0'; // Truncate at ip parameter
+            }
+        }
+
+        // Remove ei parameter (session identifier)
+        char *eiParam = strstr(cleanedUrl, "&ei=");
+        if (eiParam) {
+            char *nextParam = strchr(eiParam + 1, '&');
+            if (nextParam) {
+                memmove(eiParam, nextParam, strlen(nextParam) + 1);
+            } else {
+                *eiParam = '\0';
+            }
+        }
+
+        // Remove bui parameter (browser identifier)
+        char *buiParam = strstr(cleanedUrl, "&bui=");
+        if (buiParam) {
+            char *nextParam = strchr(buiParam + 1, '&');
+            if (nextParam) {
+                memmove(buiParam, nextParam, strlen(nextParam) + 1);
+            } else {
+                *buiParam = '\0';
+            }
+        }
+
+        // Remove spc parameter (security parameter)
+        char *spcParam = strstr(cleanedUrl, "&spc=");
+        if (spcParam) {
+            char *nextParam = strchr(spcParam + 1, '&');
+            if (nextParam) {
+                memmove(spcParam, nextParam, strlen(nextParam) + 1);
+            } else {
+                *spcParam = '\0';
+            }
+        }
+
+        url = cleanedUrl;
+        LOGI("Cleaned URL: %s", url);
+    }
+
     UrlParts parts;
     if (!parse_url(url, &parts, err, errLen)) {
         return false;
@@ -431,20 +485,37 @@ static bool perform_request(const char *url, FILE *outFile, HttpBuffer *outBuffe
     char request[8192];  // Increased buffer size for long URLs
     // Add YouTube-specific headers to avoid 403 errors
     const char *extraHeaders = "";
+    const char *userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
     if (strstr(parts.host, "googlevideo.com")) {
+        userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
         extraHeaders = "Referer: https://www.youtube.com/\r\n"
                        "Origin: https://www.youtube.com\r\n"
+                       "Accept: */*\r\n"
                        "Accept-Language: en-US,en;q=0.9\r\n"
                        "Accept-Encoding: identity\r\n"
-                       "Range: bytes=0-\r\n";  // Request full file
+                       "Sec-Fetch-Dest: video\r\n"
+                       "Sec-Fetch-Mode: cors\r\n"
+                       "Sec-Fetch-Site: cross-site\r\n";
+    } else if (strstr(parts.host, "youtube.com") || strstr(parts.host, "youtu.be")) {
+        // Use desktop user agent and complete headers for YouTube HTML pages
+        extraHeaders = "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9\r\n"
+                       "Accept-Language: en-US,en;q=0.9\r\n"
+                       "Accept-Encoding: identity\r\n"
+                       "DNT: 1\r\n"
+                       "Connection: keep-alive\r\n"
+                       "Upgrade-Insecure-Requests: 1\r\n"
+                       "Sec-Fetch-Dest: document\r\n"
+                       "Sec-Fetch-Mode: navigate\r\n"
+                       "Sec-Fetch-Site: none\r\n"
+                       "Cache-Control: max-age=0\r\n";
     }
     int reqLen = snprintf(request, sizeof(request),
              "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n"
-             "User-Agent: Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36\r\n"
+             "User-Agent: %s\r\n"
              "Accept: */*\r\n"
              "%s"
              "\r\n",
-             parts.path, parts.host, extraHeaders);
+             parts.path, parts.host, userAgent, extraHeaders);
     if (reqLen >= (int)sizeof(request) - 1) {
         LOGE("HTTP request too long: %d bytes (max %zu)", reqLen, sizeof(request));
         stream_close(&stream);
