@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <pthread.h>
 #include <android/log.h>
+#include "cJSON.h"
 #include "html_media_extract.h"
 #include "http_download.h"
 #include "js_quickjs.h"
@@ -25,6 +26,7 @@ typedef struct MediaStream {
     int width;
     int height;
     int itag;
+    bool has_cipher;  // True if URL needs signature decryption
 } MediaStream;
 
 typedef struct {
@@ -69,173 +71,245 @@ static char *url_normalize(const char *base, const char *rel, char *out, size_t 
     return out;
 }
 
-// Parse ytInitialPlayerResponse and extract streaming data
-static int parse_yt_player_response(const char *json, MediaStream *streams, int max_streams) {
-    if (!json || !streams || max_streams <= 0) return 0;
+// URL decode helper
+static char *url_decode(const char *src) {
+    if (!src) return NULL;
     
-    int count = 0;
-    LOG_INFO("Parsing player response (%zu bytes)", strlen(json));
+    size_t len = strlen(src);
+    char *decoded = malloc(len + 1);
+    if (!decoded) return NULL;
     
-    // Find streamingData
-    const char *streaming_data = strstr(json, "\"streamingData\"");
-    if (!streaming_data) {
-        LOG_WARN("No streamingData found in player response");
-        return 0;
+    char *dst = decoded;
+    for (size_t i = 0; i < len; i++) {
+        if (src[i] == '%' && i + 2 < len) {
+            int hex1 = tolower(src[i + 1]);
+            int hex2 = tolower(src[i + 2]);
+            int val1 = (hex1 >= 'a') ? (hex1 - 'a' + 10) : (hex1 - '0');
+            int val2 = (hex2 >= 'a') ? (hex2 - 'a' + 10) : (hex2 - '0');
+            if (val1 >= 0 && val1 < 16 && val2 >= 0 && val2 < 16) {
+                *dst++ = (char)((val1 << 4) | val2);
+                i += 2;
+                continue;
+            }
+        }
+        *dst++ = src[i];
+    }
+    *dst = '\0';
+    return decoded;
+}
+
+// Parse signatureCipher and extract URL + signature
+static bool parse_signature_cipher(const char *cipher_text, char *out_url, size_t out_url_len, 
+                                    char *out_sig, size_t out_sig_len) {
+    if (!cipher_text || !out_url) return false;
+    
+    out_url[0] = '\0';
+    if (out_sig) out_sig[0] = '\0';
+    
+    // signatureCipher format: url=XXX&sig=YYY or url=XXX&s=YYY
+    const char *url_start = strstr(cipher_text, "url=");
+    if (!url_start) return false;
+    
+    url_start += 4;
+    const char *url_end = strchr(url_start, '&');
+    
+    char *decoded_url;
+    if (url_end) {
+        char encoded[1024];
+        size_t len = url_end - url_start;
+        if (len >= sizeof(encoded)) len = sizeof(encoded) - 1;
+        strncpy(encoded, url_start, len);
+        encoded[len] = '\0';
+        decoded_url = url_decode(encoded);
+    } else {
+        char encoded[1024];
+        strncpy(encoded, url_start, sizeof(encoded) - 1);
+        encoded[sizeof(encoded) - 1] = '\0';
+        decoded_url = url_decode(encoded);
     }
     
-    // Look for formats (adaptiveFormats and formats)
-    const char *formats = strstr(streaming_data, "\"formats\"");
-    const char *adaptive_formats = strstr(streaming_data, "\"adaptiveFormats\"");
+    if (!decoded_url) return false;
     
-    if (!formats && !adaptive_formats) {
-        LOG_WARN("No formats found in streamingData");
-        return 0;
-    }
+    strncpy(out_url, decoded_url, out_url_len - 1);
+    out_url[out_url_len - 1] = '\0';
+    free(decoded_url);
     
-    // Parse formats array
-    const char *fmt_start = formats ? formats : adaptive_formats;
-    const char *array_start = strchr(fmt_start, '[');
-    if (!array_start) return 0;
-    
-    // Simple JSON parsing for format objects
-    const char *p = array_start;
-    int brace_depth = 0;
-    bool in_string = false;
-    bool escape = false;
-    
-    // Buffer for current format object
-    char format_buf[4096];
-    int fmt_len = 0;
-    
-    while (*p && count < max_streams) {
-        if (!in_string) {
-            if (*p == '{') {
-                if (brace_depth == 0) fmt_len = 0;
-                brace_depth++;
-            } else if (*p == '}') {
-                brace_depth--;
-                if (brace_depth == 0 && fmt_len > 0 && fmt_len < sizeof(format_buf) - 1) {
-                    format_buf[fmt_len++] = '}';
-                    format_buf[fmt_len] = '\0';
-                    
-                    // Extract fields from format object
-                    MediaStream *stream = &streams[count];
-                    memset(stream, 0, sizeof(MediaStream));
-                    
-                    // itag
-                    const char *itag = strstr(format_buf, "\"itag\"");
-                    if (itag) {
-                        itag = strchr(itag, ':');
-                        if (itag) stream->itag = atoi(itag + 1);
-                    }
-                    
-                    // url
-                    const char *url = strstr(format_buf, "\"url\"");
-                    if (url) {
-                        url = strchr(url, '"');
-                        if (url) url = strchr(url + 1, '"');
-                        if (url) {
-                            url++;
-                            const char *url_end = strchr(url, '"');
-                            if (url_end && url_end - url < sizeof(stream->url) - 1) {
-                                strncpy(stream->url, url, url_end - url);
-                                stream->url[url_end - url] = '\0';
-                            }
-                        }
-                    }
-                    
-                    // signatureCipher
-                    if (!stream->url[0]) {
-                        const char *cipher = strstr(format_buf, "\"signatureCipher\"");
-                        if (cipher) {
-                            cipher = strchr(cipher, '"');
-                            if (cipher) cipher = strchr(cipher + 1, '"');
-                            if (cipher) {
-                                cipher++;
-                                const char *cipher_end = strchr(cipher, '"');
-                                if (cipher_end && cipher_end - cipher < sizeof(stream->url) - 1) {
-                                    strncpy(stream->url, cipher, cipher_end - cipher);
-                                    stream->url[cipher_end - cipher] = '\0';
-                                }
-                            }
-                        }
-                    }
-                    
-                    // mimeType
-                    const char *mime = strstr(format_buf, "\"mimeType\"");
-                    if (mime) {
-                        mime = strchr(mime, '"');
-                        if (mime) mime = strchr(mime + 1, '"');
-                        if (mime) {
-                            mime++;
-                            const char *mime_end = strchr(mime, '"');
-                            if (mime_end && mime_end - mime < sizeof(stream->mime_type) - 1) {
-                                strncpy(stream->mime_type, mime, mime_end - mime);
-                                stream->mime_type[mime_end - mime] = '\0';
-                            }
-                        }
-                    }
-                    
-                    // width/height for video
-                    const char *width = strstr(format_buf, "\"width\"");
-                    if (width) {
-                        width = strchr(width, ':');
-                        if (width) stream->width = atoi(width + 1);
-                    }
-                    
-                    const char *height = strstr(format_buf, "\"height\"");
-                    if (height) {
-                        height = strchr(height, ':');
-                        if (height) stream->height = atoi(height + 1);
-                    }
-                    
-                    // qualityLabel
-                    const char *quality = strstr(format_buf, "\"qualityLabel\"");
-                    if (quality) {
-                        quality = strchr(quality, '"');
-                        if (quality) quality = strchr(quality + 1, '"');
-                        if (quality) {
-                            quality++;
-                            const char *quality_end = strchr(quality, '"');
-                            if (quality_end && quality_end - quality < sizeof(stream->quality) - 1) {
-                                strncpy(stream->quality, quality, quality_end - quality);
-                                stream->quality[quality_end - quality] = '\0';
-                            }
-                        }
-                    }
-                    
-                    LOG_INFO("Parsed stream: itag=%d, url=%.50s, mime=%s", 
-                             stream->itag, stream->url[0] ? stream->url : "(empty)", 
-                             stream->mime_type[0] ? stream->mime_type : "(empty)");
-                    
-                    if (stream->url[0] && stream->itag > 0) {
-                        count++;
-                    } else {
-                        LOG_INFO("Stream skipped: url empty or no itag");
-                    }
-                    
-                    fmt_len = 0;
+    // Extract signature if present
+    if (out_sig) {
+        const char *sig_start = strstr(cipher_text, "sig=");
+        if (!sig_start) sig_start = strstr(cipher_text, "s=");
+        if (sig_start) {
+            sig_start = strchr(sig_start, '=');
+            if (sig_start) {
+                sig_start++;
+                const char *sig_end = strchr(sig_start, '&');
+                if (sig_end) {
+                    size_t len = sig_end - sig_start;
+                    if (len >= out_sig_len) len = out_sig_len - 1;
+                    strncpy(out_sig, sig_start, len);
+                    out_sig[len] = '\0';
+                } else {
+                    strncpy(out_sig, sig_start, out_sig_len - 1);
+                    out_sig[out_sig_len - 1] = '\0';
                 }
             }
         }
-        
-        if (brace_depth > 0 && fmt_len < sizeof(format_buf) - 1) {
-            format_buf[fmt_len++] = *p;
-        }
-        
-        if (!escape && *p == '"') {
-            in_string = !in_string;
-        } else if (!escape && *p == '\\') {
-            escape = true;
-        } else {
-            escape = false;
-        }
-        
-        p++;
     }
     
-    LOG_INFO("Parsed %d streams from player response", count);
+    return out_url[0] != '\0';
+}
+
+// Parse a single format object using cJSON
+static void parse_format_object(cJSON *format, MediaStream *stream) {
+    if (!format || !stream) return;
+    
+    memset(stream, 0, sizeof(MediaStream));
+    
+    // Get itag
+    cJSON *itag = cJSON_GetObjectItemCaseSensitive(format, "itag");
+    if (cJSON_IsNumber(itag)) {
+        stream->itag = itag->valueint;
+    }
+    
+    // Get mimeType
+    cJSON *mime = cJSON_GetObjectItemCaseSensitive(format, "mimeType");
+    if (cJSON_IsString(mime)) {
+        strncpy(stream->mime_type, mime->valuestring, sizeof(stream->mime_type) - 1);
+    }
+    
+    // Get width/height
+    cJSON *width = cJSON_GetObjectItemCaseSensitive(format, "width");
+    if (cJSON_IsNumber(width)) {
+        stream->width = width->valueint;
+    }
+    
+    cJSON *height = cJSON_GetObjectItemCaseSensitive(format, "height");
+    if (cJSON_IsNumber(height)) {
+        stream->height = height->valueint;
+    }
+    
+    // Get qualityLabel
+    cJSON *quality = cJSON_GetObjectItemCaseSensitive(format, "qualityLabel");
+    if (cJSON_IsString(quality)) {
+        strncpy(stream->quality, quality->valuestring, sizeof(stream->quality) - 1);
+    }
+    
+    // Try to get URL directly
+    cJSON *url = cJSON_GetObjectItemCaseSensitive(format, "url");
+    if (cJSON_IsString(url)) {
+        strncpy(stream->url, url->valuestring, sizeof(stream->url) - 1);
+        stream->has_cipher = false;
+    } else {
+        // Try signatureCipher
+        cJSON *cipher = cJSON_GetObjectItemCaseSensitive(format, "signatureCipher");
+        if (!cipher) {
+            cipher = cJSON_GetObjectItemCaseSensitive(format, "cipher");
+        }
+        if (cJSON_IsString(cipher)) {
+            char decoded_url[2048];
+            char sig[512];
+            if (parse_signature_cipher(cipher->valuestring, decoded_url, sizeof(decoded_url), 
+                                        sig, sizeof(sig))) {
+                strncpy(stream->url, decoded_url, sizeof(stream->url) - 1);
+                stream->has_cipher = true;
+                LOG_INFO("Parsed cipher for itag=%d, has sig=%s", stream->itag, sig[0] ? "yes" : "no");
+            }
+        }
+    }
+    
+    LOG_INFO("Parsed stream: itag=%d, url=%.50s%s, mime=%s, has_cipher=%d", 
+             stream->itag, 
+             stream->url[0] ? stream->url : "(empty)",
+             strlen(stream->url) > 50 ? "..." : "",
+             stream->mime_type[0] ? stream->mime_type : "(empty)",
+             stream->has_cipher);
+}
+
+// Parse ytInitialPlayerResponse using cJSON
+static int parse_yt_player_response(const char *json, MediaStream *streams, int max_streams) {
+    if (!json || !streams || max_streams <= 0) return 0;
+    
+    LOG_INFO("Parsing player response with cJSON (%zu bytes)", strlen(json));
+    
+    cJSON *root = cJSON_Parse(json);
+    if (!root) {
+        const char *error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr) {
+            LOG_ERROR("cJSON parse error at: %.50s", error_ptr);
+        }
+        return 0;
+    }
+    
+    // Navigate to streamingData
+    cJSON *streaming_data = cJSON_GetObjectItemCaseSensitive(root, "streamingData");
+    if (!streaming_data) {
+        LOG_WARN("No streamingData found in player response");
+        cJSON_Delete(root);
+        return 0;
+    }
+    
+    int count = 0;
+    
+    // Parse formats array
+    cJSON *formats = cJSON_GetObjectItemCaseSensitive(streaming_data, "formats");
+    if (cJSON_IsArray(formats)) {
+        int format_count = cJSON_GetArraySize(formats);
+        LOG_INFO("Found %d formats", format_count);
+        
+        for (int i = 0; i < format_count && count < max_streams; i++) {
+            cJSON *format = cJSON_GetArrayItem(formats, i);
+            if (format) {
+                parse_format_object(format, &streams[count]);
+                if (streams[count].itag > 0) {
+                    count++;
+                }
+            }
+        }
+    }
+    
+    // Parse adaptiveFormats array
+    cJSON *adaptive_formats = cJSON_GetObjectItemCaseSensitive(streaming_data, "adaptiveFormats");
+    if (cJSON_IsArray(adaptive_formats)) {
+        int adaptive_count = cJSON_GetArraySize(adaptive_formats);
+        LOG_INFO("Found %d adaptive formats", adaptive_count);
+        
+        for (int i = 0; i < adaptive_count && count < max_streams; i++) {
+            cJSON *format = cJSON_GetArrayItem(adaptive_formats, i);
+            if (format) {
+                parse_format_object(format, &streams[count]);
+                if (streams[count].itag > 0) {
+                    count++;
+                }
+            }
+        }
+    }
+    
+    cJSON_Delete(root);
+    
+    LOG_INFO("Parsed %d total streams", count);
     return count;
+}
+
+// Extract video title from ytInitialPlayerResponse using cJSON
+static char* extract_video_title(const char *player_response) {
+    if (!player_response) return NULL;
+    
+    cJSON *root = cJSON_Parse(player_response);
+    if (!root) return NULL;
+    
+    char *title = NULL;
+    
+    // Try videoDetails.title
+    cJSON *video_details = cJSON_GetObjectItemCaseSensitive(root, "videoDetails");
+    if (video_details) {
+        cJSON *title_obj = cJSON_GetObjectItemCaseSensitive(video_details, "title");
+        if (cJSON_IsString(title_obj)) {
+            title = strdup(title_obj->valuestring);
+        }
+    }
+    
+    cJSON_Delete(root);
+    return title;
 }
 
 // Extract ytInitialPlayerResponse from HTML
@@ -298,30 +372,6 @@ static char* extract_yt_player_response(const char *html) {
     }
     
     return NULL;
-}
-
-// Extract video title from ytInitialPlayerResponse
-static char* extract_video_title(const char *player_response) {
-    if (!player_response) return NULL;
-    
-    const char *title_field = strstr(player_response, "\"title\"");
-    if (!title_field) return NULL;
-    
-    title_field = strchr(title_field, '"');
-    if (title_field) title_field = strchr(title_field + 1, '"');
-    if (!title_field) return NULL;
-    
-    title_field++;
-    const char *title_end = strchr(title_field, '"');
-    if (!title_end) return NULL;
-    
-    size_t len = title_end - title_field;
-    char *title = malloc(len + 1);
-    if (title) {
-        strncpy(title, title_field, len);
-        title[len] = '\0';
-    }
-    return title;
 }
 
 // Extract all script URLs from HTML
@@ -646,7 +696,7 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
     
     LOG_INFO("Extracted player response: %zu bytes", strlen(player_response));
     
-    // Parse streams from player response
+    // Parse streams from player response using cJSON
     int stream_count = parse_yt_player_response(player_response, streams, max_streams);
     
     if (stream_count == 0) {
@@ -661,7 +711,9 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
     // Check if any streams need signature decryption
     bool needs_decryption = false;
     for (int i = 0; i < stream_count; i++) {
-        if (strstr(streams[i].url, "&s=") || strstr(streams[i].url, "&sig=") ||
+        if (streams[i].has_cipher || 
+            strstr(streams[i].url, "&s=") || 
+            strstr(streams[i].url, "&sig=") ||
             strstr(streams[i].url, "signatureCipher=")) {
             needs_decryption = true;
             break;
@@ -719,9 +771,9 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
         return false;
     }
     
-    // Parse streams from player response
-    MediaStream streams[16];
-    int stream_count = parse_yt_player_response(player_response, streams, 16);
+    // Parse streams from player response using cJSON
+    MediaStream streams[32];
+    int stream_count = parse_yt_player_response(player_response, streams, 32);
     free(player_response);
     
     if (stream_count == 0) {
@@ -732,13 +784,35 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
         return false;
     }
     
-    // Find the best stream (prefer video with highest quality)
-    MediaStream *best = &streams[0];
-    for (int i = 1; i < stream_count; i++) {
-        // Prefer higher resolution
-        if (streams[i].height > best->height) {
-            best = &streams[i];
+    // Find the best stream (prefer video with highest quality and direct URL)
+    MediaStream *best = NULL;
+    
+    // First, try to find a stream without cipher (direct URL)
+    for (int i = 0; i < stream_count; i++) {
+        if (streams[i].url[0] && !streams[i].has_cipher) {
+            // Prefer higher resolution
+            if (!best || streams[i].height > best->height) {
+                best = &streams[i];
+            }
         }
+    }
+    
+    // If no direct URL found, use first available with URL
+    if (!best) {
+        for (int i = 0; i < stream_count; i++) {
+            if (streams[i].url[0]) {
+                best = &streams[i];
+                break;
+            }
+        }
+    }
+    
+    if (!best) {
+        if (err && errLen > 0) {
+            strncpy(err, "No valid stream URLs found", errLen - 1);
+            err[errLen - 1] = '\0';
+        }
+        return false;
     }
     
     // Copy to output
@@ -746,6 +820,9 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
     outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
     strncpy(outCandidate->mime, best->mime_type, sizeof(outCandidate->mime) - 1);
     outCandidate->mime[sizeof(outCandidate->mime) - 1] = '\0';
+    
+    LOG_INFO("Selected best stream: itag=%d, height=%d, has_cipher=%d, url=%.50s...",
+             best->itag, best->height, best->has_cipher, best->url);
     
     return true;
 }
