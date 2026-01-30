@@ -152,6 +152,15 @@ CJSON_PUBLIC(cJSON *) cJSON_ParseWithLength(const char *value, size_t buffer_len
 CJSON_PUBLIC(cJSON *) cJSON_ParseWithOpts(const char *value, const char **return_parse_end, cJSON_bool require_null_terminated);
 CJSON_PUBLIC(cJSON *) cJSON_ParseWithLengthOpts(const char *value, size_t buffer_length, const char **return_parse_end, cJSON_bool require_null_terminated);
 
+/* Iterative (non-recursive) JSON parser for deeply nested documents.
+ * These functions use a heap-based stack instead of recursion, allowing
+ * parsing of JSON with arbitrary nesting depth (up to STACK_MAX_CAPACITY).
+ * Use these when parsing JSON from sources like YouTube that may have
+ * deeply nested structures that could cause stack overflow with the
+ * standard recursive parser. */
+CJSON_PUBLIC(cJSON *) cJSON_Parse_iterative(const char *value);
+CJSON_PUBLIC(cJSON *) cJSON_ParseWithOpts_iterative(const char *value, const char **return_parse_end, cJSON_bool require_null_terminated);
+
 /* Render a cJSON entity to text for transfer/storage. */
 CJSON_PUBLIC(char *) cJSON_Print(const cJSON *item);
 /* Render a cJSON entity to text for transfer/storage without any formatting. */

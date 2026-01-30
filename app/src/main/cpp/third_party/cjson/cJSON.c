@@ -3127,3 +3127,416 @@ CJSON_PUBLIC(void) cJSON_free(void *object)
 {
     global_hooks.deallocate(object);
 }
+
+
+/* ============================================================================
+ * Iterative JSON Parser Extension
+ * 
+ * This extension provides an iterative (non-recursive) JSON parser that uses
+ * a heap-allocated stack instead of the C call stack. This allows parsing
+ * deeply nested JSON documents without stack overflow.
+ * 
+ * Use cJSON_ParseWithOpts_iterative() or cJSON_Parse_iterative() as drop-in
+ * replacements for cJSON_ParseWithOpts() and cJSON_Parse() when parsing
+ * deeply nested JSON.
+ * ============================================================================ */
+
+/* Stack frame for iterative parsing */
+typedef struct {
+    cJSON *container;        /* The array or object being parsed */
+    cJSON *current;          /* Current element in container */
+    cJSON *new_item;         /* Item being parsed */
+    int state;               /* Parser state */
+    int is_object;           /* 1 if object, 0 if array */
+    int expect_key;          /* For objects: 1=expecting key, 0=expecting value */
+} cJSON_ParseFrame;
+
+/* Parser states */
+enum {
+    STATE_INIT,              /* Initial state */
+    STATE_PARSE_VALUE,       /* Need to parse a value */
+    STATE_CONTAINER_START,   /* Just entered a container */
+    STATE_AFTER_VALUE,       /* Just parsed a value, expect , or closing */
+    STATE_OBJECT_COLON,      /* In object, parsed key, expect : */
+    STATE_DONE               /* Parsing complete */
+};
+
+/* Simple dynamic array for stack */
+typedef struct {
+    cJSON_ParseFrame *frames;
+    int count;
+    int capacity;
+} cJSON_ParseStack;
+
+#define STACK_INITIAL_CAPACITY 256
+#define STACK_MAX_CAPACITY 1000000  /* Max nesting depth - 1 million for YouTube's deeply nested JSON */
+
+/* Initialize stack */
+static cJSON_bool parse_stack_init(cJSON_ParseStack *stack)
+{
+    stack->frames = (cJSON_ParseFrame*)global_hooks.allocate(sizeof(cJSON_ParseFrame) * STACK_INITIAL_CAPACITY);
+    if (!stack->frames) return false;
+    stack->count = 0;
+    stack->capacity = STACK_INITIAL_CAPACITY;
+    return true;
+}
+
+/* Push frame onto stack */
+static cJSON_ParseFrame* parse_stack_push(cJSON_ParseStack *stack)
+{
+    if (stack->count >= STACK_MAX_CAPACITY) {
+        return NULL;  /* Too deeply nested */
+    }
+    
+    if (stack->count >= stack->capacity) {
+        /* Grow stack */
+        int new_capacity = stack->capacity * 2;
+        if (new_capacity > STACK_MAX_CAPACITY) {
+            new_capacity = STACK_MAX_CAPACITY;
+        }
+        cJSON_ParseFrame *new_frames = (cJSON_ParseFrame*)global_hooks.reallocate(stack->frames, sizeof(cJSON_ParseFrame) * new_capacity);
+        if (!new_frames) return NULL;
+        stack->frames = new_frames;
+        stack->capacity = new_capacity;
+    }
+    
+    memset(&stack->frames[stack->count], 0, sizeof(cJSON_ParseFrame));
+    return &stack->frames[stack->count++];
+}
+
+/* Pop frame from stack */
+static void parse_stack_pop(cJSON_ParseStack *stack)
+{
+    if (stack->count > 0) {
+        stack->count--;
+    }
+}
+
+/* Get top frame */
+static cJSON_ParseFrame* parse_stack_top(cJSON_ParseStack *stack)
+{
+    if (stack->count > 0) {
+        return &stack->frames[stack->count - 1];
+    }
+    return NULL;
+}
+
+/* Free stack */
+static void parse_stack_free(cJSON_ParseStack *stack)
+{
+    if (stack->frames) {
+        global_hooks.deallocate(stack->frames);
+        stack->frames = NULL;
+    }
+    stack->count = 0;
+    stack->capacity = 0;
+}
+
+/* Attach item to container's linked list */
+static void container_add_item(cJSON *container, cJSON *item, cJSON **current)
+{
+    if (container->child == NULL) {
+        container->child = item;
+        *current = item;
+    } else {
+        (*current)->next = item;
+        item->prev = *current;
+        *current = item;
+    }
+}
+
+/* Fix circular links in container (head->prev = tail) */
+static void container_close(cJSON *container, cJSON *current)
+{
+    if (container && container->child && current) {
+        container->child->prev = current;
+    }
+}
+
+/* Main iterative parser - parse a value without recursion */
+static cJSON_bool parse_value_iterative(cJSON * const item, parse_buffer * const input_buffer);
+
+static cJSON_bool parse_value_iterative(cJSON * const item, parse_buffer * const input_buffer)
+{
+    cJSON_ParseStack stack;
+    cJSON_ParseFrame *frame = NULL;
+    cJSON *current_item = item;
+    int state = STATE_PARSE_VALUE;
+    cJSON_bool result = false;
+    
+    if (!parse_stack_init(&stack)) {
+        return false;
+    }
+    
+    while (1) {
+        buffer_skip_whitespace(input_buffer);
+        
+        switch (state) {
+            case STATE_PARSE_VALUE: {
+                if (cannot_access_at_index(input_buffer, 0)) {
+                    goto fail;
+                }
+                
+                unsigned char ch = buffer_at_offset(input_buffer)[0];
+                
+                /* Parse primitives directly */
+                if (ch == '\"') {
+                    if (!parse_string(current_item, input_buffer)) {
+                        goto fail;
+                    }
+                    state = STATE_AFTER_VALUE;
+                }
+                else if ((ch == '-') || ((ch >= '0') && (ch <= '9'))) {
+                    if (!parse_number(current_item, input_buffer)) {
+                        goto fail;
+                    }
+                    state = STATE_AFTER_VALUE;
+                }
+                else if (can_read(input_buffer, 4) && strncmp((const char*)buffer_at_offset(input_buffer), "null", 4) == 0) {
+                    current_item->type = cJSON_NULL;
+                    input_buffer->offset += 4;
+                    state = STATE_AFTER_VALUE;
+                }
+                else if (can_read(input_buffer, 4) && strncmp((const char*)buffer_at_offset(input_buffer), "true", 4) == 0) {
+                    current_item->type = cJSON_True;
+                    current_item->valueint = 1;
+                    input_buffer->offset += 4;
+                    state = STATE_AFTER_VALUE;
+                }
+                else if (can_read(input_buffer, 5) && strncmp((const char*)buffer_at_offset(input_buffer), "false", 5) == 0) {
+                    current_item->type = cJSON_False;
+                    input_buffer->offset += 5;
+                    state = STATE_AFTER_VALUE;
+                }
+                else if (ch == '[') {
+                    /* Start array - push frame and continue */
+                    current_item->type = cJSON_Array;
+                    input_buffer->offset++;
+                    
+                    buffer_skip_whitespace(input_buffer);
+                    if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == ']') {
+                        /* Empty array */
+                        input_buffer->offset++;
+                        state = STATE_AFTER_VALUE;
+                        break;
+                    }
+                    
+                    /* Push frame for array */
+                    frame = parse_stack_push(&stack);
+                    if (!frame) goto fail;
+                    
+                    frame->container = current_item;
+                    frame->is_object = 0;
+                    frame->expect_key = 0;
+                    
+                    /* Create first element */
+                    frame->new_item = cJSON_New_Item(&global_hooks);
+                    if (!frame->new_item) goto fail;
+                    container_add_item(frame->container, frame->new_item, &frame->current);
+                    current_item = frame->new_item;
+                    /* Stay in STATE_PARSE_VALUE to parse the element */
+                }
+                else if (ch == '{') {
+                    /* Start object - push frame and continue */
+                    current_item->type = cJSON_Object;
+                    input_buffer->offset++;
+                    
+                    buffer_skip_whitespace(input_buffer);
+                    if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == '}') {
+                        /* Empty object */
+                        input_buffer->offset++;
+                        state = STATE_AFTER_VALUE;
+                        break;
+                    }
+                    
+                    /* Push frame for object */
+                    frame = parse_stack_push(&stack);
+                    if (!frame) goto fail;
+                    
+                    frame->container = current_item;
+                    frame->is_object = 1;
+                    frame->expect_key = 1;
+                    
+                    /* Create first element */
+                    frame->new_item = cJSON_New_Item(&global_hooks);
+                    if (!frame->new_item) goto fail;
+                    container_add_item(frame->container, frame->new_item, &frame->current);
+                    current_item = frame->new_item;
+                    
+                    /* Expecting key (string) first */
+                    /* Stay in STATE_PARSE_VALUE to parse the key string */
+                }
+                else {
+                    /* Invalid character */
+                    goto fail;
+                }
+                break;
+            }
+            
+            case STATE_AFTER_VALUE: {
+                frame = parse_stack_top(&stack);
+                
+                if (frame == NULL) {
+                    /* Root level - we're done */
+                    result = true;
+                    goto done;
+                }
+                
+                buffer_skip_whitespace(input_buffer);
+                
+                if (frame->is_object) {
+                    if (frame->expect_key) {
+                        /* Just finished parsing a value in object, now expect , or } */
+                        if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == ',') {
+                            input_buffer->offset++;
+                            /* Next element */
+                            frame->new_item = cJSON_New_Item(&global_hooks);
+                            if (!frame->new_item) goto fail;
+                            container_add_item(frame->container, frame->new_item, &frame->current);
+                            current_item = frame->new_item;
+                            state = STATE_PARSE_VALUE;
+                        }
+                        else if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == '}') {
+                            /* End of object */
+                            input_buffer->offset++;
+                            container_close(frame->container, frame->current);
+                            current_item = frame->container;
+                            parse_stack_pop(&stack);
+                            /* Stay in STATE_AFTER_VALUE to handle outer container */
+                        }
+                        else {
+                            goto fail;  /* Expected , or } */
+                        }
+                    } else {
+                        /* Just parsed key (string), expect : */
+                        if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == ':') {
+                            input_buffer->offset++;
+                            frame->expect_key = 1;  /* Next we expect a value, then key again */
+                            /* Move key from valuestring to string */
+                            frame->current->string = frame->current->valuestring;
+                            frame->current->valuestring = NULL;
+                            
+                            /* Parse value */
+                            state = STATE_PARSE_VALUE;
+                        }
+                        else {
+                            goto fail;  /* Expected : */
+                        }
+                    }
+                }
+                else {
+                    /* In array */
+                    if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == ',') {
+                        input_buffer->offset++;
+                        /* Next element */
+                        frame->new_item = cJSON_New_Item(&global_hooks);
+                        if (!frame->new_item) goto fail;
+                        container_add_item(frame->container, frame->new_item, &frame->current);
+                        current_item = frame->new_item;
+                        state = STATE_PARSE_VALUE;
+                    }
+                    else if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == ']') {
+                        /* End of array */
+                        input_buffer->offset++;
+                        container_close(frame->container, frame->current);
+                        current_item = frame->container;
+                        parse_stack_pop(&stack);
+                        /* Stay in STATE_AFTER_VALUE to handle outer container */
+                    }
+                    else {
+                        goto fail;  /* Expected , or ] */
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+done:
+    parse_stack_free(&stack);
+    return result;
+
+fail:
+    result = false;
+    goto done;
+}
+
+/* Public API for iterative parsing */
+CJSON_PUBLIC(cJSON *) cJSON_ParseWithOpts_iterative(const char *value, const char **return_parse_end, cJSON_bool require_null_terminated)
+{
+    parse_buffer buffer = { 0, 0, 0, 0, { 0, 0, 0 } };
+    cJSON *item = NULL;
+    
+    /* reset error position */
+    global_error.json = NULL;
+    global_error.position = 0;
+    
+    if (value == NULL)
+    {
+        goto fail;
+    }
+    
+    buffer.content = (const unsigned char*)value;
+    buffer.length = strlen(value) + sizeof("");
+    buffer.offset = 0;
+    buffer.hooks = global_hooks;
+    
+    item = cJSON_New_Item(&global_hooks);
+    if (item == NULL)
+    {
+        goto fail;
+    }
+    
+    if (!parse_value_iterative(item, buffer_skip_whitespace(skip_utf8_bom(&buffer))))
+    {
+        goto fail;
+    }
+    
+    /* if we require null-terminated JSON without appended garbage, skip and then check for a null terminator */
+    if (require_null_terminated)
+    {
+        buffer_skip_whitespace(&buffer);
+        if ((buffer.offset >= buffer.length) || buffer_at_offset(&buffer)[0] != '\0')
+        {
+            goto fail;
+        }
+    }
+    
+    if (return_parse_end)
+    {
+        *return_parse_end = (const char*)buffer_at_offset(&buffer);
+    }
+    
+    return item;
+    
+fail:
+    if (item != NULL)
+    {
+        cJSON_Delete(item);
+    }
+    
+    if (value != NULL)
+    {
+        error local_error;
+        local_error.json = (const unsigned char*)value;
+        local_error.position = 0;
+        
+        if (buffer.offset < buffer.length)
+        {
+            local_error.position = buffer.offset;
+        }
+        else if (buffer.length > 0)
+        {
+            local_error.position = buffer.length - 1;
+        }
+        
+        global_error = local_error;
+    }
+    
+    return NULL;
+}
+
+CJSON_PUBLIC(cJSON *) cJSON_Parse_iterative(const char *value)
+{
+    return cJSON_ParseWithOpts_iterative(value, NULL, false);
+}
