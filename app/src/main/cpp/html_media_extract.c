@@ -231,7 +231,7 @@ static int parse_yt_player_response(const char *json, MediaStream *streams, int 
     
     LOG_INFO("Parsing player response with cJSON (%zu bytes)", strlen(json));
     
-    cJSON *root = cJSON_Parse_iterative(json);
+    cJSON *root = cJSON_Parse(json);
     if (!root) {
         const char *error_ptr = cJSON_GetErrorPtr();
         if (error_ptr) {
@@ -294,7 +294,7 @@ static int parse_yt_player_response(const char *json, MediaStream *streams, int 
 static char* extract_video_title(const char *player_response) {
     if (!player_response) return NULL;
     
-    cJSON *root = cJSON_Parse_iterative(player_response);
+    cJSON *root = cJSON_Parse(player_response);
     if (!root) return NULL;
     
     char *title = NULL;

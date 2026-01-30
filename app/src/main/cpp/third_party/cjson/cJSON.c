@@ -3386,9 +3386,27 @@ static cJSON_bool parse_value_iterative(cJSON * const item, parse_buffer * const
                 
                 if (frame->is_object) {
                     if (frame->expect_key) {
+                        /* Just parsed key (string), expect : */
+                        if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == ':') {
+                            input_buffer->offset++;
+                            /* Move key from valuestring to string */
+                            frame->current->string = frame->current->valuestring;
+                            frame->current->valuestring = NULL;
+                            /* Now expecting the value for this key */
+                            frame->expect_key = 0;
+                            
+                            /* Parse value */
+                            state = STATE_PARSE_VALUE;
+                        }
+                        else {
+                            goto fail;  /* Expected : */
+                        }
+                    } else {
                         /* Just finished parsing a value in object, now expect , or } */
                         if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == ',') {
                             input_buffer->offset++;
+                            /* Next element - expect a key first */
+                            frame->expect_key = 1;
                             /* Next element */
                             frame->new_item = cJSON_New_Item(&global_hooks);
                             if (!frame->new_item) goto fail;
@@ -3406,21 +3424,6 @@ static cJSON_bool parse_value_iterative(cJSON * const item, parse_buffer * const
                         }
                         else {
                             goto fail;  /* Expected , or } */
-                        }
-                    } else {
-                        /* Just parsed key (string), expect : */
-                        if (can_access_at_index(input_buffer, 0) && buffer_at_offset(input_buffer)[0] == ':') {
-                            input_buffer->offset++;
-                            frame->expect_key = 1;  /* Next we expect a value, then key again */
-                            /* Move key from valuestring to string */
-                            frame->current->string = frame->current->valuestring;
-                            frame->current->valuestring = NULL;
-                            
-                            /* Parse value */
-                            state = STATE_PARSE_VALUE;
-                        }
-                        else {
-                            goto fail;  /* Expected : */
                         }
                     }
                 }
