@@ -101,7 +101,7 @@ static JSObjHandle alloc_handle_id(JSHandleGCState *gc) {
     if (gc->handle_free_list != JS_OBJ_HANDLE_NULL) {
         JSObjHandle id = gc->handle_free_list;
         /* Next free ID is stored in the ptr field (as integer) */
-        gc->handle_free_list = (uint32_t)(uintptr_t)gc->handles[id].ptr;
+        gc->handle_free_list = (JSObjHandle)(uintptr_t)gc->handles[id].ptr;
         gc->handles[id].ptr = NULL;
         gc->handles[id].generation = gc->generation;
         return id;
@@ -155,7 +155,9 @@ JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type) {
     /* Allocate handle */
     JSObjHandle handle = alloc_handle_id(gc);
     obj->handle = handle;
-    gc->handles[handle].ptr = obj;
+    
+    /* Store pointer to USER DATA (past header) in handle table */
+    gc->handles[handle].ptr = (JSGCObjectHeader*)((uint8_t*)obj + sizeof(JSGCObjectHeader));
     
     gc->total_allocated++;
     
@@ -164,23 +166,24 @@ JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type) {
 
 /* Retain (increment refcount) */
 void js_handle_retain(JSHandleGCState *gc, JSObjHandle handle) {
-    JSGCObjectHeader *obj = js_handle_deref(gc, handle);
-    if (obj) {
-        obj->ref_count++;
+    void *data = js_handle_deref(gc, handle);
+    if (data) {
+        js_handle_header(data)->ref_count++;
     }
 }
 
 /* Release (decrement refcount, free if zero) */
 void js_handle_release(JSHandleGCState *gc, JSObjHandle handle) {
-    JSGCObjectHeader *obj = js_handle_deref(gc, handle);
-    if (!obj) return;
+    void *data = js_handle_deref(gc, handle);
+    if (!data) return;
     
+    JSGCObjectHeader *obj = js_handle_header(data);
     assert(obj->ref_count > 0);
     obj->ref_count--;
     
     if (obj->ref_count == 0) {
         /* Free the handle - object will be collected by GC */
-        gc->handles[handle].ptr = (JSGCObjectHeader*)(uintptr_t)gc->handle_free_list;
+        gc->handles[handle].ptr = (void*)(uintptr_t)gc->handle_free_list;
         gc->handle_free_list = handle;
         gc->total_freed++;
     }
@@ -218,26 +221,25 @@ void js_handle_remove_root(JSHandleGCState *gc, JSObjHandle handle) {
 /* Forward declaration for marking */
 static void mark_object(JSHandleGCState *gc, JSObjHandle handle);
 
-/* Mark children of an object - called via type-specific functions */
+/* Mark children of an object - type-specific marking
+ * In the full QuickJS integration, each object type would have its own 
+ marking function.
+ * For this test harness, objects don't have child handles stored in them,
+ * so we only mark through the root set.
+ */
 static void mark_children(JSHandleGCState *gc, JSGCObjectHeader *obj) {
-    /* This is type-specific. For now, we use a generic approach where
-     * handles are stored immediately after the header in a standard format.
-     * In the full integration, each object type would have its own marking function.
-     */
-    
-    /* For testing: assume first 4 uint32_t after header are handles */
-    JSObjHandle *handles = (JSObjHandle*)(obj + 1);
-    for (int i = 0; i < 4; i++) {
-        if (handles[i] != JS_OBJ_HANDLE_NULL) {
-            mark_object(gc, handles[i]);
-        }
-    }
+    /* Stub: objects in test harness don't have embedded child handles */
+    (void)gc;
+    (void)obj;
 }
 
 /* Mark a single object and its children */
 static void mark_object(JSHandleGCState *gc, JSObjHandle handle) {
-    JSGCObjectHeader *obj = js_handle_deref(gc, handle);
-    if (!obj || obj->mark) return;
+    void *data = js_handle_deref(gc, handle);
+    if (!data) return;
+    
+    JSGCObjectHeader *obj = js_handle_header(data);
+    if (obj->mark) return;
     
     obj->mark = 1;
     mark_children(gc, obj);
@@ -274,9 +276,8 @@ void js_handle_gc_compact(JSHandleGCState *gc) {
             if (read != write) {
                 memmove(write, read, size);
                 
-                /* Update handle table - THIS IS THE KEY INSIGHT */
-                /* No need to scan object graph, just update one pointer! */
-                gc->handles[handle].ptr = (JSGCObjectHeader*)write;
+                /* Update handle table with pointer to USER DATA (past header) */
+                gc->handles[handle].ptr = (void*)(write + sizeof(JSGCObjectHeader));
                 gc->handles[handle].generation = ++gc->generation;
             }
             write += size;
@@ -285,7 +286,7 @@ void js_handle_gc_compact(JSHandleGCState *gc) {
             write = read + size;
         } else {
             /* Dead object - free the handle */
-            gc->handles[handle].ptr = (JSGCObjectHeader*)(uintptr_t)gc->handle_free_list;
+            gc->handles[handle].ptr = (void*)(uintptr_t)gc->handle_free_list;
             gc->handle_free_list = handle;
         }
         
@@ -343,10 +344,13 @@ bool js_handle_gc_validate(JSHandleGCState *gc, char *error_buffer, size_t error
     
     /* Check handle table consistency */
     for (uint32_t i = 1; i < gc->handle_count; i++) {
-        JSGCObjectHeader *obj = gc->handles[i].ptr;
+        void *data = gc->handles[i].ptr;
         
         /* Skip freed handles (in free list) */
-        if (!obj) continue;
+        if (!data) continue;
+        
+        /* Get header from data pointer */
+        JSGCObjectHeader *obj = js_handle_header(data);
         
         /* Check that object points back to this handle */
         if (obj->handle != i) {

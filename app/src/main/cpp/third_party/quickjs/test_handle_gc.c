@@ -64,14 +64,18 @@ TEST(basic_allocation) {
     ASSERT_NE(h1, h2);
     ASSERT_NE(h2, h3);
     
-    /* Verify dereferencing */
-    JSGCObjectHeader *obj1 = js_handle_deref(&gc, h1);
-    JSGCObjectHeader *obj2 = js_handle_deref(&gc, h2);
-    JSGCObjectHeader *obj3 = js_handle_deref(&gc, h3);
+    /* Verify dereferencing - js_handle_deref returns user data, get header via js_handle_header */
+    void *data1 = js_handle_deref(&gc, h1);
+    void *data2 = js_handle_deref(&gc, h2);
+    void *data3 = js_handle_deref(&gc, h3);
     
-    ASSERT_NOT_NULL(obj1);
-    ASSERT_NOT_NULL(obj2);
-    ASSERT_NOT_NULL(obj3);
+    ASSERT_NOT_NULL(data1);
+    ASSERT_NOT_NULL(data2);
+    ASSERT_NOT_NULL(data3);
+    
+    JSGCObjectHeader *obj1 = js_handle_header(data1);
+    JSGCObjectHeader *obj2 = js_handle_header(data2);
+    JSGCObjectHeader *obj3 = js_handle_header(data3);
     
     ASSERT_EQ(obj1->ref_count, 1);
     ASSERT_EQ(obj2->ref_count, 1);
@@ -90,21 +94,21 @@ TEST(refcounting) {
     
     JSObjHandle h = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
     ASSERT_NOT_NULL(js_handle_deref(&gc, h));
-    ASSERT_EQ(js_handle_deref(&gc, h)->ref_count, 1);
+    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 1);
     
     /* Retain multiple times */
     js_handle_retain(&gc, h);
-    ASSERT_EQ(js_handle_deref(&gc, h)->ref_count, 2);
+    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 2);
     
     js_handle_retain(&gc, h);
-    ASSERT_EQ(js_handle_deref(&gc, h)->ref_count, 3);
+    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 3);
     
     /* Release */
     js_handle_release(&gc, h);
-    ASSERT_EQ(js_handle_deref(&gc, h)->ref_count, 2);
+    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 2);
     
     js_handle_release(&gc, h);
-    ASSERT_EQ(js_handle_deref(&gc, h)->ref_count, 1);
+    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 1);
     
     /* Final release - object should be freed (but memory not reclaimed until GC) */
     js_handle_release(&gc, h);
@@ -245,8 +249,8 @@ TEST(gc_mark_basic) {
     js_handle_gc_mark(&gc);
     
     /* h1 should be marked, h2 should not */
-    ASSERT_EQ(js_handle_deref(&gc, h1)->mark, 1);
-    ASSERT_EQ(js_handle_deref(&gc, h2)->mark, 0);
+    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h1))->mark, 1);
+    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h2))->mark, 0);
     
     js_handle_gc_free(&gc);
 }
@@ -267,22 +271,24 @@ TEST(gc_compact_basic) {
     (void)h2;  /* Not used, will be GC'd */
     
     /* Get pointer before GC */
-    JSGCObjectHeader *obj_before = js_handle_deref(&gc, h1);
+    void *data_before = js_handle_deref(&gc, h1);
+    JSGCObjectHeader *obj_before = js_handle_header(data_before);
     uintptr_t ptr_before = (uintptr_t)obj_before;
     
     /* Run GC */
     js_handle_gc_run(&gc);
     
     /* Get pointer after GC */
-    JSGCObjectHeader *obj_after = js_handle_deref(&gc, h1);
+    void *data_after = js_handle_deref(&gc, h1);
+    JSGCObjectHeader *obj_after = js_handle_header(data_after);
     uintptr_t ptr_after = (uintptr_t)obj_after;
     
     /* Object should still exist */
-    ASSERT_NOT_NULL(obj_after);
+    ASSERT_NOT_NULL(data_after);
     ASSERT_EQ(obj_after->handle, h1);
     
     /* Object should be at base of stack now (compacted) */
-    ASSERT_EQ(ptr_after, (uintptr_t)base + sizeof(JSGCObjectHeader));
+    ASSERT_EQ(ptr_after, (uintptr_t)base);
     
     /* Stack should be smaller now */
     size_t used_after = gc.stack.top - gc.stack.base;
@@ -306,22 +312,22 @@ TEST(gc_handle_table_update) {
     /* h2 is unrooted - will be freed */
     
     /* Record old pointers */
-    JSGCObjectHeader *old1 = js_handle_deref(&gc, h1);
-    JSGCObjectHeader *old3 = js_handle_deref(&gc, h3);
+    void *old1 = js_handle_deref(&gc, h1);
+    void *old3 = js_handle_deref(&gc, h3);
     
     /* Run GC */
     js_handle_gc_run(&gc);
     
     /* Get new pointers via handle table */
-    JSGCObjectHeader *new1 = js_handle_deref(&gc, h1);
-    JSGCObjectHeader *new3 = js_handle_deref(&gc, h3);
+    void *new1 = js_handle_deref(&gc, h1);
+    void *new3 = js_handle_deref(&gc, h3);
     
     /* Pointers should have changed (compaction) */
     ASSERT(new1 != old1 || new3 != old3);  /* At least one moved */
     
     /* But objects should still be valid */
-    ASSERT_EQ(new1->handle, h1);
-    ASSERT_EQ(new3->handle, h3);
+    ASSERT_EQ(js_handle_header(new1)->handle, h1);
+    ASSERT_EQ(js_handle_header(new3)->handle, h3);
     
     /* h2 should be freed */
     ASSERT_NULL(js_handle_deref(&gc, h2));
@@ -359,9 +365,9 @@ TEST(stress_many_allocations) {
     
     /* Check that even-numbered handles are still valid */
     for (int i = 0; i < N; i += 2) {
-        JSGCObjectHeader *obj = js_handle_deref(&gc, handles[i]);
-        ASSERT_NOT_NULL(obj);
-        ASSERT_EQ(obj->handle, handles[i]);
+        void *data = js_handle_deref(&gc, handles[i]);
+        ASSERT_NOT_NULL(data);
+        ASSERT_EQ(js_handle_header(data)->handle, handles[i]);
     }
     
     /* Check that odd-numbered handles are freed */
@@ -435,7 +441,7 @@ TEST(stress_gc_repeated) {
         
         /* Verify root still valid */
         ASSERT_NOT_NULL(js_handle_deref(&gc, root));
-        ASSERT_EQ(js_handle_deref(&gc, root)->handle, root);
+        ASSERT_EQ(js_handle_header(js_handle_deref(&gc, root))->handle, root);
         
         /* Remove root for next cycle */
         js_handle_remove_root(&gc, root);

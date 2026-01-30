@@ -39,9 +39,9 @@ typedef struct JSGCObjectHeader {
     uint8_t flags : 6;                /* Reserved */
 } JSGCObjectHeader;
 
-/* Handle table entry */
+/* Handle table entry - stores pointer to USER DATA (past header) */
 typedef struct JSHandleEntry {
-    JSGCObjectHeader *ptr;            /* Current object pointer */
+    void *ptr;                        /* Pointer to user data (past header) */
     uint32_t generation;              /* For debugging/validation */
 } JSHandleEntry;
 
@@ -85,8 +85,8 @@ JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type);
 void js_handle_release(JSHandleGCState *gc, JSObjHandle handle);
 void js_handle_retain(JSHandleGCState *gc, JSObjHandle handle);
 
-/* Dereference handle to pointer */
-static inline JSGCObjectHeader* js_handle_deref(JSHandleGCState *gc, JSObjHandle handle) {
+/* Dereference handle to user data pointer */
+static inline void* js_handle_deref(JSHandleGCState *gc, JSObjHandle handle) {
     if (__builtin_expect(handle == 0 || handle >= gc->handle_count, 0)) {
         return NULL;
     }
@@ -95,6 +95,12 @@ static inline JSGCObjectHeader* js_handle_deref(JSHandleGCState *gc, JSObjHandle
 
 /* Macro for type-safe dereference */
 #define JS_HANDLE_DEREF(gc, handle, type) ((type*)js_handle_deref(gc, handle))
+
+/* Get header from user data pointer (internal use) */
+static inline JSGCObjectHeader* js_handle_header(void *data_ptr) {
+    if (!data_ptr) return NULL;
+    return (JSGCObjectHeader*)((uint8_t*)data_ptr - sizeof(JSGCObjectHeader));
+}
 
 /* Stack allocation */
 void* js_mem_stack_alloc(JSMemStack *stack, size_t size);
