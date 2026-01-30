@@ -5,14 +5,17 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/tcp.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <android/log.h>
+#include <time.h>
 
 #define TLS_ERR_GENERIC -0x7000
 #define LOG_TAG "minimalvulkan"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // Perfect Chrome TLS fingerprint - beyond JA3
 // JA3: 771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-21,29-23-30-25-24,0
@@ -212,11 +215,25 @@ bool tls_client_connect(TlsClient *client, const char *host, const char *port,
         set_err(err, errLen, "TLS CA load failed", ret);
         return false;
     }
+    LOGI("Connecting to %s:%s...", host, port);
     ret = mbedtls_net_connect(&client->net, host, port, MBEDTLS_NET_PROTO_TCP);
     if (ret != 0) {
         set_err(err, errLen, "TLS connect failed", ret);
         return false;
     }
+    LOGI("TCP connected to %s:%s", host, port);
+    
+    // Set socket timeout for handshake and I/O
+    struct timeval tv;
+    tv.tv_sec = 30;  // 30 second timeout
+    tv.tv_usec = 0;
+    int sockfd = client->net.fd;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+    
+    // Disable TCP_NODELAY for better compatibility
+    int flag = 1;
+    setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (char*)&flag, sizeof(flag));
 
     // Configure perfect Android TCP stack simulation
     if (!configure_perfect_android_tcp_stack(&client->net, err, errLen)) {
@@ -286,12 +303,21 @@ bool tls_client_connect(TlsClient *client, const char *host, const char *port,
     }
     mbedtls_ssl_set_bio(&client->ssl, &client->net,
                         mbedtls_net_send, mbedtls_net_recv, NULL);
+    LOGI("Starting TLS handshake...");
     while ((ret = mbedtls_ssl_handshake(&client->ssl)) != 0) {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
             set_err(err, errLen, "TLS handshake failed", ret);
             return false;
         }
     }
+    LOGI("TLS handshake completed successfully");
+    
+    // Log negotiated TLS version and cipher for debugging
+    const char *tls_version = mbedtls_ssl_get_version(&client->ssl);
+    const char *cipher_name = mbedtls_ssl_get_ciphersuite(&client->ssl);
+    LOGI("TLS version: %s, Cipher: %s", tls_version ? tls_version : "unknown", 
+         cipher_name ? cipher_name : "unknown");
+    
     ret = (int)mbedtls_ssl_get_verify_result(&client->ssl);
     if (ret != 0) {
         set_err(err, errLen, "TLS verify failed", ret);
@@ -310,6 +336,14 @@ ssize_t tls_client_read(TlsClient *client, unsigned char *buf, size_t len) {
         ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
         ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
         return 0;
+    }
+    if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+        LOGI("TLS peer closed connection");
+        return 0;  // Graceful close, no more data
+    }
+    if (ret < 0) {
+        LOGE("TLS read error: %d", ret);
+        return ret;
     }
     return ret;
 }

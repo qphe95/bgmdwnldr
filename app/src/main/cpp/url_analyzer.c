@@ -4,6 +4,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <android/log.h>
+
+#define LOG_TAG "url_analyzer"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 static bool has_media_extension(const char *url) {
     const char *ext = strrchr(url, '.');
@@ -52,31 +57,44 @@ static void resolve_url(const char *baseUrl, const char *candidate,
 }
 
 bool url_analyze(const char *inputUrl, MediaUrl *outMedia, char *err, size_t errLen) {
+    LOGI("Starting URL analysis for: %.100s...", inputUrl);
+    
     if (!inputUrl || !outMedia) {
         set_err(err, errLen, "Invalid URL input");
+        LOGE("Invalid input: url=%p, out=%p", (void*)inputUrl, (void*)outMedia);
         return false;
     }
     outMedia->url[0] = '\0';
     outMedia->mime[0] = '\0';
+    
     if (has_media_extension(inputUrl)) {
+        LOGI("URL has media extension, using directly");
         snprintf(outMedia->url, sizeof(outMedia->url), "%s", inputUrl);
         return true;
     }
 
+    LOGI("Fetching HTML from URL...");
     HttpBuffer html = {0};
     if (!http_get_to_memory(inputUrl, &html, err, errLen)) {
+        LOGE("HTTP fetch failed: %s", err);
         return false;
     }
+    LOGI("Received %zu bytes of HTML", html.size);
 
+    LOGI("Extracting media URL from HTML...");
     HtmlMediaCandidate candidate;
     if (!html_extract_media_url(html.data, &candidate, err, errLen)) {
+        LOGE("Media extraction failed: %s", err);
         http_free_buffer(&html);
         return false;
     }
+    LOGI("Found media URL: %.100s...", candidate.url);
+    
     http_free_buffer(&html);
     resolve_url(inputUrl, candidate.url, outMedia->url, sizeof(outMedia->url));
     if (candidate.mime[0]) {
         snprintf(outMedia->mime, sizeof(outMedia->mime), "%s", candidate.mime);
     }
+    LOGI("URL analysis complete");
     return true;
 }

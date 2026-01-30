@@ -1097,9 +1097,12 @@ static void *worker_thread(void *arg) {
     WorkerArgs *args = (WorkerArgs *)arg;
     VulkanApp *app = args->app;
     ui_set_progress(app, 0.0f);
-
+    
     LOGI("Processing URL: %s", args->url);
     ui_set_status(app, "Analyzing URL...");
+    
+    time_t start_time = time(NULL);
+    const int max_total_time = 300;  // 5 minute total timeout for entire operation
     
     /* Clear any previous session cookies */
     http_clear_youtube_cookies();
@@ -1119,6 +1122,15 @@ static void *worker_thread(void *arg) {
     }
 
     LOGI("Media URL found: %.300s", media.url);
+    
+    // Check for overall timeout
+    if (time(NULL) - start_time > max_total_time) {
+        LOGE("Operation timed out after %d seconds", max_total_time);
+        ui_set_status(app, "Operation timeout");
+        app->workerRunning = false;
+        free(args);
+        return NULL;
+    }
     
     /* Validate the URL before downloading */
     if (strstr(media.url, "googlevideo.com") == NULL) {

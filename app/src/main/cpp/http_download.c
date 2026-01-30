@@ -7,6 +7,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <android/log.h>
+#include <sys/time.h>
+#include <sys/socket.h>
+#include <time.h>
 
 #define LOG_TAG "http_download"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -109,7 +112,7 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
              "Host: %s\r\n"
              "User-Agent: Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36\r\n"
              "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n"
-             "Accept-Language: en-US,en;q=0.5\r\n"
+             "Accept-Language: en-US,en;q=0.9\r\n"
              "Accept-Encoding: identity\r\n"
              "Connection: close\r\n"
              "Upgrade-Insecure-Requests: 1\r\n"
@@ -145,6 +148,16 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
     LOGI("HTTP request sent: %zd bytes", sent);
     LOGI("Request headers:\n%.500s", request);
     
+    /* Set socket timeout to prevent infinite hangs - shorter timeout for faster response */
+    struct timeval tv;
+    tv.tv_sec = 10;  // 10 second timeout for reads
+    tv.tv_usec = 0;
+    int sockfd = client.net.fd;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    tv.tv_sec = 5;   // 5 second timeout for writes
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    LOGI("Set socket timeout (read=10s, write=5s)");
+
     /* Read response */
     outBuffer->data = malloc(CHUNK_SIZE);
     outBuffer->size = 0;
@@ -157,8 +170,26 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
     size_t capacity = CHUNK_SIZE;
     unsigned char buf[CHUNK_SIZE];
     ssize_t n;
+    size_t total_received = 0;
+    time_t start_time = time(NULL);
+    const int max_read_time = 30;  // Maximum 30 seconds total read time
+    int zero_reads = 0;
+    const int max_zero_reads = 100;  // Max consecutive zero-byte reads
     
-    while ((n = tls_client_read(&client, buf, sizeof(buf))) > 0) {
+    LOGI("Starting to read HTTP response...");
+    while ((n = tls_client_read(&client, buf, sizeof(buf))) > 0 || 
+           (n == 0 && zero_reads < max_zero_reads)) {
+        if (n == 0) {
+            zero_reads++;
+            usleep(1000);  // 1ms sleep to prevent busy-waiting
+            // Check for timeout
+            if (time(NULL) - start_time > max_read_time) {
+                LOGE("HTTP read timeout after %d seconds", max_read_time);
+                break;
+            }
+            continue;
+        }
+        zero_reads = 0;  // Reset counter on successful read
         if (outBuffer->size + (size_t)n > capacity) {
             capacity *= 2;
             char *new_data = realloc(outBuffer->data, capacity);
@@ -173,8 +204,20 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
         }
         memcpy(outBuffer->data + outBuffer->size, buf, (size_t)n);
         outBuffer->size += (size_t)n;
+        total_received += (size_t)n;
+        
+        // Check for timeout
+        if (time(NULL) - start_time > max_read_time) {
+            LOGE("HTTP read timeout after %d seconds", max_read_time);
+            snprintf(err, errLen, "Download timeout");
+            free(outBuffer->data);
+            outBuffer->data = NULL;
+            tls_client_close(&client);
+            return false;
+        }
     }
     
+    LOGI("Finished reading response: %zu bytes total", outBuffer->size);
     tls_client_close(&client);
     
     /* Parse HTTP response */
