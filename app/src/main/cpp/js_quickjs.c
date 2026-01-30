@@ -3,9 +3,15 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <ctype.h>
+#include <android/log.h>
 #include "js_quickjs.h"
 #include "cutils.h"
 #include "quickjs.h"
+
+#define LOG_TAG "js_quickjs"
+#define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOG_ERROR(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOG_WARN(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
 #define MAX_CAPTURED_URLS 64
 #define URL_MAX_LEN 2048
@@ -363,10 +369,12 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValue
     }
     JS_FreeCString(ctx, url);
     
-    // Return a mock promise
-    JSValue promise_ctor = JS_GetGlobalVar(ctx, "Promise", 0);
+    // Return a mock promise - use global Promise constructor
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue promise_ctor = JS_GetPropertyStr(ctx, global, "Promise");
     JSValue promise = JS_CallConstructor(ctx, promise_ctor, 0, NULL);
     JS_FreeValue(ctx, promise_ctor);
+    JS_FreeValue(ctx, global);
     
     return promise;
 }
@@ -838,6 +846,14 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
     // After scripts load, simulate player initialization
     // YouTube's player expects DOM ready and may need a video element
     const char *init_player_js = 
+        "// Create video element and add to document\n"
+        "var video = document.createElement('video');\n"
+        "video.id = 'movie_player';\n"
+        "video.autoplay = false;\n"
+        "video.preload = 'auto';\n"
+        "if (document.body) document.body.appendChild(video);\n"
+        "console.log('Created video element');\n"
+        "\n"
         "// Simulate DOM ready\n"
         "if (typeof window !== 'undefined') {\n"
         "  var readyEvent = { type: 'DOMContentLoaded', bubbles: true };\n"
@@ -846,19 +862,7 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         "\n"
         "// Check for player initialization\n"
         "if (typeof ytInitialPlayerResponse !== 'undefined' && ytInitialPlayerResponse) {\n"
-        "  console.log('Player response available:', JSON.stringify(ytInitialPlayerResponse).substring(0, 200));\n"
-        "  \n"
-        "  // If there's a player API, try to initialize it\n"
-        "  if (typeof ytPlayer !== 'undefined' && ytPlayer) {\n"
-        "    try {\n"
-        "      console.log('Found ytPlayer, attempting initialization');\n"
-        "      if (ytPlayer.loadVideoByPlayerVars) {\n"
-        "        ytPlayer.loadVideoByPlayerVars(ytInitialPlayerResponse);\n"
-        "      }\n"
-        "    } catch(e) {\n"
-        "      console.log('ytPlayer init error:', e.message);\n"
-        "    }\n"
-        "  }\n"
+        "  console.log('Player response available, videoId:', ytInitialPlayerResponse.videoDetails ? ytInitialPlayerResponse.videoDetails.videoId : 'unknown');\n"
         "  \n"
         "  // Try to find and trigger any player config\n"
         "  if (window.yt && window.yt.player && window.yt.player.Application) {\n"
@@ -866,10 +870,27 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         "      console.log('Found yt.player.Application');\n"
         "      var app = window.yt.player.Application;\n"
         "      if (app.create) {\n"
-        "        app.create('player-api', ytInitialPlayerResponse);\n"
+        "        var player = app.create('movie_player', ytInitialPlayerResponse);\n"
+        "        console.log('Created player:', typeof player);\n"
+        "        if (player && player.loadVideoByPlayerVars) {\n"
+        "          player.loadVideoByPlayerVars(ytInitialPlayerResponse);\n"
+        "        }\n"
         "      }\n"
         "    } catch(e) {\n"
         "      console.log('Application init error:', e.message);\n"
+        "    }\n"
+        "  }\n"
+        "  \n"
+        "  // Alternative: Try yt.player.Player\n"
+        "  if (window.yt && window.yt.player && window.yt.player.Player) {\n"
+        "    try {\n"
+        "      console.log('Found yt.player.Player');\n"
+        "      var player = new window.yt.player.Player('movie_player', {\n"
+        "        videoId: ytInitialPlayerResponse.videoDetails ? ytInitialPlayerResponse.videoDetails.videoId : '',\n"
+        "        playerVars: { autoplay: 0 }\n"
+        "      });\n"
+        "    } catch(e) {\n"
+        "      console.log('Player init error:', e.message);\n"
         "    }\n"
         "  }\n"
         "}\n"

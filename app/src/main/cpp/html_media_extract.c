@@ -3,14 +3,29 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <pthread.h>
+#include <android/log.h>
 #include "html_media_extract.h"
 #include "http_download.h"
 #include "js_quickjs.h"
-#include "common.h"
+
+#define LOG_TAG "html_extract"
+#define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOG_ERROR(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOG_WARN(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
 #define MAX_SCRIPT_URLS 32
 #define SCRIPT_URL_MAX_LEN 512
 #define MAX_HTML_SIZE (2 * 1024 * 1024)  // 2MB max
+
+// Media stream structure
+typedef struct MediaStream {
+    char url[2048];
+    char mime_type[128];
+    char quality[32];
+    int width;
+    int height;
+    int itag;
+} MediaStream;
 
 typedef struct {
     const char *html;
@@ -189,8 +204,14 @@ static int parse_yt_player_response(const char *json, MediaStream *streams, int 
                         }
                     }
                     
+                    LOG_INFO("Parsed stream: itag=%d, url=%.50s, mime=%s", 
+                             stream->itag, stream->url[0] ? stream->url : "(empty)", 
+                             stream->mime_type[0] ? stream->mime_type : "(empty)");
+                    
                     if (stream->url[0] && stream->itag > 0) {
                         count++;
+                    } else {
+                        LOG_INFO("Stream skipped: url empty or no itag");
                     }
                     
                     fmt_len = 0;
@@ -443,7 +464,7 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
         }
     }
     
-    // Fetch all scripts
+    // Fetch all scripts using http_get_to_memory
     const char *scripts[MAX_SCRIPT_URLS];
     size_t script_lens[MAX_SCRIPT_URLS];
     int loaded_count = 0;
@@ -452,23 +473,21 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
         scripts[loaded_count] = NULL;
         script_lens[loaded_count] = 0;
         
-        DownloadContext dl_ctx;
-        memset(&dl_ctx, 0, sizeof(DownloadContext));
-        dl_ctx.buffer = malloc(2 * 1024 * 1024); // 2MB for scripts
-        if (!dl_ctx.buffer) continue;
-        dl_ctx.buffer_size = 2 * 1024 * 1024;
+        HttpBuffer buffer;
+        memset(&buffer, 0, sizeof(HttpBuffer));
         
+        char error[256];
         LOG_INFO("Fetching script %d/%d: %.80s", i + 1, script_count, script_urls[i]);
         
-        int result = http_download_file(script_urls[i], &dl_ctx);
-        if (result >= 0 && dl_ctx.total_received > 0) {
-            scripts[loaded_count] = dl_ctx.buffer;
-            script_lens[loaded_count] = dl_ctx.total_received;
+        bool result = http_get_to_memory(script_urls[i], &buffer, error, sizeof(error));
+        if (result && buffer.data && buffer.size > 0) {
+            scripts[loaded_count] = buffer.data;
+            script_lens[loaded_count] = buffer.size;
             loaded_count++;
-            LOG_INFO("Loaded script %d: %zu bytes", i, dl_ctx.total_received);
+            LOG_INFO("Loaded script %d: %zu bytes", i, buffer.size);
         } else {
-            LOG_WARN("Failed to fetch script %d: %d", i, result);
-            free(dl_ctx.buffer);
+            LOG_WARN("Failed to fetch script %d: %s", i, error);
+            if (buffer.data) http_free_buffer(&buffer);
         }
     }
     
@@ -495,7 +514,10 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
     
     // Free scripts
     for (int i = 0; i < loaded_count; i++) {
-        free((void*)scripts[i]);
+        if (scripts[i]) {
+            HttpBuffer buffer = { .data = (char*)scripts[i], .size = script_lens[i] };
+            http_free_buffer(&buffer);
+        }
     }
     
     if (!js_success) {
@@ -592,37 +614,33 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
     }
     html_url_buffer[sizeof(html_url_buffer) - 1] = '\0';
     
-    DownloadContext dl_ctx;
-    memset(&dl_ctx, 0, sizeof(DownloadContext));
-    dl_ctx.buffer = malloc(MAX_HTML_SIZE);
-    if (!dl_ctx.buffer) {
-        LOG_ERROR("Failed to allocate HTML buffer");
-        return -1;
-    }
-    dl_ctx.buffer_size = MAX_HTML_SIZE;
+    HttpBuffer html_buffer;
+    memset(&html_buffer, 0, sizeof(HttpBuffer));
     
+    char error[256];
     LOG_INFO("Downloading HTML from: %s", html_url_buffer);
-    int result = http_download_file(html_url_buffer, &dl_ctx);
+    bool result = http_get_to_memory(html_url_buffer, &html_buffer, error, sizeof(error));
     
-    if (result < 0 || dl_ctx.total_received == 0) {
-        LOG_ERROR("Failed to download HTML: %d", result);
-        free(dl_ctx.buffer);
+    if (!result || !html_buffer.data || html_buffer.size == 0) {
+        LOG_ERROR("Failed to download HTML: %s", error);
+        if (html_buffer.data) http_free_buffer(&html_buffer);
         return -1;
     }
     
-    // Null terminate
-    if (dl_ctx.total_received >= dl_ctx.buffer_size) {
-        dl_ctx.total_received = dl_ctx.buffer_size - 1;
+    // Ensure null termination
+    if (html_buffer.size >= MAX_HTML_SIZE) {
+        html_buffer.data[MAX_HTML_SIZE - 1] = '\0';
+    } else {
+        html_buffer.data[html_buffer.size] = '\0';
     }
-    dl_ctx.buffer[dl_ctx.total_received] = '\0';
     
-    LOG_INFO("Downloaded %zu bytes of HTML", dl_ctx.total_received);
+    LOG_INFO("Downloaded %zu bytes of HTML", html_buffer.size);
     
     // Extract ytInitialPlayerResponse
-    char *player_response = extract_yt_player_response(dl_ctx.buffer);
+    char *player_response = extract_yt_player_response(html_buffer.data);
     if (!player_response) {
         LOG_ERROR("Failed to extract ytInitialPlayerResponse");
-        free(dl_ctx.buffer);
+        http_free_buffer(&html_buffer);
         return -1;
     }
     
@@ -634,7 +652,7 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
     if (stream_count == 0) {
         LOG_ERROR("No streams found in player response");
         free(player_response);
-        free(dl_ctx.buffer);
+        http_free_buffer(&html_buffer);
         return 0;
     }
     
@@ -656,7 +674,7 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
         
         // Try to find and execute player scripts
         char decrypted_url[2048];
-        if (decrypt_signature_with_scripts(dl_ctx.buffer, "", decrypted_url, sizeof(decrypted_url))) {
+        if (decrypt_signature_with_scripts(html_buffer.data, "", decrypted_url, sizeof(decrypted_url))) {
             LOG_INFO("Successfully got decrypted URL format");
             // The URLs we got should already be decrypted from the player
         } else {
@@ -672,7 +690,62 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
     }
     
     free(player_response);
-    free(dl_ctx.buffer);
+    http_free_buffer(&html_buffer);
     
     return stream_count;
+}
+
+// Backward compatibility wrapper for html_extract_media_url
+bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
+                            char *err, size_t errLen) {
+    if (!html || !outCandidate) {
+        if (err && errLen > 0) {
+            strncpy(err, "Invalid arguments", errLen - 1);
+            err[errLen - 1] = '\0';
+        }
+        return false;
+    }
+    
+    // Clear output
+    memset(outCandidate, 0, sizeof(HtmlMediaCandidate));
+    
+    // Try to extract ytInitialPlayerResponse directly from the HTML
+    char *player_response = extract_yt_player_response(html);
+    if (!player_response) {
+        if (err && errLen > 0) {
+            strncpy(err, "No player response found in HTML", errLen - 1);
+            err[errLen - 1] = '\0';
+        }
+        return false;
+    }
+    
+    // Parse streams from player response
+    MediaStream streams[16];
+    int stream_count = parse_yt_player_response(player_response, streams, 16);
+    free(player_response);
+    
+    if (stream_count == 0) {
+        if (err && errLen > 0) {
+            strncpy(err, "No streams found in player response", errLen - 1);
+            err[errLen - 1] = '\0';
+        }
+        return false;
+    }
+    
+    // Find the best stream (prefer video with highest quality)
+    MediaStream *best = &streams[0];
+    for (int i = 1; i < stream_count; i++) {
+        // Prefer higher resolution
+        if (streams[i].height > best->height) {
+            best = &streams[i];
+        }
+    }
+    
+    // Copy to output
+    strncpy(outCandidate->url, best->url, sizeof(outCandidate->url) - 1);
+    outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
+    strncpy(outCandidate->mime, best->mime_type, sizeof(outCandidate->mime) - 1);
+    outCandidate->mime[sizeof(outCandidate->mime) - 1] = '\0';
+    
+    return true;
 }
