@@ -559,7 +559,7 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
     
     bool js_success = js_quickjs_exec_scripts_with_data(
         (const char**)scripts, script_lens, loaded_count,
-        player_response, &js_result
+        player_response, html, &js_result
     );
     
     // Free scripts

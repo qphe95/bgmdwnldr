@@ -36,11 +36,12 @@ void js_quickjs_cleanup(void);
  * script_lens: array of script lengths  
  * script_count: number of scripts
  * player_response: ytInitialPlayerResponse JSON string (can be NULL)
+ * html: original HTML content for parsing video elements (can be NULL)
  * out_result: output structure for captured URLs
  */
 bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *script_lens, 
                                        int script_count, const char *player_response,
-                                       JsExecResult *out_result);
+                                       const char *html, JsExecResult *out_result);
 
 /* Get captured URLs from global storage (for backward compatibility) */
 int js_quickjs_get_captured_urls(char urls[][JS_MAX_URL_LEN], int max_urls);

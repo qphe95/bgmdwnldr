@@ -184,6 +184,7 @@ static const JSCFunctionListEntry js_xhr_proto_funcs[] = {
 
 // HTMLVideoElement implementation
 typedef struct {
+    char id[256];        // Element id for tracking
     char src[2048];
     int ready_state;
     int network_state;
@@ -286,8 +287,15 @@ static JSValue js_video_set_src(JSContext *ctx, JSValueConst this_val, JSValueCo
     
     const char *src = JS_ToCString(ctx, val);
     if (src) {
+        LOG_INFO("HTMLVideoElement: video.src SET to: %.100s%s (element id=%s)",
+                 src, strlen(src) > 100 ? "..." : "",
+                 vid->id ? vid->id : "(none)");
         strncpy(vid->src, src, sizeof(vid->src) - 1);
+        vid->src[sizeof(vid->src) - 1] = '\0';
         record_captured_url(src);
+    } else {
+        LOG_INFO("HTMLVideoElement: video.src SET to null/empty");
+        vid->src[0] = '\0';
     }
     JS_FreeCString(ctx, src);
     return JS_UNDEFINED;
@@ -297,6 +305,24 @@ static JSValue js_video_get_src(JSContext *ctx, JSValueConst this_val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     return JS_NewString(ctx, vid->src);
+}
+
+static JSValue js_video_get_id(JSContext *ctx, JSValueConst this_val) {
+    HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
+    if (!vid) return JS_EXCEPTION;
+    return JS_NewString(ctx, vid->id);
+}
+
+static JSValue js_video_set_id(JSContext *ctx, JSValueConst this_val, JSValueConst val) {
+    HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
+    if (!vid) return JS_EXCEPTION;
+    const char *id = JS_ToCString(ctx, val);
+    if (id) {
+        strncpy(vid->id, id, sizeof(vid->id) - 1);
+        vid->id[sizeof(vid->id) - 1] = '\0';
+    }
+    JS_FreeCString(ctx, id);
+    return JS_UNDEFINED;
 }
 
 static JSValue js_video_get_current_time(JSContext *ctx, JSValueConst this_val) {
@@ -340,6 +366,7 @@ static const JSCFunctionListEntry js_video_proto_funcs[] = {
     JS_CFUNC_DEF("load", 0, js_video_load),
     JS_CFUNC_DEF("play", 0, js_video_play),
     JS_CFUNC_DEF("pause", 0, js_video_pause),
+    JS_CGETSET_DEF("id", js_video_get_id, js_video_set_id),
     JS_CGETSET_DEF("src", js_video_get_src, js_video_set_src),
     JS_CGETSET_DEF("currentSrc", js_video_get_src, NULL),
     JS_CGETSET_DEF("currentTime", js_video_get_current_time, js_video_set_current_time),
@@ -751,9 +778,107 @@ void js_quickjs_cleanup(void) {
     pthread_mutex_unlock(&g_url_mutex);
 }
 
+// Helper to extract attribute value from HTML tag
+static char* extract_attr(const char *html, const char *tag_end, const char *attr_name) {
+    const char *attr = strstr(html, attr_name);
+    if (!attr || attr > tag_end) return NULL;
+    
+    attr += strlen(attr_name);
+    while (*attr && isspace((unsigned char)*attr)) attr++;
+    if (*attr != '=') return NULL;
+    attr++;
+    while (*attr && isspace((unsigned char)*attr)) attr++;
+    
+    char quote = *attr;
+    if (quote != '"' && quote != '\'') return NULL;
+    
+    attr++;
+    const char *end = strchr(attr, quote);
+    if (!end || end > tag_end) return NULL;
+    
+    size_t len = end - attr;
+    char *value = malloc(len + 1);
+    if (value) {
+        strncpy(value, attr, len);
+        value[len] = '\0';
+    }
+    return value;
+}
+
+// Parse HTML and create video elements from <video> tags
+static int create_video_elements_from_html(JSContext *ctx, const char *html) {
+    if (!html) return 0;
+    
+    int count = 0;
+    const char *p = html;
+    
+    LOG_INFO("Parsing HTML for video elements...");
+    
+    while ((p = strstr(p, "<video")) != NULL) {
+        // Find end of opening tag
+        const char *tag_end = strchr(p, '>');
+        if (!tag_end) break;
+        
+        // Check if it's a self-closing tag or has separate closing tag
+        int is_self_closing = (tag_end[-1] == '/');
+        
+        LOG_INFO("Found <video> tag at position %zu", p - html);
+        
+        // Extract attributes
+        char *id = extract_attr(p, tag_end, "id");
+        char *src = extract_attr(p, tag_end, "src");
+        char *data_src = extract_attr(p, tag_end, "data-src");
+        char *class_attr = extract_attr(p, tag_end, "class");
+        
+        // Build JS to create element
+        char js_code[4096];
+        snprintf(js_code, sizeof(js_code),
+            "(function() {\n"
+            "  var video = document.createElement('video');\n"
+            "  if (video) {\n"
+            "    video.id = '%s';\n"
+            "    video.className = '%s';\n"
+            "    video.src = '%s';\n"
+            "    if (document.body) document.body.appendChild(video);\n"
+            "    console.log('Created video element from HTML: id=' + video.id + ', src=' + video.src.substring(0, 50));\n"
+            "  }\n"
+            "})();",
+            id ? id : "",
+            class_attr ? class_attr : "",
+            src ? src : (data_src ? data_src : "")
+        );
+        
+        JSValue result = JS_Eval(ctx, js_code, strlen(js_code), "<html_video>", 0);
+        if (JS_IsException(result)) {
+            JSValue exception = JS_GetException(ctx);
+            const char *error = JS_ToCString(ctx, exception);
+            LOG_ERROR("Error creating video element from HTML: %s", error ? error : "unknown");
+            JS_FreeCString(ctx, error);
+            JS_FreeValue(ctx, exception);
+        } else {
+            LOG_INFO("Created video element from HTML: id=%s, src=%.50s%s",
+                     id ? id : "(none)",
+                     src ? src : (data_src ? data_src : "(none)"),
+                     (src && strlen(src) > 50) || (data_src && strlen(data_src) > 50) ? "..." : "");
+            count++;
+        }
+        JS_FreeValue(ctx, result);
+        
+        free(id);
+        free(src);
+        free(data_src);
+        free(class_attr);
+        
+        p = tag_end + 1;
+    }
+    
+    LOG_INFO("Created %d video elements from HTML", count);
+    return count;
+}
+
 bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *script_lens, 
                                        int script_count, const char *player_response,
-                                       JsExecResult *out_result) {
+                                       const char *html, JsExecResult *out_result) {
     if (!scripts || script_count <= 0 || !out_result) {
         LOG_ERROR("Invalid arguments to js_quickjs_exec_scripts_with_data");
         return false;
@@ -793,6 +918,53 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
     
     // Initialize browser environment
     init_browser_environment(ctx);
+    
+    // Create basic browser environment
+    const char *setup_js = 
+        "// Create body element for appendChild\n"
+        "document.body = document.createElement('body');\n"
+        "console.log('Basic browser environment ready');\n"
+    ;
+    
+    LOG_INFO("Setting up basic browser environment...");
+    JSValue setup_result = JS_Eval(ctx, setup_js, strlen(setup_js), "<setup>", 0);
+    if (JS_IsException(setup_result)) {
+        JSValue exception = JS_GetException(ctx);
+        const char *error = JS_ToCString(ctx, exception);
+        LOG_ERROR("Setup error: %s", error ? error : "unknown");
+        JS_FreeCString(ctx, error);
+        JS_FreeValue(ctx, exception);
+    }
+    JS_FreeValue(ctx, setup_result);
+    
+    // Parse HTML and create video elements BEFORE loading scripts
+    // This handles Scenario B: HTML has <video> tags directly
+    if (html && strlen(html) > 0) {
+        int video_count = create_video_elements_from_html(ctx, html);
+        LOG_INFO("Created %d video elements from HTML parsing", video_count);
+    }
+    
+    // Also create default video element for Scenario A: JS creates video element
+    const char *default_video_js = 
+        "// Create default video element if none exists\n"
+        "if (!document.getElementById('movie_player')) {\n"
+        "  var video = document.createElement('video');\n"
+        "  video.id = 'movie_player';\n"
+        "  document.body.appendChild(video);\n"
+        "  console.log('Created default video element with id=movie_player');\n"
+        "}\n"
+    ;
+    
+    LOG_INFO("Creating default video element...");
+    JSValue default_result = JS_Eval(ctx, default_video_js, strlen(default_video_js), "<default_video>", 0);
+    if (JS_IsException(default_result)) {
+        JSValue exception = JS_GetException(ctx);
+        const char *error = JS_ToCString(ctx, exception);
+        LOG_ERROR("Default video error: %s", error ? error : "unknown");
+        JS_FreeCString(ctx, error);
+        JS_FreeValue(ctx, exception);
+    }
+    JS_FreeValue(ctx, default_result);
     
     // Inject ytInitialPlayerResponse if provided
     if (player_response && strlen(player_response) > 0) {
@@ -843,60 +1015,26 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
     
     LOG_INFO("Executed %d/%d scripts successfully", success_count, script_count);
     
-    // After scripts load, simulate player initialization
-    // YouTube's player expects DOM ready and may need a video element
+    // After scripts load, dispatch DOMContentLoaded to trigger player initialization
+    // The video element and ytInitialPlayerResponse were already set up before scripts loaded
     const char *init_player_js = 
-        "// Create video element and add to document\n"
-        "var video = document.createElement('video');\n"
-        "video.id = 'movie_player';\n"
-        "video.autoplay = false;\n"
-        "video.preload = 'auto';\n"
-        "if (document.body) document.body.appendChild(video);\n"
-        "console.log('Created video element');\n"
-        "\n"
-        "// Simulate DOM ready\n"
-        "if (typeof window !== 'undefined') {\n"
+        "// Dispatch DOMContentLoaded to trigger any player initialization\n"
+        "if (typeof window !== 'undefined' && window.dispatchEvent) {\n"
         "  var readyEvent = { type: 'DOMContentLoaded', bubbles: true };\n"
-        "  if (window.dispatchEvent) window.dispatchEvent(readyEvent);\n"
+        "  window.dispatchEvent(readyEvent);\n"
+        "  console.log('Dispatched DOMContentLoaded');\n"
         "}\n"
         "\n"
-        "// Check for player initialization\n"
-        "if (typeof ytInitialPlayerResponse !== 'undefined' && ytInitialPlayerResponse) {\n"
-        "  console.log('Player response available, videoId:', ytInitialPlayerResponse.videoDetails ? ytInitialPlayerResponse.videoDetails.videoId : 'unknown');\n"
-        "  \n"
-        "  // Try to find and trigger any player config\n"
-        "  if (window.yt && window.yt.player && window.yt.player.Application) {\n"
-        "    try {\n"
-        "      console.log('Found yt.player.Application');\n"
-        "      var app = window.yt.player.Application;\n"
-        "      if (app.create) {\n"
-        "        var player = app.create('movie_player', ytInitialPlayerResponse);\n"
-        "        console.log('Created player:', typeof player);\n"
-        "        if (player && player.loadVideoByPlayerVars) {\n"
-        "          player.loadVideoByPlayerVars(ytInitialPlayerResponse);\n"
-        "        }\n"
-        "      }\n"
-        "    } catch(e) {\n"
-        "      console.log('Application init error:', e.message);\n"
-        "    }\n"
-        "  }\n"
-        "  \n"
-        "  // Alternative: Try yt.player.Player\n"
-        "  if (window.yt && window.yt.player && window.yt.player.Player) {\n"
-        "    try {\n"
-        "      console.log('Found yt.player.Player');\n"
-        "      var player = new window.yt.player.Player('movie_player', {\n"
-        "        videoId: ytInitialPlayerResponse.videoDetails ? ytInitialPlayerResponse.videoDetails.videoId : '',\n"
-        "        playerVars: { autoplay: 0 }\n"
-        "      });\n"
-        "    } catch(e) {\n"
-        "      console.log('Player init error:', e.message);\n"
-        "    }\n"
-        "  }\n"
+        "// Log what we have available\n"
+        "if (typeof ytInitialPlayerResponse !== 'undefined') {\n"
+        "  console.log('ytInitialPlayerResponse is available');\n"
+        "}\n"
+        "if (document.getElementById('movie_player')) {\n"
+        "  console.log('movie_player element exists');\n"
         "}\n"
     ;
     
-    LOG_INFO("Triggering player initialization...");
+    LOG_INFO("Triggering DOMContentLoaded...");
     JSValue init_result = JS_Eval(ctx, init_player_js, strlen(init_player_js), "<init_player>", 0);
     if (JS_IsException(init_result)) {
         JSValue exception = JS_GetException(ctx);
