@@ -160,10 +160,12 @@ char *js_quickjs_eval(const char *code, size_t code_len, size_t *out_len) {
 bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens, int script_count,
                               JsExecResult *out_result) {
     if (!scripts || script_count <= 0 || !out_result) {
+        LOGE("Invalid arguments to js_quickjs_exec_scripts");
         return false;
     }
     
     if (!ctx && !js_quickjs_init()) {
+        LOGE("Failed to initialize QuickJS");
         return false;
     }
     
@@ -173,20 +175,31 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens, in
     
     JSContext *exec_ctx = JS_NewContext(rt);
     if (!exec_ctx) {
+        LOGE("Failed to create JS context");
         return false;
     }
     
-    /* Install browser stubs */
-    JS_Eval(exec_ctx, browser_stubs, strlen(browser_stubs), "<stubs>", 0);
+    /* Install browser stubs first */
+    LOGI("Installing browser stubs...");
+    JSValue stubs_result = JS_Eval(exec_ctx, browser_stubs, strlen(browser_stubs), "<stubs>", 0);
+    if (JS_IsException(stubs_result)) {
+        JSValue exc = JS_GetException(exec_ctx);
+        const char *err = JS_ToCString(exec_ctx, exc);
+        LOGE("Browser stubs error: %s", err ? err : "unknown");
+        JS_FreeCString(exec_ctx, err);
+        JS_FreeValue(exec_ctx, exc);
+    }
+    JS_FreeValue(exec_ctx, stubs_result);
     
     /* Clear any previous captured URLs in JS */
     clear_captured_urls_js(exec_ctx);
     
     bool success = true;
     
-    /* Execute each script in sequence */
+    /* Execute each script ONE BY ONE in sequence */
     for (int i = 0; i < script_count; i++) {
         if (!scripts[i] || script_lens[i] == 0) {
+            LOGI("Skipping script %d (empty)", i);
             continue;
         }
         
@@ -205,12 +218,25 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens, in
             JS_FreeValue(exec_ctx, exc);
             success = false;
             /* Continue executing other scripts even if one fails */
+        } else {
+            LOGI("Script %d executed successfully", i);
         }
         
         JS_FreeValue(exec_ctx, result);
+        
+        /* Log URLs captured after each script execution */
+        JsCapturedUrl urls[JS_CAPTURED_URLS_MAX];
+        int count = extract_captured_urls(exec_ctx, urls, JS_CAPTURED_URLS_MAX);
+        if (count > 0) {
+            LOGI("  Captured %d URLs after script %d:", count, i);
+            for (int j = 0; j < count && j < 3; j++) {
+                LOGI("    [%s %s] %.80s...", 
+                     urls[j].method, urls[j].type, urls[j].url);
+            }
+        }
     }
     
-    /* Extract captured URLs */
+    /* Extract all captured URLs after all scripts executed */
     out_result->captured_count = extract_captured_urls(exec_ctx, out_result->captured_urls, 
                                                         JS_CAPTURED_URLS_MAX);
     g_captured_count = out_result->captured_count;
@@ -218,6 +244,8 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens, in
     /* Copy to global storage */
     memcpy(g_captured_urls, out_result->captured_urls, 
            sizeof(JsCapturedUrl) * out_result->captured_count);
+    
+    LOGI("Total captured URLs: %d", out_result->captured_count);
     
     JS_FreeContext(exec_ctx);
     
@@ -235,6 +263,19 @@ int js_quickjs_get_captured_urls(JsCapturedUrl *out_urls, int max_urls) {
 void js_quickjs_clear_captured_urls(void) {
     g_captured_count = 0;
     memset(g_captured_urls, 0, sizeof(g_captured_urls));
+}
+
+/* Helper: Log captured URLs from current execution context */
+static void log_captured_urls(JSContext *js_ctx, const char *phase) {
+    JsCapturedUrl urls[JS_CAPTURED_URLS_MAX];
+    int count = extract_captured_urls(js_ctx, urls, JS_CAPTURED_URLS_MAX);
+    if (count > 0) {
+        LOGI("[%s] Captured %d URLs:", phase, count);
+        for (int i = 0; i < count && i < 5; i++) {
+            LOGI("  [%s %s] %.100s...", 
+                 urls[i].method, urls[i].type, urls[i].url);
+        }
+    }
 }
 
 char *js_quickjs_decrypt_signature_ex(const char *player_js, size_t player_js_len,
@@ -266,11 +307,21 @@ char *js_quickjs_decrypt_signature_ex(const char *player_js, size_t player_js_le
         memset(out_result, 0, sizeof(JsExecResult));
     }
     
-    /* Install browser stubs */
-    JS_Eval(decrypt_ctx, browser_stubs, strlen(browser_stubs), "<stubs>", 0);
+    /* Install browser stubs first */
+    LOGI("Installing browser stubs...");
+    JSValue stubs_result = JS_Eval(decrypt_ctx, browser_stubs, strlen(browser_stubs), "<stubs>", 0);
+    if (JS_IsException(stubs_result)) {
+        JSValue exc = JS_GetException(decrypt_ctx);
+        const char *err = JS_ToCString(decrypt_ctx, exc);
+        LOGE("Browser stubs error: %s", err ? err : "unknown");
+        JS_FreeCString(decrypt_ctx, err);
+        JS_FreeValue(decrypt_ctx, exc);
+    }
+    JS_FreeValue(decrypt_ctx, stubs_result);
     clear_captured_urls_js(decrypt_ctx);
     
-    /* Execute player JS */
+    /* Execute player JS first */
+    LOGI("Executing player JS (%zu bytes)...", player_js_len);
     JSValue player_result = JS_Eval(decrypt_ctx, player_js, player_js_len, "player.js", 0);
     if (JS_IsException(player_result)) {
         JSValue exc = JS_GetException(decrypt_ctx);
@@ -289,7 +340,10 @@ char *js_quickjs_decrypt_signature_ex(const char *player_js, size_t player_js_le
     JS_FreeValue(decrypt_ctx, player_result);
     LOGI("Player JS executed successfully");
     
-    /* Execute additional scripts */
+    /* Log any URLs captured after player JS execution */
+    log_captured_urls(decrypt_ctx, "after player JS");
+    
+    /* Execute additional scripts ONE BY ONE, capturing URLs after each */
     for (int i = 0; i < additional_count; i++) {
         if (!additional_scripts[i] || additional_lens[i] == 0) {
             continue;
@@ -298,25 +352,28 @@ char *js_quickjs_decrypt_signature_ex(const char *player_js, size_t player_js_le
         char filename[64];
         snprintf(filename, sizeof(filename), "additional%d.js", i);
         
-        LOGI("Executing additional script %d/%d (%zu bytes)...", i + 1, additional_count, additional_lens[i]);
+        LOGI("Executing script %d/%d (%zu bytes)...", i + 1, additional_count, additional_lens[i]);
         
         JSValue add_result = JS_Eval(decrypt_ctx, additional_scripts[i], additional_lens[i], filename, 0);
         
         if (JS_IsException(add_result)) {
             JSValue exc = JS_GetException(decrypt_ctx);
             const char *err = JS_ToCString(decrypt_ctx, exc);
-            LOGE("Additional script %d error: %s", i, err ? err : "unknown");
+            LOGE("Script %d error: %s", i, err ? err : "unknown");
             JS_FreeCString(decrypt_ctx, err);
             JS_FreeValue(decrypt_ctx, exc);
-            /* Continue with other scripts */
+            /* Continue executing other scripts even if one fails */
         } else {
-            LOGI("Additional script %d executed successfully", i + 1);
+            LOGI("Script %d executed successfully", i + 1);
         }
         
         JS_FreeValue(decrypt_ctx, add_result);
+        
+        /* Log URLs captured after each script execution */
+        log_captured_urls(decrypt_ctx, filename);
     }
     
-    /* Extract captured URLs */
+    /* Extract all captured URLs after all scripts executed */
     JsCapturedUrl local_captured[JS_CAPTURED_URLS_MAX];
     int captured_count = extract_captured_urls(decrypt_ctx, local_captured, JS_CAPTURED_URLS_MAX);
     
@@ -328,9 +385,10 @@ char *js_quickjs_decrypt_signature_ex(const char *player_js, size_t player_js_le
     memcpy(g_captured_urls, local_captured, sizeof(JsCapturedUrl) * captured_count);
     
     if (captured_count > 0) {
-        LOGI("Captured %d URLs during JS execution", captured_count);
+        LOGI("Total captured URLs during JS execution: %d", captured_count);
         for (int i = 0; i < captured_count && i < 5; i++) {
-            LOGI("  URL %d: %.100s...", i, local_captured[i].url);
+            LOGI("  URL %d: [method=%s type=%s] %.100s...", 
+                 i, local_captured[i].method, local_captured[i].type, local_captured[i].url);
         }
     }
     
