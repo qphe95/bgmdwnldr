@@ -1,1069 +1,678 @@
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <ctype.h>
+#include <pthread.h>
 #include "html_media_extract.h"
 #include "http_download.h"
 #include "js_quickjs.h"
+#include "common.h"
 
-#include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <android/log.h>
-
-#define LOG_TAG "html_extract"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
-/* ============================================================================
- * QuickJS Integration for Signature Deciphering
- * ============================================================================ */
-
-#define MAX_ADDITIONAL_SCRIPTS 8
+#define MAX_SCRIPT_URLS 32
 #define SCRIPT_URL_MAX_LEN 512
+#define MAX_HTML_SIZE (2 * 1024 * 1024)  // 2MB max
 
-/* Extract additional JS script URLs from YouTube page */
-static int extract_additional_script_urls(const char *html, const char *base_url,
-                                           char out_urls[][SCRIPT_URL_MAX_LEN], int max_urls) {
-    LOGI("Looking for additional script URLs in HTML...");
-    int count = 0;
+typedef struct {
+    const char *html;
+    size_t html_len;
+    MediaStream *streams;
+    int max_streams;
+    int stream_count;
+} ExtractContext;
+
+static char *url_normalize(const char *base, const char *rel, char *out, size_t out_len) {
+    if (!rel || !out || out_len == 0) return NULL;
     
-    /* Look for script src patterns */
-    const char *patterns[] = {
-        "script src=\"",
-        "script src='",
-        "src=\"",
-        "src='",
-        NULL
-    };
-    
-    for (int p = 0; patterns[p] != NULL && count < max_urls; p++) {
-        const char *search = html;
-        const char *pattern = patterns[p];
-        char quote = pattern[strlen(pattern) - 1];
-        
-        while ((search = strstr(search, pattern)) != NULL && count < max_urls) {
-            search += strlen(pattern);
-            
-            /* Find end of URL */
-            const char *end = strchr(search, quote);
-            if (!end || end <= search) continue;
-            
-            size_t len = (size_t)(end - search);
-            if (len < 5 || len >= SCRIPT_URL_MAX_LEN) continue;
-            
-            /* Check if it's a JS file */
-            if (strstr(search, ".js") == NULL) continue;
-            
-            /* Skip if it's the player script (we already have that) */
-            if (strstr(search, "player") != NULL) continue;
-            
-            /* Skip common non-decipher scripts */
-            if (strstr(search, "www-player") != NULL) continue;
-            if (strstr(search, "embed") != NULL) continue;
-            if (strstr(search, "scheduler") != NULL) continue;
-            
-            char url[SCRIPT_URL_MAX_LEN];
-            memcpy(url, search, len);
-            url[len] = '\0';
-            
-            /* Convert relative URLs to absolute */
-            if (strncmp(url, "//", 2) == 0) {
-                char temp[SCRIPT_URL_MAX_LEN];
-                snprintf(temp, sizeof(temp), "https:%s", url);
-                strncpy(url, temp, SCRIPT_URL_MAX_LEN - 1);
-            } else if (url[0] == '/' && url[1] != '/') {
-                char temp[SCRIPT_URL_MAX_LEN];
-                snprintf(temp, sizeof(temp), "https://www.youtube.com%s", url);
-                strncpy(url, temp, SCRIPT_URL_MAX_LEN - 1);
-            } else if (strncmp(url, "http", 4) != 0) {
-                /* Skip non-absolute URLs we can't resolve */
-                continue;
-            }
-            
-            /* Check for duplicates */
-            bool duplicate = false;
-            for (int i = 0; i < count; i++) {
-                if (strcmp(out_urls[i], url) == 0) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (duplicate) continue;
-            
-            strncpy(out_urls[count], url, SCRIPT_URL_MAX_LEN - 1);
-            out_urls[count][SCRIPT_URL_MAX_LEN - 1] = '\0';
-            LOGI("Found additional script %d: %.100s...", count, out_urls[count]);
-            count++;
-        }
+    // Already absolute
+    if (strncmp(rel, "http://", 7) == 0 || strncmp(rel, "https://", 8) == 0) {
+        strncpy(out, rel, out_len - 1);
+        out[out_len - 1] = '\0';
+        return out;
     }
     
-    LOGI("Found %d additional script URLs", count);
+    // Protocol-relative
+    if (strncmp(rel, "//", 2) == 0) {
+        snprintf(out, out_len, "https:%s", rel);
+        return out;
+    }
+    
+    // Relative to base
+    if (base) {
+        const char *base_end = base;
+        const char *last_slash = strrchr(base, '/');
+        if (last_slash) {
+            size_t base_len = last_slash - base + 1;
+            snprintf(out, out_len, "%.*s%s", (int)base_len, base, rel);
+        } else {
+            snprintf(out, out_len, "%s/%s", base, rel);
+        }
+        return out;
+    }
+    
+    strncpy(out, rel, out_len - 1);
+    out[out_len - 1] = '\0';
+    return out;
+}
+
+// Parse ytInitialPlayerResponse and extract streaming data
+static int parse_yt_player_response(const char *json, MediaStream *streams, int max_streams) {
+    if (!json || !streams || max_streams <= 0) return 0;
+    
+    int count = 0;
+    LOG_INFO("Parsing player response (%zu bytes)", strlen(json));
+    
+    // Find streamingData
+    const char *streaming_data = strstr(json, "\"streamingData\"");
+    if (!streaming_data) {
+        LOG_WARN("No streamingData found in player response");
+        return 0;
+    }
+    
+    // Look for formats (adaptiveFormats and formats)
+    const char *formats = strstr(streaming_data, "\"formats\"");
+    const char *adaptive_formats = strstr(streaming_data, "\"adaptiveFormats\"");
+    
+    if (!formats && !adaptive_formats) {
+        LOG_WARN("No formats found in streamingData");
+        return 0;
+    }
+    
+    // Parse formats array
+    const char *fmt_start = formats ? formats : adaptive_formats;
+    const char *array_start = strchr(fmt_start, '[');
+    if (!array_start) return 0;
+    
+    // Simple JSON parsing for format objects
+    const char *p = array_start;
+    int brace_depth = 0;
+    bool in_string = false;
+    bool escape = false;
+    
+    // Buffer for current format object
+    char format_buf[4096];
+    int fmt_len = 0;
+    
+    while (*p && count < max_streams) {
+        if (!in_string) {
+            if (*p == '{') {
+                if (brace_depth == 0) fmt_len = 0;
+                brace_depth++;
+            } else if (*p == '}') {
+                brace_depth--;
+                if (brace_depth == 0 && fmt_len > 0 && fmt_len < sizeof(format_buf) - 1) {
+                    format_buf[fmt_len++] = '}';
+                    format_buf[fmt_len] = '\0';
+                    
+                    // Extract fields from format object
+                    MediaStream *stream = &streams[count];
+                    memset(stream, 0, sizeof(MediaStream));
+                    
+                    // itag
+                    const char *itag = strstr(format_buf, "\"itag\"");
+                    if (itag) {
+                        itag = strchr(itag, ':');
+                        if (itag) stream->itag = atoi(itag + 1);
+                    }
+                    
+                    // url
+                    const char *url = strstr(format_buf, "\"url\"");
+                    if (url) {
+                        url = strchr(url, '"');
+                        if (url) url = strchr(url + 1, '"');
+                        if (url) {
+                            url++;
+                            const char *url_end = strchr(url, '"');
+                            if (url_end && url_end - url < sizeof(stream->url) - 1) {
+                                strncpy(stream->url, url, url_end - url);
+                                stream->url[url_end - url] = '\0';
+                            }
+                        }
+                    }
+                    
+                    // signatureCipher
+                    if (!stream->url[0]) {
+                        const char *cipher = strstr(format_buf, "\"signatureCipher\"");
+                        if (cipher) {
+                            cipher = strchr(cipher, '"');
+                            if (cipher) cipher = strchr(cipher + 1, '"');
+                            if (cipher) {
+                                cipher++;
+                                const char *cipher_end = strchr(cipher, '"');
+                                if (cipher_end && cipher_end - cipher < sizeof(stream->url) - 1) {
+                                    strncpy(stream->url, cipher, cipher_end - cipher);
+                                    stream->url[cipher_end - cipher] = '\0';
+                                }
+                            }
+                        }
+                    }
+                    
+                    // mimeType
+                    const char *mime = strstr(format_buf, "\"mimeType\"");
+                    if (mime) {
+                        mime = strchr(mime, '"');
+                        if (mime) mime = strchr(mime + 1, '"');
+                        if (mime) {
+                            mime++;
+                            const char *mime_end = strchr(mime, '"');
+                            if (mime_end && mime_end - mime < sizeof(stream->mime_type) - 1) {
+                                strncpy(stream->mime_type, mime, mime_end - mime);
+                                stream->mime_type[mime_end - mime] = '\0';
+                            }
+                        }
+                    }
+                    
+                    // width/height for video
+                    const char *width = strstr(format_buf, "\"width\"");
+                    if (width) {
+                        width = strchr(width, ':');
+                        if (width) stream->width = atoi(width + 1);
+                    }
+                    
+                    const char *height = strstr(format_buf, "\"height\"");
+                    if (height) {
+                        height = strchr(height, ':');
+                        if (height) stream->height = atoi(height + 1);
+                    }
+                    
+                    // qualityLabel
+                    const char *quality = strstr(format_buf, "\"qualityLabel\"");
+                    if (quality) {
+                        quality = strchr(quality, '"');
+                        if (quality) quality = strchr(quality + 1, '"');
+                        if (quality) {
+                            quality++;
+                            const char *quality_end = strchr(quality, '"');
+                            if (quality_end && quality_end - quality < sizeof(stream->quality) - 1) {
+                                strncpy(stream->quality, quality, quality_end - quality);
+                                stream->quality[quality_end - quality] = '\0';
+                            }
+                        }
+                    }
+                    
+                    if (stream->url[0] && stream->itag > 0) {
+                        count++;
+                    }
+                    
+                    fmt_len = 0;
+                }
+            }
+        }
+        
+        if (brace_depth > 0 && fmt_len < sizeof(format_buf) - 1) {
+            format_buf[fmt_len++] = *p;
+        }
+        
+        if (!escape && *p == '"') {
+            in_string = !in_string;
+        } else if (!escape && *p == '\\') {
+            escape = true;
+        } else {
+            escape = false;
+        }
+        
+        p++;
+    }
+    
+    LOG_INFO("Parsed %d streams from player response", count);
     return count;
 }
 
-/* Fetch player JS and decrypt signature using QuickJS */
-static bool fetch_and_decrypt_signature_ex(const char *player_js_url, const char *html,
-                                            const char *encrypted_sig,
-                                            char *out_decrypted, size_t out_len) {
-    if (!player_js_url || !player_js_url[0] || !encrypted_sig) {
-        return false;
-    }
+// Extract ytInitialPlayerResponse from HTML
+static char* extract_yt_player_response(const char *html) {
+    if (!html) return NULL;
     
-    LOGI("Fetching player JS: %s", player_js_url);
-    
-    /* Fetch the player JS */
-    HttpBuffer player_js = {0};
-    char err[512] = {0};
-    
-    if (!http_get_to_memory(player_js_url, &player_js, err, sizeof(err))) {
-        LOGE("Failed to fetch player JS: %s", err);
-        return false;
-    }
-    
-    LOGI("Player JS fetched: %zu bytes", player_js.size);
-    
-    /* Look for additional scripts */
-    char additional_urls[MAX_ADDITIONAL_SCRIPTS][SCRIPT_URL_MAX_LEN];
-    int additional_count = 0;
-    if (html) {
-        additional_count = extract_additional_script_urls(html, player_js_url,
-                                                           additional_urls, MAX_ADDITIONAL_SCRIPTS);
-    }
-    
-    /* Fetch additional scripts */
-    HttpBuffer additional_scripts[MAX_ADDITIONAL_SCRIPTS];
-    const char *add_scripts_ptrs[MAX_ADDITIONAL_SCRIPTS];
-    size_t add_scripts_lens[MAX_ADDITIONAL_SCRIPTS];
-    int fetched_count = 0;
-    
-    for (int i = 0; i < additional_count && fetched_count < MAX_ADDITIONAL_SCRIPTS; i++) {
-        memset(&additional_scripts[fetched_count], 0, sizeof(HttpBuffer));
-        if (http_get_to_memory(additional_urls[i], &additional_scripts[fetched_count], 
-                               err, sizeof(err))) {
-            LOGI("Fetched additional script %d: %zu bytes from %.100s...",
-                 fetched_count, additional_scripts[fetched_count].size, additional_urls[i]);
-            add_scripts_ptrs[fetched_count] = additional_scripts[fetched_count].data;
-            add_scripts_lens[fetched_count] = additional_scripts[fetched_count].size;
-            fetched_count++;
-        } else {
-            LOGE("Failed to fetch additional script %d: %s", i, err);
-        }
-    }
-    
-    /* Use QuickJS to decrypt signature with additional scripts */
-    if (!js_quickjs_init()) {
-        LOGE("Failed to initialize QuickJS");
-        http_free_buffer(&player_js);
-        for (int i = 0; i < fetched_count; i++) {
-            http_free_buffer(&additional_scripts[i]);
-        }
-        return false;
-    }
-    
-    JsExecResult exec_result = {0};
-    size_t decrypted_len = 0;
-    char *decrypted = js_quickjs_decrypt_signature_ex(
-        player_js.data, player_js.size,
-        fetched_count > 0 ? add_scripts_ptrs : NULL,
-        fetched_count > 0 ? add_scripts_lens : NULL,
-        fetched_count,
-        encrypted_sig, &decrypted_len, &exec_result);
-    
-    /* Log captured URLs */
-    if (exec_result.captured_count > 0) {
-        LOGI("Captured %d URLs during JS execution:", exec_result.captured_count);
-        for (int i = 0; i < exec_result.captured_count && i < 10; i++) {
-            LOGI("  [%s %s] %.150s...", 
-                 exec_result.captured_urls[i].method,
-                 exec_result.captured_urls[i].type,
-                 exec_result.captured_urls[i].url);
-        }
-    }
-    
-    /* Cleanup */
-    http_free_buffer(&player_js);
-    for (int i = 0; i < fetched_count; i++) {
-        http_free_buffer(&additional_scripts[i]);
-    }
-    
-    if (!decrypted || decrypted_len == 0) {
-        LOGE("Failed to decrypt signature");
-        return false;
-    }
-    
-    if (decrypted_len >= out_len) {
-        decrypted_len = out_len - 1;
-    }
-    
-    memcpy(out_decrypted, decrypted, decrypted_len);
-    out_decrypted[decrypted_len] = '\0';
-    
-    free(decrypted);
-    LOGI("Successfully decrypted signature with QuickJS (executed %d additional scripts)", 
-         fetched_count);
-    return true;
-}
-
-/* Legacy function - simple player JS decryption without additional scripts */
-static bool fetch_and_decrypt_signature(const char *player_js_url, const char *encrypted_sig,
-                                         char *out_decrypted, size_t out_len) {
-    return fetch_and_decrypt_signature_ex(player_js_url, NULL, encrypted_sig, 
-                                           out_decrypted, out_len);
-}
-
-/* Extract player JavaScript URL from YouTube page */
-static bool extract_player_js_url(const char *html, char *out_url, size_t out_len) {
-    LOGI("Looking for player JS URL in HTML...");
-    
-    /* Look for player base.js URL pattern - common patterns in YouTube HTML */
     const char *patterns[] = {
-        "/s/player/",
-        "/player/",
-        "player",
+        "var ytInitialPlayerResponse = ",
+        "ytInitialPlayerResponse = ",
+        "window.ytInitialPlayerResponse = ",
         NULL
     };
     
-    for (int i = 0; patterns[i] != NULL; i++) {
-        const char *p = html;
+    for (int p = 0; patterns[p]; p++) {
+        const char *start = strstr(html, patterns[p]);
+        if (!start) continue;
         
-        while ((p = strstr(p, patterns[i])) != NULL) {
-            LOGI("Found pattern '%s' at position %zu", patterns[i], (size_t)(p - html));
-            
-            /* Look backwards for script src or URL start */
-            const char *start = p;
-            while (start > html && start > p - 300) {
-                if (strncmp(start, "https://", 8) == 0 ||
-                    strncmp(start, "//", 2) == 0) {
-                    break;
-                }
-                if (*start == '"' || *start == '\'') {
-                    start++; /* Move past quote */
-                    if (strncmp(start, "https://", 8) == 0 ||
-                        strncmp(start, "//", 2) == 0 ||
-                        strncmp(start, "/", 1) == 0) {
-                        break;
+        start += strlen(patterns[p]);
+        
+        // Skip whitespace
+        while (*start && isspace((unsigned char)*start)) start++;
+        
+        // Find the end - look for matching braces
+        if (*start != '{') continue;
+        
+        const char *p_json = start;
+        int brace_depth = 0;
+        bool in_string = false;
+        bool escape = false;
+        
+        while (*p_json) {
+            if (!in_string) {
+                if (*p_json == '{') brace_depth++;
+                else if (*p_json == '}') {
+                    brace_depth--;
+                    if (brace_depth == 0) {
+                        // Found complete JSON
+                        size_t len = p_json - start + 1;
+                        char *json = malloc(len + 1);
+                        if (json) {
+                            strncpy(json, start, len);
+                            json[len] = '\0';
+                            LOG_INFO("Extracted ytInitialPlayerResponse (%zu bytes)", len);
+                            return json;
+                        }
                     }
-                    start--; /* Move back */
-                }
-                start--;
-            }
-            
-            /* Look forwards for end of URL */
-            const char *end = p + 6;
-            while (*end && *end != '"' && *end != '\'' && *end != ' ' && *end > 32) {
-                end++;
-            }
-            
-            if (end > start && (size_t)(end - start) > 10 && (size_t)(end - start) < out_len) {
-                /* Check if it looks like a player JS file */
-                size_t len = (size_t)(end - start);
-                char temp[512];
-                if (len >= sizeof(temp)) len = sizeof(temp) - 1;
-                memcpy(temp, start, len);
-                temp[len] = '\0';
-                
-                if (strstr(temp, "player") && (strstr(temp, ".js") || strstr(temp, "base.js"))) {
-                    /* Fix protocol-relative URLs */
-                    if (strncmp(temp, "//", 2) == 0) {
-                        snprintf(out_url, out_len, "https:%s", temp);
-                    } else {
-                        memcpy(out_url, temp, len + 1);
-                    }
-                    LOGI("Found player JS URL: %s", out_url);
-                    return true;
                 }
             }
-            p++;
+            
+            if (!escape && *p_json == '"') {
+                in_string = !in_string;
+            } else if (!escape && *p_json == '\\') {
+                escape = true;
+            } else {
+                escape = false;
+            }
+            
+            p_json++;
         }
     }
     
-    return false;
-}
-
-/* Note: The old custom JS engine has been removed.
- * We now use QuickJS for signature decryption.
- * See fetch_and_decrypt_signature() below.
- */
-
-static const char *find_case_insensitive(const char *haystack, const char *needle) {
-    size_t needleLen = strlen(needle);
-    if (needleLen == 0) {
-        return haystack;
-    }
-    for (const char *p = haystack; *p; ++p) {
-        size_t i = 0;
-        while (p[i] && i < needleLen &&
-               tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i])) {
-            ++i;
-        }
-        if (i == needleLen) {
-            return p;
-        }
-    }
     return NULL;
 }
 
-static bool extract_quoted_value(const char *start, char *out, size_t outLen) {
-    const char *quote = strchr(start, '"');
-    char quoteChar = '"';
-    if (!quote) {
-        quote = strchr(start, '\'');
-        quoteChar = '\'';
+// Extract video title from ytInitialPlayerResponse
+static char* extract_video_title(const char *player_response) {
+    if (!player_response) return NULL;
+    
+    const char *title_field = strstr(player_response, "\"title\"");
+    if (!title_field) return NULL;
+    
+    title_field = strchr(title_field, '"');
+    if (title_field) title_field = strchr(title_field + 1, '"');
+    if (!title_field) return NULL;
+    
+    title_field++;
+    const char *title_end = strchr(title_field, '"');
+    if (!title_end) return NULL;
+    
+    size_t len = title_end - title_field;
+    char *title = malloc(len + 1);
+    if (title) {
+        strncpy(title, title_field, len);
+        title[len] = '\0';
     }
-    if (!quote) {
-        return false;
-    }
-    const char *end = strchr(quote + 1, quoteChar);
-    if (!end || end <= quote + 1) {
-        return false;
-    }
-    size_t len = (size_t)(end - (quote + 1));
-    if (len + 1 > outLen) {
-        len = outLen - 1;
-    }
-    memcpy(out, quote + 1, len);
-    out[len] = '\0';
-    return true;
+    return title;
 }
 
-static void url_decode_inplace(char *s) {
-    char *w = s;
-    for (const char *r = s; *r; ++r) {
-        if (*r == '%' && isxdigit((unsigned char)r[1]) && isxdigit((unsigned char)r[2])) {
-            char hex[3] = { r[1], r[2], '\0' };
-            *w++ = (char)strtol(hex, NULL, 16);
-            r += 2;
-        } else if (*r == '+') {
-            *w++ = ' ';
-        } else {
-            *w++ = *r;
-        }
-    }
-    *w = '\0';
-}
-
-static void json_unescape(const char *in, char *out, size_t outLen) {
-    size_t w = 0;
-    for (size_t i = 0; in[i] && w + 1 < outLen; ++i) {
-        if (in[i] == '\\') {
-            char next = in[i + 1];
-            if (next == 'u' &&
-                isxdigit((unsigned char)in[i + 2]) &&
-                isxdigit((unsigned char)in[i + 3]) &&
-                isxdigit((unsigned char)in[i + 4]) &&
-                isxdigit((unsigned char)in[i + 5])) {
-                char hex[5] = { in[i + 2], in[i + 3], in[i + 4], in[i + 5], '\0' };
-                long code = strtol(hex, NULL, 16);
-                // Handle all Unicode characters, not just ASCII
-                if (code > 0 && code <= 0xFF) {
-                    out[w++] = (char)code;
-                } else {
-                    // For non-ASCII, keep the original (shouldn't happen in URLs)
-                    out[w++] = in[i];
-                }
-                i += 5;
-                continue;
-            }
-            if (next == '/' || next == '\\' || next == '"' || next == '\'' || next == 'n' || next == 't' || next == 'r') {
-                if (next == 'n') out[w++] = '\n';
-                else if (next == 't') out[w++] = '\t';
-                else if (next == 'r') out[w++] = '\r';
-                else out[w++] = next;
-                ++i;
-                continue;
-            }
-            // Unknown escape, keep the backslash
-            out[w++] = in[i];
+// Extract all script URLs from HTML
+static int extract_all_script_urls(const char *html, char out_urls[][SCRIPT_URL_MAX_LEN], int max_urls) {
+    if (!html || !out_urls || max_urls <= 0) return 0;
+    
+    int count = 0;
+    const char *p = html;
+    
+    while ((p = strstr(p, "<script")) != NULL && count < max_urls) {
+        // Find src attribute
+        const char *src = strstr(p, "src=");
+        if (!src) {
+            p++;
             continue;
         }
-        out[w++] = in[i];
-    }
-    out[w] = '\0';
-}
-
-static void json_unescape_repeat(const char *in, char *out, size_t outLen) {
-    // Apply json_unescape multiple times until no more changes
-    char temp1[2048], temp2[2048];
-    strncpy(temp1, in, sizeof(temp1) - 1);
-    temp1[sizeof(temp1) - 1] = '\0';
-    
-    for (int pass = 0; pass < 5; pass++) {
-        json_unescape(temp1, temp2, sizeof(temp2));
-        if (strcmp(temp1, temp2) == 0) {
-            // No more changes
-            break;
+        
+        src += 4;
+        while (*src && isspace((unsigned char)*src)) src++;
+        
+        char quote = *src;
+        if (quote != '"' && quote != '\'') {
+            p++;
+            continue;
         }
-        strncpy(temp1, temp2, sizeof(temp1) - 1);
-        temp1[sizeof(temp1) - 1] = '\0';
-    }
-    strncpy(out, temp1, outLen - 1);
-    out[outLen - 1] = '\0';
-}
-
-static bool query_get_param(const char *query, const char *key, char *out, size_t outLen) {
-    size_t keyLen = strlen(key);
-    const char *p = query;
-    while (p && *p) {
-        const char *eq = strchr(p, '=');
-        if (!eq) {
-            break;
+        
+        src++;
+        const char *end = strchr(src, quote);
+        if (!end) {
+            p++;
+            continue;
         }
-        size_t nameLen = (size_t)(eq - p);
-        if (nameLen == keyLen && strncmp(p, key, keyLen) == 0) {
-            const char *valStart = eq + 1;
-            const char *amp = strchr(valStart, '&');
-            size_t valLen = amp ? (size_t)(amp - valStart) : strlen(valStart);
-            if (valLen >= outLen) {
-                valLen = outLen - 1;
+        
+        size_t len = end - src;
+        if (len > 0 && len < SCRIPT_URL_MAX_LEN - 1) {
+            strncpy(out_urls[count], src, len);
+            out_urls[count][len] = '\0';
+            
+            // Convert relative to absolute
+            if (strncmp(out_urls[count], "//", 2) == 0) {
+                char temp[SCRIPT_URL_MAX_LEN];
+                snprintf(temp, sizeof(temp), "https:%s", out_urls[count]);
+                strcpy(out_urls[count], temp);
+            } else if (out_urls[count][0] == '/') {
+                char temp[SCRIPT_URL_MAX_LEN];
+                snprintf(temp, sizeof(temp), "https://www.youtube.com%s", out_urls[count]);
+                strcpy(out_urls[count], temp);
+            } else if (strncmp(out_urls[count], "http", 4) != 0) {
+                // Skip non-HTTP URLs
+                p++;
+                continue;
             }
-            memcpy(out, valStart, valLen);
-            out[valLen] = '\0';
-            return true;
+            
+            LOG_INFO("Found script URL: %.80s...", out_urls[count]);
+            count++;
         }
-        p = strchr(eq + 1, '&');
-        if (p) {
-            ++p;
-        }
-    }
-    return false;
-}
-
-static bool find_json_value(const char *json, const char *key, char *out, size_t outLen) {
-    char searchKey[256];
-    snprintf(searchKey, sizeof(searchKey), "\"%s\"", key);
-    const char *keyPos = find_case_insensitive(json, searchKey);
-    if (!keyPos) {
-        return false;
-    }
-    const char *colon = strchr(keyPos, ':');
-    if (!colon) {
-        return false;
-    }
-    // Skip whitespace after colon
-    const char *valueStart = colon + 1;
-    while (*valueStart && (*valueStart == ' ' || *valueStart == '\t' || *valueStart == '\n' || *valueStart == '\r')) {
-        valueStart++;
-    }
-    // Try to extract quoted value
-    if (extract_quoted_value(valueStart - 1, out, outLen)) {
-        return true;
-    }
-    // Try unquoted value (for numbers, booleans, etc.)
-    const char *end = valueStart;
-    while (*end && *end != ',' && *end != '}' && *end != ']' && *end != '\n' && *end != '\r') {
-        end++;
-    }
-    size_t len = (size_t)(end - valueStart);
-    if (len > 0 && len < outLen) {
-        memcpy(out, valueStart, len);
-        out[len] = '\0';
-        return true;
-    }
-    return false;
-}
-
-static bool extract_youtube_audio_url(const char *html, char *outUrl, size_t outLen) {
-    // Look for ytInitialPlayerResponse or similar JavaScript variables
-    const char *playerResponse = find_case_insensitive(html, "ytInitialPlayerResponse");
-    if (playerResponse) {
-        LOGI("Found ytInitialPlayerResponse");
-    } else {
-        playerResponse = find_case_insensitive(html, "var ytInitialPlayerResponse");
-        if (playerResponse) {
-            LOGI("Found var ytInitialPlayerResponse");
-        }
-    }
-    if (!playerResponse) {
-        playerResponse = find_case_insensitive(html, "ytInitialData");
-        if (playerResponse) {
-            LOGI("Found ytInitialData");
-        }
-    }
-    if (!playerResponse) {
-        LOGI("No ytInitialPlayerResponse or ytInitialData found in HTML");
-        // Try direct search for streamingData
-        const char *streamingData = find_case_insensitive(html, "\"streamingData\"");
-        if (streamingData) {
-            LOGI("Found streamingData directly in HTML");
-            playerResponse = streamingData - 1000; // Look backwards a bit for context
-        }
+        
+        p = end;
     }
     
-    // If we found a player response variable, try to extract JSON from it
-    if (playerResponse) {
-        const char *equals = strchr(playerResponse, '=');
-        if (equals) {
-            // Find the start of JSON (should be {)
-            const char *jsonStart = equals + 1;
-            while (*jsonStart && (*jsonStart == ' ' || *jsonStart == '\t' || *jsonStart == '\n')) {
-                jsonStart++;
-            }
-            if (*jsonStart == '{') {
-                // Find matching closing brace (simplified - just look for streamingData)
-                const char *streamingData = find_case_insensitive(jsonStart, "\"streamingData\"");
-                if (streamingData) {
-                    const char *formats = find_case_insensitive(streamingData, "\"formats\"");
-                    const char *adaptiveFormats = find_case_insensitive(streamingData, "\"adaptiveFormats\"");
-                    const char *searchStart = adaptiveFormats ? adaptiveFormats : formats;
-                    if (searchStart) {
-                        // Look for audio mimeType in formats array
-                        const char *cursor = searchStart;
-                        while ((cursor = find_case_insensitive(cursor, "\"mimeType\"")) != NULL) {
-                            char mime[256];
-                            if (!find_json_value(cursor, "mimeType", mime, sizeof(mime))) {
-                                cursor++;
-                                continue;
-                            }
-                            // Accept pure audio formats OR combined video+audio formats (for direct download)
-                            bool isAudio = strstr(mime, "audio/") != NULL;
-                            bool isVideoWithAudio = strstr(mime, "video/") != NULL && strstr(mime, "mp4a") != NULL;
-                            if (!isAudio && !isVideoWithAudio) {
-                                LOGI("Skipping non-audio mimeType: %s", mime);
-                                cursor++;
-                                continue;
-                            }
-                            LOGI("Found audio mimeType: %s", mime);
-                            // Found audio mimeType, now get the URL
-                            // Make sure we're looking within the same object (not too far away)
-                            const char *objStart = cursor;
-                            while (objStart > searchStart && objStart > cursor - 500) {
-                                if (*objStart == '{') {
-                                    break;
-                                }
-                                objStart--;
-                            }
-                            const char *objEnd = strchr(cursor, '}');
-                            if (!objEnd || objEnd > cursor + 2000) {
-                                cursor++;
-                                continue;
-                            }
-                            // Try to find "url" field first
-                            const char *urlPos = find_case_insensitive(objStart, "\"url\"");
-                            LOGI("Looking for url field, urlPos=%p, objEnd=%p", (void*)urlPos, (void*)objEnd);
-                            if (urlPos && urlPos < objEnd) {
-                                char url[2048];
-                                LOGI("Found url field, extracting value...");
-                                if (find_json_value(urlPos, "url", url, sizeof(url))) {
-                                    LOGI("Extracted raw URL: %.100s...", url);
-                                    // Validate it's a googlevideo.com URL, not a thumbnail
-                                    if (strstr(url, "googlevideo.com") && !strstr(url, "i.ytimg.com")) {
-                                        char unescaped[2048];
-                                        json_unescape_repeat(url, unescaped, sizeof(unescaped));
-                                        LOGI("After json_unescape_repeat: %s", unescaped);
-                                        url_decode_inplace(unescaped);
-                                        LOGI("After url_decode: %s", unescaped);
-                                        // Accept audio streams, or video streams that contain audio (for direct download)
-                                        bool hasAudio = strstr(unescaped, "mime=audio") ||
-                                                       strstr(unescaped, "itag=140") || strstr(unescaped, "itag=251") ||
-                                                       strstr(unescaped, "itag=250") || strstr(unescaped, "itag=249") ||
-                                                       strstr(unescaped, "itag=171") || strstr(unescaped, "itag=172") ||
-                                                       strstr(unescaped, "itag=18") || strstr(unescaped, "itag=22") ||
-                                                       strstr(unescaped, "itag=43");
-                                        if (hasAudio) {
-                                            /* Check if URL has encrypted signature (sig parameter) */
-                                            char sig[512] = {0};
-                                            char sp[64] = {0};
-                                            bool hasEncryptedSig = false;
-                                            
-                                            if (strstr(unescaped, "&sig=") || strstr(unescaped, "?sig=")) {
-                                                LOGI("URL has encrypted signature, needs decryption");
-                                                hasEncryptedSig = true;
-                                                /* Extract sig from URL */
-                                                const char *sigStart = strstr(unescaped, "sig=");
-                                                if (sigStart) {
-                                                    sigStart += 4;
-                                                    const char *sigEnd = strchr(sigStart, '&');
-                                                    size_t sigLen = sigEnd ? (size_t)(sigEnd - sigStart) : strlen(sigStart);
-                                                    if (sigLen >= sizeof(sig)) sigLen = sizeof(sig) - 1;
-                                                    memcpy(sig, sigStart, sigLen);
-                                                    sig[sigLen] = '\0';
-                                                    LOGI("Extracted encrypted sig: %.50s...", sig);
-                                                }
-                                                snprintf(sp, sizeof(sp), "sig");
-                                                
-                                                /* Try to decrypt signature */
-                                                char decrypted_sig[512] = {0};
-                                                char player_js_url[512] = {0};
-                                                
-                                                if (extract_player_js_url(html, player_js_url, sizeof(player_js_url))) {
-                                                    LOGI("Found player JS URL: %s", player_js_url);
-                                                    if (fetch_and_decrypt_signature_ex(player_js_url, html, sig, 
-                                                                                    decrypted_sig, sizeof(decrypted_sig))) {
-                                                        LOGI("Signature decrypted successfully");
-                                                        /* Replace encrypted sig with decrypted one in URL */
-                                                        char *newUrl = malloc(strlen(unescaped) + strlen(decrypted_sig) + 10);
-                                                        if (newUrl) {
-                                                            /* Find position of sig= */
-                                                            char *sigPos = strstr(unescaped, "sig=");
-                                                            if (sigPos) {
-                                                                *sigPos = '\0';
-                                                                sigPos += 4;
-                                                                while (*sigPos && *sigPos != '&') sigPos++;
-                                                                snprintf(newUrl, strlen(unescaped) + strlen(decrypted_sig) + strlen(sigPos) + 10,
-                                                                        "%ssig=%s%s", unescaped, decrypted_sig, sigPos);
-                                                                strncpy(unescaped, newUrl, sizeof(unescaped) - 1);
-                                                                unescaped[sizeof(unescaped) - 1] = '\0';
-                                                                LOGI("URL updated with decrypted signature");
-                                                            }
-                                                            free(newUrl);
-                                                        }
-                                                    } else {
-                                                        LOGE("Failed to decrypt signature");
-                                                    }
-                                                } else {
-                                                    LOGE("Could not find player JS URL for signature decryption");
-                                                }
-                                            }
-                                            
-                                            // Replace any remaining \u0026 with & (in case unescaping missed some)
-                                            char final[2048];
-                                            size_t j = 0;
-                                            for (size_t i = 0; unescaped[i] && j + 1 < sizeof(final); i++) {
-                                                if (unescaped[i] == '\\' && unescaped[i+1] == 'u' &&
-                                                    unescaped[i+2] == '0' && unescaped[i+3] == '0' &&
-                                                    unescaped[i+4] == '2' && unescaped[i+5] == '6') {
-                                                    final[j++] = '&';
-                                                    i += 5;
-                                                } else {
-                                                    final[j++] = unescaped[i];
-                                                }
-                                            }
-                                            final[j] = '\0';
-                                            snprintf(outUrl, outLen, "%s", final);
-                                            LOGI("Found YouTube audio URL from player response: %s", outUrl);
-                                            return true;
-                                        } else {
-                                            LOGI("Rejected URL (no audio): %s", unescaped);
-                                        }
-                                    }
-                                }
-                            }
-                            // Try signatureCipher with JavaScript decryption (must be within same object)
-                            if (objEnd && objEnd < cursor + 2000) {
-                                const char *sigCipher = find_case_insensitive(objStart, "\"signatureCipher\"");
-                                if (sigCipher && sigCipher < objEnd) {
-                                    char cipher[2048];
-                                    if (find_json_value(sigCipher, "signatureCipher", cipher, sizeof(cipher))) {
-                                        char unescaped[2048];
-                                        json_unescape_repeat(cipher, unescaped, sizeof(unescaped));
-                                        url_decode_inplace(unescaped);
-                                        char url[2048] = {0};
-                                        char sig[512] = {0};
-                                        char sp[64] = {0};
-                                        if (query_get_param(unescaped, "url", url, sizeof(url))) {
-                                            // Validate it's a googlevideo.com URL
-                                            if (strstr(url, "googlevideo.com") && !strstr(url, "i.ytimg.com")) {
-                                                // Unescape the URL from the query parameter
-                                                char urlUnescaped[2048];
-                                                json_unescape_repeat(url, urlUnescaped, sizeof(urlUnescaped));
-                                                url_decode_inplace(urlUnescaped);
-                                                // Accept audio streams or video streams with audio
-                                                bool hasAudio = strstr(urlUnescaped, "mime=audio") ||
-                                                               strstr(urlUnescaped, "itag=140") || strstr(urlUnescaped, "itag=251") ||
-                                                               strstr(urlUnescaped, "itag=250") || strstr(urlUnescaped, "itag=249") ||
-                                                               strstr(urlUnescaped, "itag=18") || strstr(urlUnescaped, "itag=22") ||
-                                                               strstr(urlUnescaped, "itag=43");
-                                                if (hasAudio) {
-                                                    query_get_param(unescaped, "sp", sp, sizeof(sp));
-                                                    if (!query_get_param(unescaped, "sig", sig, sizeof(sig))) {
-                                                        query_get_param(unescaped, "signature", sig, sizeof(sig));
-                                                    }
-                                                    if (sp[0] == '\0') {
-                                                        snprintf(sp, sizeof(sp), "signature");
-                                                    }
-                                                    if (sig[0] != '\0') {
-                                                        /* Try to decrypt the signature using JavaScript engine */
-                                                        char decrypted_sig[512] = {0};
-                                                        bool decrypted = false;
-                                                        
-                                                        /* Extract player JS from the page if available */
-                                                        char player_js_url[512] = {0};
-                                                        if (extract_player_js_url(html, player_js_url, sizeof(player_js_url))) {
-                                                            /* Fetch player JS and decrypt signature */
-                                                            if (fetch_and_decrypt_signature_ex(player_js_url, html, sig, 
-                                                                                            decrypted_sig, sizeof(decrypted_sig))) {
-                                                                decrypted = true;
-                                                                LOGI("Signature decrypted using player JS");
-                                                            } else {
-                                                                /* Fallback: use signature as-is */
-                                                                strncpy(decrypted_sig, sig, sizeof(decrypted_sig) - 1);
-                                                                decrypted = true;
-                                                                LOGI("Using signature as-is (decryption failed)");
-                                                            }
-                                                        } else {
-                                                            /* No player JS found, use signature as-is */
-                                                            strncpy(decrypted_sig, sig, sizeof(decrypted_sig) - 1);
-                                                            decrypted = true;
-                                                            LOGI("No player JS found, using signature as-is");
-                                                        }
-                                                        
-                                                        if (decrypted) {
-                                                            // Replace any remaining \u0026 with &
-                                                            char final[2048];
-                                                            snprintf(final, sizeof(final), "%s&%s=%s", urlUnescaped, sp, decrypted_sig);
-                                                            size_t j = 0;
-                                                            char final2[2048];
-                                                            for (size_t i = 0; final[i] && j + 1 < sizeof(final2); i++) {
-                                                                if (final[i] == '\\' && final[i+1] == 'u' &&
-                                                                    final[i+2] == '0' && final[i+3] == '0' &&
-                                                                    final[i+4] == '2' && final[i+5] == '6') {
-                                                                    final2[j++] = '&';
-                                                                    i += 5;
-                                                                } else {
-                                                                    final2[j++] = final[i];
-                                                                }
-                                                            }
-                                                            final2[j] = '\0';
-                                                            snprintf(outUrl, outLen, "%s", final2);
-                                                            LOGI("Found YouTube audio URL from signatureCipher: %s", outUrl);
-                                                            return true;
-                                                        }
-                                                    }
-                                                } else {
-                                                    LOGI("Rejected signatureCipher URL (no audio): %s", urlUnescaped);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            cursor++;
-                        }
+    LOG_INFO("Extracted %d script URLs", count);
+    return count;
+}
+
+// Find and extract the base.js player script (most important for signature decryption)
+static bool find_base_js_url(const char *html, char *out_url, size_t out_len) {
+    if (!html || !out_url || out_len == 0) return false;
+    
+    // Try to find the player base script
+    // Look for patterns like /s/player/.../player_ias.vflset/.../base.js
+    const char *p = html;
+    while ((p = strstr(p, "base.js")) != NULL) {
+        // Find the start of the URL
+        const char *start = p;
+        while (start > html && start[-1] != '"' && start[-1] != '\'') start--;
+        
+        if (start > html) {
+            const char *end = p + 7; // len("base.js")
+            if (*end == '"' || *end == '\'') {
+                size_t len = end - start;
+                if (len < out_len) {
+                    strncpy(out_url, start, len);
+                    out_url[len] = '\0';
+                    
+                    // Make absolute
+                    if (strncmp(out_url, "//", 2) == 0) {
+                        char temp[512];
+                        snprintf(temp, sizeof(temp), "https:%s", out_url);
+                        strncpy(out_url, temp, out_len - 1);
+                        out_url[out_len - 1] = '\0';
+                    } else if (out_url[0] == '/') {
+                        char temp[512];
+                        snprintf(temp, sizeof(temp), "https://www.youtube.com%s", out_url);
+                        strncpy(out_url, temp, out_len - 1);
+                        out_url[out_len - 1] = '\0';
                     }
-                }
-            }
-        }
-    }
-    
-    // Fallback: look for mimeType patterns anywhere in HTML (old method)
-    const char *cursor = html;
-    while ((cursor = find_case_insensitive(cursor, "\"mimeType\"")) != NULL) {
-        const char *colon = strchr(cursor, ':');
-        if (!colon) {
-            break;
-        }
-        char mime[256];
-        if (!extract_quoted_value(colon, mime, sizeof(mime))) {
-            cursor = colon + 1;
-            continue;
-        }
-        if (!strstr(mime, "audio/")) {
-            cursor = colon + 1;
-            continue;
-        }
-        const char *limit = colon + 2000;
-        const char *urlKey = find_case_insensitive(colon, "\"url\"");
-        if (urlKey && urlKey < limit) {
-            char raw[2048];
-            if (extract_quoted_value(urlKey, raw, sizeof(raw))) {
-                char unescaped[2048];
-                json_unescape_repeat(raw, unescaped, sizeof(unescaped));
-                url_decode_inplace(unescaped);
-                // Validate it's a googlevideo.com URL, not a thumbnail
-                if (strstr(unescaped, "googlevideo.com") && !strstr(unescaped, "i.ytimg.com")) {
-                    snprintf(outUrl, outLen, "%s", unescaped);
-                    LOGI("Found YouTube audio URL from mimeType pattern: %s", outUrl);
+                    
+                    LOG_INFO("Found base.js: %s", out_url);
                     return true;
-                } else {
-                    LOGI("Rejected URL (not googlevideo.com): %s", unescaped);
                 }
             }
         }
-        const char *sigKey = find_case_insensitive(colon, "\"signatureCipher\"");
-        if (sigKey && sigKey < limit) {
-            char raw[2048];
-            if (!extract_quoted_value(sigKey, raw, sizeof(raw))) {
-                cursor = sigKey + 1;
-                continue;
-            }
-            char unescaped[2048];
-            json_unescape_repeat(raw, unescaped, sizeof(unescaped));
-            url_decode_inplace(unescaped);
-            char url[2048] = {0};
-            char sig[512] = {0};
-            char sp[64] = {0};
-            if (!query_get_param(unescaped, "url", url, sizeof(url))) {
-                cursor = sigKey + 1;
-                continue;
-            }
-            // Validate it's a googlevideo.com URL, not a thumbnail
-            if (!strstr(url, "googlevideo.com") || strstr(url, "i.ytimg.com")) {
-                LOGI("Rejected signatureCipher URL (not googlevideo.com): %s", url);
-                cursor = sigKey + 1;
-                continue;
-            }
-            query_get_param(unescaped, "sp", sp, sizeof(sp));
-            if (!query_get_param(unescaped, "sig", sig, sizeof(sig)) &&
-                !query_get_param(unescaped, "signature", sig, sizeof(sig))) {
-                cursor = sigKey + 1;
-                continue;
-            }
-            if (sp[0] == '\0') {
-                snprintf(sp, sizeof(sp), "signature");
-            }
-            snprintf(outUrl, outLen, "%s&%s=%s", url, sp, sig);
-            LOGI("Found YouTube audio URL from signatureCipher pattern: %s", outUrl);
-            return true;
-        }
-        cursor = colon + 1;
+        p++;
     }
     
-    // Final fallback: look for googlevideo.com URLs with audio parameters
-    const char *videoCursor = html;
-    while ((videoCursor = find_case_insensitive(videoCursor, "googlevideo.com")) != NULL) {
-        // Look backwards to find URL start (up to 500 chars)
-        const char *urlStart = videoCursor;
-        int lookback = 0;
-        while (lookback < 500 && urlStart > html) {
-            if (strncmp(urlStart, "https://", 8) == 0) {
-                // Found URL start, extract the full URL
-                const char *urlEnd = strchr(urlStart, '"');
-                if (!urlEnd) {
-                    urlEnd = strchr(urlStart, '\'');
-                }
-                if (!urlEnd) {
-                    urlEnd = strchr(urlStart, ' ');
-                }
-                if (!urlEnd) {
-                    urlEnd = strchr(urlStart, '\n');
-                }
-                if (!urlEnd) {
-                    urlEnd = strchr(urlStart, '}');
-                }
-                if (!urlEnd) {
-                    urlEnd = strchr(urlStart, ',');
-                }
-                if (urlEnd && urlEnd > urlStart) {
-                    size_t urlLen = (size_t)(urlEnd - urlStart);
-                    if (urlLen < outLen && urlLen > 50) { // Minimum reasonable URL length
-                        char tempUrl[2048];
-                        if (urlLen < sizeof(tempUrl)) {
-                            memcpy(tempUrl, urlStart, urlLen);
-                            tempUrl[urlLen] = '\0';
-                            // Unescape JSON sequences first
-                            char unescaped[2048];
-                            json_unescape_repeat(tempUrl, unescaped, sizeof(unescaped));
-                            url_decode_inplace(unescaped);
-                            // Check if it has audio-related parameters
-                            bool hasAudio = strstr(unescaped, "mime=audio") ||
-                                           strstr(unescaped, "itag=140") || strstr(unescaped, "itag=251") ||
-                                           strstr(unescaped, "itag=250") || strstr(unescaped, "itag=249") ||
-                                           strstr(unescaped, "itag=171") || strstr(unescaped, "itag=172") ||
-                                           strstr(unescaped, "itag=18") || strstr(unescaped, "itag=22") ||
-                                           strstr(unescaped, "itag=43");
-                            if (hasAudio) {
-                                /* Check if URL has encrypted signature */
-                                if (strstr(unescaped, "&sig=") || strstr(unescaped, "?sig=")) {
-                                    LOGI("Fallback: URL has encrypted signature, needs JS decryption");
-                                    /* Try to find player JS and decrypt */
-                                    char player_js_url[512] = {0};
-                                    if (extract_player_js_url(html, player_js_url, sizeof(player_js_url))) {
-                                        LOGI("Fallback: Found player JS URL: %s", player_js_url);
-                                        
-                                        /* Fix relative URLs */
-                                        char full_player_js_url[512] = {0};
-                                        if (strncmp(player_js_url, "//", 2) == 0) {
-                                            snprintf(full_player_js_url, sizeof(full_player_js_url), 
-                                                    "https:%s", player_js_url);
-                                        } else if (player_js_url[0] == '/') {
-                                            snprintf(full_player_js_url, sizeof(full_player_js_url),
-                                                    "https://www.youtube.com%s", player_js_url);
-                                        } else {
-                                            strncpy(full_player_js_url, player_js_url, sizeof(full_player_js_url) - 1);
-                                        }
-                                        LOGI("Fallback: Full player JS URL: %s", full_player_js_url);
-                                        
-                                        /* Extract sig from URL */
-                                        char sig[512] = {0};
-                                        const char *sigStart = strstr(unescaped, "sig=");
-                                        if (sigStart) {
-                                            sigStart += 4;
-                                            const char *sigEnd = strchr(sigStart, '&');
-                                            size_t sigLen = sigEnd ? (size_t)(sigEnd - sigStart) : strlen(sigStart);
-                                            if (sigLen >= sizeof(sig)) sigLen = sizeof(sig) - 1;
-                                            memcpy(sig, sigStart, sigLen);
-                                            sig[sigLen] = '\0';
-                                            LOGI("Fallback: Extracted encrypted sig: %.50s...", sig);
-                                            
-                                            /* Decrypt signature */
-                                            char decrypted_sig[512] = {0};
-                                            if (fetch_and_decrypt_signature_ex(full_player_js_url, html, sig,
-                                                                            decrypted_sig, sizeof(decrypted_sig))) {
-                                                LOGI("Fallback: Signature decrypted successfully");
-                                                /* Replace encrypted sig with decrypted one */
-                                                char *newUrl = malloc(strlen(unescaped) + strlen(decrypted_sig) + 10);
-                                                if (newUrl) {
-                                                    char *sigPos = strstr(unescaped, "sig=");
-                                                    if (sigPos) {
-                                                        *sigPos = '\0';
-                                                        sigPos += 4;
-                                                        while (*sigPos && *sigPos != '&') sigPos++;
-                                                        snprintf(newUrl, strlen(unescaped) + strlen(decrypted_sig) + strlen(sigPos) + 10,
-                                                                "%ssig=%s%s", unescaped, decrypted_sig, sigPos);
-                                                        strncpy(unescaped, newUrl, sizeof(unescaped) - 1);
-                                                        unescaped[sizeof(unescaped) - 1] = '\0';
-                                                        LOGI("Fallback: URL updated with decrypted signature");
-                                                    }
-                                                    free(newUrl);
-                                                }
-                                            } else {
-                                                LOGE("Fallback: Failed to decrypt signature");
-                                            }
-                                        }
-                                    } else {
-                                        LOGE("Fallback: Could not find player JS URL");
-                                    }
-                                }
-                                snprintf(outUrl, outLen, "%s", unescaped);
-                                LOGI("Found googlevideo.com audio URL: %s", outUrl);
-                                return true;
-                            }
-                        }
-                    }
-                }
+    return false;
+}
+
+// Decrypt signature using the player scripts
+static bool decrypt_signature_with_scripts(const char *html, const char *encrypted_sig,
+                                           char *out_decrypted, size_t out_len) {
+    if (!html || !encrypted_sig || !out_decrypted || out_len == 0) {
+        return false;
+    }
+    
+    LOG_INFO("Attempting signature decryption");
+    
+    // Extract all script URLs
+    char script_urls[MAX_SCRIPT_URLS][SCRIPT_URL_MAX_LEN];
+    int script_count = extract_all_script_urls(html, script_urls, MAX_SCRIPT_URLS);
+    
+    if (script_count == 0) {
+        LOG_ERROR("No script URLs found in HTML");
+        return false;
+    }
+    
+    // Prioritize base.js (main player script)
+    char base_js[SCRIPT_URL_MAX_LEN] = {0};
+    if (find_base_js_url(html, base_js, sizeof(base_js))) {
+        // Move base.js to front of list
+        for (int i = 0; i < script_count; i++) {
+            if (strstr(script_urls[i], "base.js")) {
+                char temp[SCRIPT_URL_MAX_LEN];
+                strcpy(temp, script_urls[0]);
+                strcpy(script_urls[0], script_urls[i]);
+                strcpy(script_urls[i], temp);
+                LOG_INFO("Prioritized base.js to position 0");
                 break;
             }
-            urlStart--;
-            lookback++;
         }
-        videoCursor++;
+    }
+    
+    // Fetch all scripts
+    const char *scripts[MAX_SCRIPT_URLS];
+    size_t script_lens[MAX_SCRIPT_URLS];
+    int loaded_count = 0;
+    
+    for (int i = 0; i < script_count && loaded_count < MAX_SCRIPT_URLS; i++) {
+        scripts[loaded_count] = NULL;
+        script_lens[loaded_count] = 0;
+        
+        DownloadContext dl_ctx;
+        memset(&dl_ctx, 0, sizeof(DownloadContext));
+        dl_ctx.buffer = malloc(2 * 1024 * 1024); // 2MB for scripts
+        if (!dl_ctx.buffer) continue;
+        dl_ctx.buffer_size = 2 * 1024 * 1024;
+        
+        LOG_INFO("Fetching script %d/%d: %.80s", i + 1, script_count, script_urls[i]);
+        
+        int result = http_download_file(script_urls[i], &dl_ctx);
+        if (result >= 0 && dl_ctx.total_received > 0) {
+            scripts[loaded_count] = dl_ctx.buffer;
+            script_lens[loaded_count] = dl_ctx.total_received;
+            loaded_count++;
+            LOG_INFO("Loaded script %d: %zu bytes", i, dl_ctx.total_received);
+        } else {
+            LOG_WARN("Failed to fetch script %d: %d", i, result);
+            free(dl_ctx.buffer);
+        }
+    }
+    
+    if (loaded_count == 0) {
+        LOG_ERROR("Failed to fetch any scripts");
+        return false;
+    }
+    
+    LOG_INFO("Successfully loaded %d scripts", loaded_count);
+    
+    // Extract ytInitialPlayerResponse from HTML
+    char *player_response = extract_yt_player_response(html);
+    
+    // Execute all scripts with the player response injected
+    JsExecResult js_result;
+    memset(&js_result, 0, sizeof(JsExecResult));
+    
+    LOG_INFO("Executing %d scripts with ytInitialPlayerResponse", loaded_count);
+    
+    bool js_success = js_quickjs_exec_scripts_with_data(
+        (const char**)scripts, script_lens, loaded_count,
+        player_response, &js_result
+    );
+    
+    // Free scripts
+    for (int i = 0; i < loaded_count; i++) {
+        free((void*)scripts[i]);
+    }
+    
+    if (!js_success) {
+        LOG_ERROR("JavaScript execution failed");
+        free(player_response);
+        return false;
+    }
+    
+    LOG_INFO("JavaScript execution successful, captured %d URLs", js_result.captured_url_count);
+    
+    // Look for decrypted URLs in captured URLs
+    bool found = false;
+    for (int i = 0; i < js_result.captured_url_count; i++) {
+        LOG_INFO("Captured URL %d: %.100s...", i, js_result.captured_urls[i]);
+        
+        // Check if this is a googlevideo.com URL without signature cipher
+        if (strstr(js_result.captured_urls[i], "googlevideo.com") &&
+            !strstr(js_result.captured_urls[i], "&s=") &&
+            !strstr(js_result.captured_urls[i], "&sig=")) {
+            // This looks like a decrypted URL
+            strncpy(out_decrypted, js_result.captured_urls[i], out_len - 1);
+            out_decrypted[out_len - 1] = '\0';
+            found = true;
+            LOG_INFO("Found decrypted URL!");
+            break;
+        }
+    }
+    
+    free(player_response);
+    
+    if (!found) {
+        LOG_WARN("No decrypted URL found in captured URLs");
+    }
+    
+    return found;
+}
+
+// Extract YouTube video ID from URL
+static bool extract_yt_video_id(const char *url, char *out_id, size_t out_len) {
+    if (!url || !out_id || out_len == 0) return false;
+    
+    const char *patterns[] = {
+        "?v=",
+        "&v=",
+        "/v/",
+        "/embed/",
+        ".be/",
+        NULL
+    };
+    
+    for (int i = 0; patterns[i]; i++) {
+        const char *p = strstr(url, patterns[i]);
+        if (p) {
+            p += strlen(patterns[i]);
+            size_t len = 0;
+            while (p[len] && (isalnum((unsigned char)p[len]) || p[len] == '_' || p[len] == '-')) {
+                len++;
+            }
+            if (len >= 11 && len < out_len) {
+                strncpy(out_id, p, len);
+                out_id[len] = '\0';
+                return true;
+            }
+        }
     }
     
     return false;
 }
 
-static bool extract_src_from_tag(const char *tagStart, char *outUrl, size_t outLen,
-                                 char *outMime, size_t mimeLen) {
-    const char *srcAttr = find_case_insensitive(tagStart, "src=");
-    if (!srcAttr) {
-        return false;
+// Main extraction function
+int html_extract_media_streams(const char *html_url, MediaStream *streams, int max_streams) {
+    if (!html_url || !streams || max_streams <= 0) {
+        LOG_ERROR("Invalid arguments to html_extract_media_streams");
+        return -1;
     }
-    if (!extract_quoted_value(srcAttr, outUrl, outLen)) {
-        return false;
+    
+    LOG_INFO("Extracting media streams from: %s", html_url);
+    
+    // Extract video ID
+    char video_id[32] = {0};
+    if (!extract_yt_video_id(html_url, video_id, sizeof(video_id))) {
+        LOG_ERROR("Could not extract video ID from URL");
+        return -1;
     }
-    const char *typeAttr = find_case_insensitive(tagStart, "type=");
-    if (typeAttr) {
-        extract_quoted_value(typeAttr, outMime, mimeLen);
+    LOG_INFO("Video ID: %s", video_id);
+    
+    // Download HTML page
+    char html_url_buffer[512];
+    if (strstr(html_url, "?v=") || strstr(html_url, "&v=")) {
+        strncpy(html_url_buffer, html_url, sizeof(html_url_buffer) - 1);
     } else {
-        outMime[0] = '\0';
+        snprintf(html_url_buffer, sizeof(html_url_buffer), 
+                 "https://www.youtube.com/watch?v=%s&hl=en", video_id);
     }
-    return true;
-}
-
-static bool extract_og_video(const char *html, char *outUrl, size_t outLen) {
-    const char *meta = find_case_insensitive(html, "property=\"og:video\"");
-    if (!meta) {
-        meta = find_case_insensitive(html, "property='og:video'");
+    html_url_buffer[sizeof(html_url_buffer) - 1] = '\0';
+    
+    DownloadContext dl_ctx;
+    memset(&dl_ctx, 0, sizeof(DownloadContext));
+    dl_ctx.buffer = malloc(MAX_HTML_SIZE);
+    if (!dl_ctx.buffer) {
+        LOG_ERROR("Failed to allocate HTML buffer");
+        return -1;
     }
-    if (!meta) {
-        meta = find_case_insensitive(html, "property=\"og:video:secure_url\"");
+    dl_ctx.buffer_size = MAX_HTML_SIZE;
+    
+    LOG_INFO("Downloading HTML from: %s", html_url_buffer);
+    int result = http_download_file(html_url_buffer, &dl_ctx);
+    
+    if (result < 0 || dl_ctx.total_received == 0) {
+        LOG_ERROR("Failed to download HTML: %d", result);
+        free(dl_ctx.buffer);
+        return -1;
     }
-    if (!meta) {
-        return false;
+    
+    // Null terminate
+    if (dl_ctx.total_received >= dl_ctx.buffer_size) {
+        dl_ctx.total_received = dl_ctx.buffer_size - 1;
     }
-    const char *content = find_case_insensitive(meta, "content=");
-    if (!content) {
-        return false;
+    dl_ctx.buffer[dl_ctx.total_received] = '\0';
+    
+    LOG_INFO("Downloaded %zu bytes of HTML", dl_ctx.total_received);
+    
+    // Extract ytInitialPlayerResponse
+    char *player_response = extract_yt_player_response(dl_ctx.buffer);
+    if (!player_response) {
+        LOG_ERROR("Failed to extract ytInitialPlayerResponse");
+        free(dl_ctx.buffer);
+        return -1;
     }
-    return extract_quoted_value(content, outUrl, outLen);
-}
-
-static bool extract_jsonld_content_url(const char *html, char *outUrl, size_t outLen) {
-    const char *contentUrl = find_case_insensitive(html, "\"contentUrl\"");
-    if (!contentUrl) {
-        return false;
+    
+    LOG_INFO("Extracted player response: %zu bytes", strlen(player_response));
+    
+    // Parse streams from player response
+    int stream_count = parse_yt_player_response(player_response, streams, max_streams);
+    
+    if (stream_count == 0) {
+        LOG_ERROR("No streams found in player response");
+        free(player_response);
+        free(dl_ctx.buffer);
+        return 0;
     }
-    const char *colon = strchr(contentUrl, ':');
-    if (!colon) {
-        return false;
-    }
-    return extract_quoted_value(colon, outUrl, outLen);
-}
-
-static bool is_media_url(const char *url) {
-    if (!url || url[0] == '\0') {
-        return false;
-    }
-    // Reject YouTube HTML pages
-    if (strstr(url, "youtube.com/watch") || strstr(url, "youtube.com/embed") ||
-        strstr(url, "youtu.be/") || strstr(url, "youtube.com/v/")) {
-        return false;
-    }
-    // Accept URLs with media extensions or common media patterns
-    const char *ext = strrchr(url, '.');
-    if (ext) {
-        const char *extLower = ext;
-        // Check for common media extensions
-        if (strstr(extLower, ".mp4") || strstr(extLower, ".webm") ||
-            strstr(extLower, ".m4a") || strstr(extLower, ".mp3") ||
-            strstr(extLower, ".aac") || strstr(extLower, ".ogg") ||
-            strstr(extLower, ".m3u8") || strstr(extLower, ".ts")) {
-            return true;
+    
+    LOG_INFO("Found %d streams in player response", stream_count);
+    
+    // Check if any streams need signature decryption
+    bool needs_decryption = false;
+    for (int i = 0; i < stream_count; i++) {
+        if (strstr(streams[i].url, "&s=") || strstr(streams[i].url, "&sig=") ||
+            strstr(streams[i].url, "signatureCipher=")) {
+            needs_decryption = true;
+            break;
         }
     }
-    // Accept URLs that look like media (have query params like itag, range, etc.)
-    if (strstr(url, "itag=") || strstr(url, "mime=audio") || strstr(url, "mime=video")) {
-        return true;
-    }
-    // Reject if it looks like an HTML page
-    if (strstr(url, ".html") || strstr(url, ".htm") || strstr(url, "/watch") || strstr(url, "/embed")) {
-        return false;
-    }
-    // Default: accept if it has http/https and doesn't look like HTML
-    return strstr(url, "http://") || strstr(url, "https://");
-}
-
-bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
-                            char *err, size_t errLen) {
-    if (!html || !outCandidate) {
-        snprintf(err, errLen, "Invalid HTML input");
-        return false;
-    }
-    outCandidate->url[0] = '\0';
-    outCandidate->mime[0] = '\0';
-
-    const char *videoTag = find_case_insensitive(html, "<video");
-    if (videoTag) {
-        if (extract_src_from_tag(videoTag, outCandidate->url, sizeof(outCandidate->url),
-                                 outCandidate->mime, sizeof(outCandidate->mime))) {
-            return true;
-        }
-        const char *sourceTag = find_case_insensitive(videoTag, "<source");
-        if (sourceTag &&
-            extract_src_from_tag(sourceTag, outCandidate->url, sizeof(outCandidate->url),
-                                 outCandidate->mime, sizeof(outCandidate->mime))) {
-            return true;
-        }
-    }
-
-    if (extract_youtube_audio_url(html, outCandidate->url, sizeof(outCandidate->url))) {
-        LOGI("Found YouTube audio URL: %s", outCandidate->url);
-        outCandidate->mime[0] = '\0';
-        return true;
-    } else {
-        LOGI("YouTube audio URL extraction failed");
-    }
-
-    if (extract_og_video(html, outCandidate->url, sizeof(outCandidate->url))) {
-        if (is_media_url(outCandidate->url)) {
-            LOGI("Found og:video URL: %s", outCandidate->url);
-            outCandidate->mime[0] = '\0';
-            return true;
+    
+    // If decryption needed, try to decrypt signatures
+    if (needs_decryption) {
+        LOG_INFO("Streams need signature decryption, attempting...");
+        
+        // Try to find and execute player scripts
+        char decrypted_url[2048];
+        if (decrypt_signature_with_scripts(dl_ctx.buffer, "", decrypted_url, sizeof(decrypted_url))) {
+            LOG_INFO("Successfully got decrypted URL format");
+            // The URLs we got should already be decrypted from the player
         } else {
-            LOGI("Rejected og:video URL (not a media file): %s", outCandidate->url);
-            outCandidate->url[0] = '\0';
+            LOG_WARN("Could not decrypt signatures using player scripts");
         }
     }
-
-    if (extract_jsonld_content_url(html, outCandidate->url, sizeof(outCandidate->url))) {
-        if (is_media_url(outCandidate->url)) {
-            LOGI("Found jsonld contentUrl: %s", outCandidate->url);
-            outCandidate->mime[0] = '\0';
-            return true;
-        } else {
-            LOGI("Rejected jsonld contentUrl (not a media file): %s", outCandidate->url);
-            outCandidate->url[0] = '\0';
-        }
+    
+    // Extract title
+    char *title = extract_video_title(player_response);
+    if (title) {
+        LOG_INFO("Video title: %s", title);
+        free(title);
     }
-
-    snprintf(err, errLen, "No HTML5 media source found");
-    return false;
+    
+    free(player_response);
+    free(dl_ctx.buffer);
+    
+    return stream_count;
 }
