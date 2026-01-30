@@ -107,16 +107,16 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
     int req_len = snprintf(request, sizeof(request),
              "GET %s HTTP/1.1\r\n"
              "Host: %s\r\n"
-             "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
-             "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\r\n"
-             "Accept-Language: en-US,en;q=0.9\r\n"
+             "User-Agent: Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36\r\n"
+             "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n"
+             "Accept-Language: en-US,en;q=0.5\r\n"
              "Accept-Encoding: identity\r\n"
-             "DNT: 1\r\n"
              "Connection: close\r\n"
              "Upgrade-Insecure-Requests: 1\r\n"
              "Sec-Fetch-Dest: document\r\n"
              "Sec-Fetch-Mode: navigate\r\n"
              "Sec-Fetch-Site: none\r\n"
+             "Sec-Fetch-User: ?1\r\n"
              "Cache-Control: max-age=0\r\n",
              path, host);
     
@@ -142,6 +142,8 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
         tls_client_close(&client);
         return false;
     }
+    LOGI("HTTP request sent: %zd bytes", sent);
+    LOGI("Request headers:\n%.500s", request);
     
     /* Read response */
     outBuffer->data = malloc(CHUNK_SIZE);
@@ -176,9 +178,30 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
     tls_client_close(&client);
     
     /* Parse HTTP response */
+    LOGI("Received %zu bytes response", outBuffer->size);
+    if (outBuffer->size > 0) {
+        /* Log first 100 bytes of response for debugging */
+        char debug_buf[256];
+        size_t debug_len = outBuffer->size < 100 ? outBuffer->size : 100;
+        for (size_t i = 0; i < debug_len && i < sizeof(debug_buf)-4; i++) {
+            unsigned char c = (unsigned char)outBuffer->data[i];
+            if (c >= 32 && c < 127) {
+                debug_buf[i] = c;
+            } else {
+                debug_buf[i] = '.';
+            }
+        }
+        debug_buf[debug_len] = '\0';
+        LOGI("Response start: [%s]", debug_buf);
+    }
+    
     char *header_end = strstr(outBuffer->data, "\r\n\r\n");
     if (!header_end) {
-        snprintf(err, errLen, "Invalid HTTP response");
+        /* Try to find just \n\n as some servers use that */
+        header_end = strstr(outBuffer->data, "\n\n");
+    }
+    if (!header_end) {
+        snprintf(err, errLen, "Invalid HTTP response (received %zu bytes)", outBuffer->size);
         free(outBuffer->data);
         outBuffer->data = NULL;
         return false;
@@ -292,7 +315,14 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
     }
     
     /* Move body to start of buffer */
-    size_t header_len = (size_t)(header_end - outBuffer->data) + 4;
+    /* Check which delimiter was found to calculate correct header length */
+    size_t delimiter_len = 4;  /* Default \r\n\r\n */
+    if (header_end >= outBuffer->data + 1 && 
+        header_end[-1] == '\n' && 
+        (header_end == outBuffer->data || header_end[-2] != '\r')) {
+        delimiter_len = 2;  /* Found \n\n */
+    }
+    size_t header_len = (size_t)(header_end - outBuffer->data) + delimiter_len;
     size_t body_len = outBuffer->size - header_len;
     memmove(outBuffer->data, outBuffer->data + header_len, body_len);
     outBuffer->data[body_len] = '\0';

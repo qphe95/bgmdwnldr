@@ -255,9 +255,9 @@ bool tls_client_connect(TlsClient *client, const char *host, const char *port,
     };
     // mbedtls_ssl_conf_sig_algs(&client->conf, supported_sig_algs); // Not available in all mbedTLS versions
 
-    // Set minimum/maximum TLS versions to match Chrome
+    // Set minimum/maximum TLS versions to match Chrome (TLS 1.2 and 1.3)
     mbedtls_ssl_conf_min_tls_version(&client->conf, MBEDTLS_SSL_VERSION_TLS1_2);
-    mbedtls_ssl_conf_max_tls_version(&client->conf, MBEDTLS_SSL_VERSION_TLS1_2);
+    mbedtls_ssl_conf_max_tls_version(&client->conf, MBEDTLS_SSL_VERSION_TLS1_3);
 
     // Chrome uses session tickets for faster reconnections
     mbedtls_ssl_conf_session_tickets(&client->conf, MBEDTLS_SSL_SESSION_TICKETS_ENABLED);

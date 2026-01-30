@@ -1110,13 +1110,28 @@ static void *worker_thread(void *arg) {
     
     if (!url_analyze(args->url, &media, err, sizeof(err))) {
         LOGE("URL analysis failed: %s", err);
-        ui_set_status(app, "Analysis failed");
+        char status_msg[280];
+        snprintf(status_msg, sizeof(status_msg), "Analysis failed: %.200s", err);
+        ui_set_status(app, status_msg);
         app->workerRunning = false;
         free(args);
         return NULL;
     }
 
-    LOGI("Media URL found: %s", media.url);
+    LOGI("Media URL found: %.300s", media.url);
+    
+    /* Validate the URL before downloading */
+    if (strstr(media.url, "googlevideo.com") == NULL) {
+        LOGE("URL does not contain googlevideo.com - may be invalid");
+    } else {
+        /* Check if URL has required parameters */
+        if (strstr(media.url, "sig=") == NULL && strstr(media.url, "signature=") == NULL) {
+            LOGI("URL has no signature parameter");
+        } else {
+            LOGI("URL has signature parameter");
+        }
+    }
+    
     ui_set_status(app, "Downloading...");
     ui_set_progress(app, 0.1f);
 
@@ -1124,7 +1139,9 @@ static void *worker_thread(void *arg) {
     HttpBuffer buffer = {0};
     if (!http_get_to_memory(media.url, &buffer, err, sizeof(err))) {
         LOGE("Download failed: %s", err);
-        ui_set_status(app, "Download failed");
+        char status_msg[280];
+        snprintf(status_msg, sizeof(status_msg), "Download failed: %.200s", err);
+        ui_set_status(app, status_msg);
         app->workerRunning = false;
         free(args);
         return NULL;
