@@ -815,14 +815,30 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
         return false;
     }
     
-    // Copy to output
-    strncpy(outCandidate->url, best->url, sizeof(outCandidate->url) - 1);
-    outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
+    // If stream has cipher, try to decrypt signature
+    if (best->has_cipher) {
+        LOG_INFO("Stream has cipher, attempting signature decryption...");
+        char decrypted_url[2048];
+        if (decrypt_signature_with_scripts(html, best->url, decrypted_url, sizeof(decrypted_url))) {
+            LOG_INFO("Successfully decrypted signature");
+            strncpy(outCandidate->url, decrypted_url, sizeof(outCandidate->url) - 1);
+            outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
+        } else {
+            LOG_WARN("Could not decrypt signature, using original URL (may fail with 403)");
+            strncpy(outCandidate->url, best->url, sizeof(outCandidate->url) - 1);
+            outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
+        }
+    } else {
+        // No cipher, use URL directly
+        strncpy(outCandidate->url, best->url, sizeof(outCandidate->url) - 1);
+        outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
+    }
+    
     strncpy(outCandidate->mime, best->mime_type, sizeof(outCandidate->mime) - 1);
     outCandidate->mime[sizeof(outCandidate->mime) - 1] = '\0';
     
     LOG_INFO("Selected best stream: itag=%d, height=%d, has_cipher=%d, url=%.50s...",
-             best->itag, best->height, best->has_cipher, best->url);
+             best->itag, best->height, best->has_cipher, outCandidate->url);
     
     return true;
 }
