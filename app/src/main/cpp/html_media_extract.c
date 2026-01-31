@@ -381,10 +381,7 @@ static char* extract_yt_player_response(const char *html) {
                             memcpy(json, start, len);
                             json[len] = '\0';
                             LOG_INFO("Extracted ytInitialPlayerResponse (%zu bytes)", len);
-                            // Sanitize to escape control characters for QuickJS
-                            char *sanitized = sanitize_json(json, len);
-                            free(json);
-                            return sanitized;
+                            return json;
                         }
                     }
                 }

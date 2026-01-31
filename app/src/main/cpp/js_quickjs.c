@@ -499,6 +499,24 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val, int argc, J
 static void init_browser_environment(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
     
+    // Set up shims first, before any other code runs
+    const char *early_shim = 
+        "if (typeof window === 'undefined') { this.window = this; }"
+        "if (typeof globalThis === 'undefined') { this.globalThis = this; }"
+        "this.es5Shimmed = true;"
+        "this.es6Shimmed = true;"
+        "this._babelPolyfill = true;"
+        // Also set on window if it's different from global
+        "if (window && window !== this) { window.es5Shimmed = true; window.es6Shimmed = true; window._babelPolyfill = true; }"
+        // Set on self
+        "if (typeof self !== 'undefined') { self.es5Shimmed = true; self.es6Shimmed = true; self._babelPolyfill = true; }"
+        // Set on top
+        "if (typeof top !== 'undefined') { top.es5Shimmed = true; top.es6Shimmed = true; top._babelPolyfill = true; }"
+        // Set on Object prototype so everything inherits it
+        "if (Object.prototype) { Object.prototype.es5Shimmed = true; Object.prototype.es6Shimmed = true; }"
+    ;
+    JS_Eval(ctx, early_shim, strlen(early_shim), "<early_shim>", 0);
+    
     // Create XMLHttpRequest class
     JSValue xhr_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, xhr_proto, js_xhr_proto_funcs, countof(js_xhr_proto_funcs));
@@ -563,6 +581,10 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, document, "characterSet", JS_NewString(ctx, "UTF-8"));
     JS_SetPropertyStr(ctx, document, "charset", JS_NewString(ctx, "UTF-8"));
     JS_SetPropertyStr(ctx, document, "contentType", JS_NewString(ctx, "text/html"));
+    JS_SetPropertyStr(ctx, document, "createTreeWalker", JS_NewCFunction(ctx, js_dummy_function, "createTreeWalker", 3));
+    JS_SetPropertyStr(ctx, document, "createNodeIterator", JS_NewCFunction(ctx, js_dummy_function, "createNodeIterator", 3));
+    // document.defaultView should point to window
+    // This will be set after window is created
     JS_SetPropertyStr(ctx, global, "document", document);
     
     // window
@@ -603,6 +625,9 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, window, "document", JS_DupValue(ctx, document));
     JS_SetPropertyStr(ctx, global, "window", window);
     
+    // document.defaultView points to window
+    JS_SetPropertyStr(ctx, document, "defaultView", JS_DupValue(ctx, window));
+    
     // Location object
     JSValue location = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, location, "href", JS_NewString(ctx, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
@@ -613,8 +638,45 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, location, "pathname", JS_NewString(ctx, "/watch"));
     JS_SetPropertyStr(ctx, location, "search", JS_NewString(ctx, "?v=dQw4w9WgXcQ"));
     JS_SetPropertyStr(ctx, location, "hash", JS_NewString(ctx, ""));
+    // Add toString method
+    JS_SetPropertyStr(ctx, location, "toString", JS_NewCFunction(ctx, js_dummy_function, "toString", 0));
     JS_SetPropertyStr(ctx, window, "location", location);
     JS_SetPropertyStr(ctx, document, "location", JS_DupValue(ctx, location));
+    
+    // URL class
+    const char *url_js = 
+        "function URL(url, base) {"
+        "  var a = document.createElement('a');"
+        "  a.href = url;"
+        "  this.href = a.href || url;"
+        "  this.protocol = a.protocol || 'https:';"
+        "  this.host = a.host || '';"
+        "  this.hostname = a.hostname || '';"
+        "  this.port = a.port || '';"
+        "  this.pathname = a.pathname || '';"
+        "  this.search = a.search || '';"
+        "  this.hash = a.hash || '';"
+        "  this.username = '';"
+        "  this.password = '';"
+        "  this.origin = this.protocol + '//' + this.host;"
+        "}"
+        "URL.prototype.toString = function() { return this.href; };"
+        "window.URL = URL;"
+        ""
+        // Ensure window.location.href works properly
+        "window.location.href = window.location.href || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';"
+        "window.location.toString = function() { return this.href; };"
+        ""
+        // Window getters
+        "if (!window.top) window.top = window;"
+        "if (!window.parent) window.parent = window;"
+        "if (!window.self) window.self = window;"
+        "if (!window.opener) window.opener = null;"
+        ""
+        // Origin
+        "window.origin = window.location.origin || 'https://www.youtube.com';"
+    ;
+    JS_Eval(ctx, url_js, strlen(url_js), "<url>", 0);
     
     // Navigator object with Chrome fingerprint
     JSValue navigator = JS_NewObject(ctx);
@@ -681,23 +743,47 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, performance, "navigation", JS_NewObject(ctx));
     JS_SetPropertyStr(ctx, window, "performance", performance);
     
-    // CustomEvent constructor
-    const char *custom_event_js = 
-        "function CustomEvent(type, eventInitDict) {"
+    // Event and CustomEvent constructors
+    const char *event_js = 
+        "function Event(type, eventInitDict) {"
         "  eventInitDict = eventInitDict || {};"
         "  this.type = type;"
-        "  this.detail = eventInitDict.detail;"
         "  this.bubbles = eventInitDict.bubbles || false;"
         "  this.cancelable = eventInitDict.cancelable || false;"
+        "  this.composed = eventInitDict.composed || false;"
         "  this.defaultPrevented = false;"
         "  this.isTrusted = true;"
         "  this.timeStamp = Date.now();"
+        "  this.target = null;"
+        "  this.currentTarget = null;"
+        "  this.eventPhase = 0;"
         "}"
-        "CustomEvent.prototype.preventDefault = function() { this.defaultPrevented = true; };"
-        "CustomEvent.prototype.stopPropagation = function() {};"
-        "CustomEvent.prototype.stopImmediatePropagation = function() {};"
+        "Event.prototype.preventDefault = function() { this.defaultPrevented = true; };"
+        "Event.prototype.stopPropagation = function() {};"
+        "Event.prototype.stopImmediatePropagation = function() {};"
+        "Event.prototype.initEvent = function(type, bubbles, cancelable) {"
+        "  this.type = type; this.bubbles = bubbles; this.cancelable = cancelable;"
+        "};"
+        "Event.NONE = 0; Event.CAPTURING_PHASE = 1; Event.AT_TARGET = 2; Event.BUBBLING_PHASE = 3;"
+        "window.Event = Event;"
+        ""
+        "function CustomEvent(type, eventInitDict) {"
+        "  Event.call(this, type, eventInitDict);"
+        "  this.detail = eventInitDict && eventInitDict.detail;"
+        "}"
+        "CustomEvent.prototype = Object.create(Event.prototype);"
+        "CustomEvent.prototype.constructor = CustomEvent;"
+        "window.CustomEvent = CustomEvent;"
+        ""
+        // KeyboardEvent, MouseEvent stubs
+        "function KeyboardEvent(type, init) { Event.call(this, type, init); this.key = (init && init.key) || ''; this.code = (init && init.code) || ''; }"
+        "KeyboardEvent.prototype = Object.create(Event.prototype);"
+        "window.KeyboardEvent = KeyboardEvent;"
+        "function MouseEvent(type, init) { Event.call(this, type, init); this.clientX = 0; this.clientY = 0; }"
+        "MouseEvent.prototype = Object.create(Event.prototype);"
+        "window.MouseEvent = MouseEvent;"
     ;
-    JS_Eval(ctx, custom_event_js, strlen(custom_event_js), "<custom_event>", 0);
+    JS_Eval(ctx, event_js, strlen(event_js), "<event>", 0);
     
     // EventTarget polyfill
     const char *event_target_js = 
@@ -869,11 +955,63 @@ static void init_browser_environment(JSContext *ctx) {
         "SVGElement.prototype = Object.create(Element.prototype);"
         "SVGElement.prototype.constructor = SVGElement;"
         ""
+        // HTMLAnchorElement (for <a> tags)
+        "function HTMLAnchorElement() {"
+        "  HTMLElement.call(this);"
+        "  this.tagName = 'A';"
+        "  this.href = '';"
+        "  this.protocol = 'https:';"
+        "  this.host = '';"
+        "  this.hostname = '';"
+        "  this.port = '';"
+        "  this.pathname = '';"
+        "  this.search = '';"
+        "  this.hash = '';"
+        "  this.username = '';"
+        "  this.password = '';"
+        "  this.origin = '';"
+        "}"
+        "HTMLAnchorElement.prototype = Object.create(HTMLElement.prototype);"
+        "HTMLAnchorElement.prototype.constructor = HTMLAnchorElement;"
+        ""
+        // HTMLScriptElement
+        "function HTMLScriptElement() {"
+        "  HTMLElement.call(this);"
+        "  this.tagName = 'SCRIPT';"
+        "  this.src = '';"
+        "  this.type = '';"
+        "  this.async = false;"
+        "  this.defer = false;"
+        "}"
+        "HTMLScriptElement.prototype = Object.create(HTMLElement.prototype);"
+        "HTMLScriptElement.prototype.constructor = HTMLScriptElement;"
+        ""
+        // HTMLDivElement
+        "function HTMLDivElement() {"
+        "  HTMLElement.call(this);"
+        "  this.tagName = 'DIV';"
+        "}"
+        "HTMLDivElement.prototype = Object.create(HTMLElement.prototype);"
+        "HTMLDivElement.prototype.constructor = HTMLDivElement;"
+        ""
+        // HTMLSpanElement
+        "function HTMLSpanElement() {"
+        "  HTMLElement.call(this);"
+        "  this.tagName = 'SPAN';"
+        "}"
+        "HTMLSpanElement.prototype = Object.create(HTMLElement.prototype);"
+        "HTMLSpanElement.prototype.constructor = HTMLSpanElement;"
+        ""
         // Expose to window
         "window.Node = Node;"
         "window.Element = Element;"
         "window.HTMLElement = HTMLElement;"
         "window.SVGElement = SVGElement;"
+        "window.HTMLAnchorElement = HTMLAnchorElement;"
+        "window.HTMLScriptElement = HTMLScriptElement;"
+        "window.HTMLDivElement = HTMLDivElement;"
+        "window.HTMLSpanElement = HTMLSpanElement;"
+        "window.HTMLVideoElement = HTMLVideoElement;"
         ""
         // Document class
         "function Document() {"
@@ -885,8 +1023,12 @@ static void init_browser_environment(JSContext *ctx) {
         "Document.prototype = Object.create(Node.prototype);"
         "Document.prototype.constructor = Document;"
         "Document.prototype.createElement = function(tagName) {"
-        "  if (tagName.toLowerCase() === 'video') {"
-        "    return new HTMLVideoElement();"
+        "  tagName = tagName.toLowerCase();"
+        "  if (tagName === 'video') return new HTMLVideoElement();"
+        "  if (tagName === 'a') return new HTMLAnchorElement();"
+        "  if (tagName === 'script') return new HTMLScriptElement();"
+        "  if (tagName === 'div') return new HTMLDivElement();"
+        "  if (tagName === 'span') return new HTMLSpanElement();"
         "  }"
         "  return new Element();"
         "};"
@@ -971,6 +1113,61 @@ static void init_browser_environment(JSContext *ctx) {
     ;
     JS_Eval(ctx, webvtt_js, strlen(webvtt_js), "<webvtt>", 0);
     
+    // matchMedia
+    const char *matchmedia_js = 
+        "function matchMedia(query) {"
+        "  return {"
+        "    matches: false,"
+        "    media: query,"
+        "    addListener: function() {},"
+        "    removeListener: function() {},"
+        "    addEventListener: function() {},"
+        "    removeEventListener: function() {},"
+        "    dispatchEvent: function() {}"
+        "  };"
+        "}"
+        "window.matchMedia = matchMedia;"
+    ;
+    JS_Eval(ctx, matchmedia_js, strlen(matchmedia_js), "<matchmedia>", 0);
+    
+    // requestIdleCallback
+    const char *requestidle_js = 
+        "function requestIdleCallback(callback, options) {"
+        "  return setTimeout(callback, 1);"
+        "}"
+        "function cancelIdleCallback(id) {"
+        "  clearTimeout(id);"
+        "}"
+        "window.requestIdleCallback = requestIdleCallback;"
+        "window.cancelIdleCallback = cancelIdleCallback;"
+    ;
+    JS_Eval(ctx, requestidle_js, strlen(requestidle_js), "<requestidle>", 0);
+    
+    // DOMParser - needed for createHTMLDocument
+    const char *domparser_js = 
+        "function DOMParser() {}"
+        "DOMParser.prototype.parseFromString = function(str, type) {"
+        "  return document;"
+        "};"
+        "window.DOMParser = DOMParser;"
+        ""
+        // DOMImplementation for createHTMLDocument
+        "var domImplementation = {"
+        "  createHTMLDocument: function(title) {"
+        "    var doc = new Document();"
+        "    doc.title = title || '';"
+        "    doc.body = { appendChild: function() {}, style: {} };"
+        "    doc.documentElement = { style: {} };"
+        "    return doc;"
+        "  },"
+        "  createDocument: function() { return new Document(); },"
+        "  hasFeature: function() { return true; }"
+        "};"
+        "document.implementation = domImplementation;"
+        "window.DOMImplementation = function() {};"
+    ;
+    JS_Eval(ctx, domparser_js, strlen(domparser_js), "<domparser>", 0);
+    
     // IntersectionObserver polyfill
     const char *intersection_js = 
         "function IntersectionObserver(callback, options) {"
@@ -996,6 +1193,29 @@ static void init_browser_environment(JSContext *ctx) {
         "window.ResizeObserver = ResizeObserver;"
     ;
     JS_Eval(ctx, resize_js, strlen(resize_js), "<resize>", 0);
+    
+    // BroadcastChannel
+    const char *broadcast_js = 
+        "function BroadcastChannel(name) {"
+        "  this.name = name;"
+        "}"
+        "BroadcastChannel.prototype.postMessage = function(msg) {};"
+        "BroadcastChannel.prototype.close = function() {};"
+        "BroadcastChannel.prototype.addEventListener = function() {};"
+        "BroadcastChannel.prototype.removeEventListener = function() {};"
+        "window.BroadcastChannel = BroadcastChannel;"
+    ;
+    JS_Eval(ctx, broadcast_js, strlen(broadcast_js), "<broadcast>", 0);
+    
+    // MessageChannel
+    const char *messagechannel_js = 
+        "function MessageChannel() {"
+        "  this.port1 = { postMessage: function() {}, onmessage: null, addEventListener: function() {} };"
+        "  this.port2 = { postMessage: function() {}, onmessage: null, addEventListener: function() {} };"
+        "}"
+        "window.MessageChannel = MessageChannel;"
+    ;
+    JS_Eval(ctx, messagechannel_js, strlen(messagechannel_js), "<messagechannel>", 0);
     
     // CSS object
     const char *css_js = 
