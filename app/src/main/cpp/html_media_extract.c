@@ -225,13 +225,24 @@ static void parse_format_object(cJSON *format, MediaStream *stream) {
              stream->has_cipher);
 }
 
+// Forward declaration
+static char* sanitize_json(const char *json, size_t len);
+
 // Parse ytInitialPlayerResponse using cJSON
 static int parse_yt_player_response(const char *json, MediaStream *streams, int max_streams) {
     if (!json || !streams || max_streams <= 0) return 0;
     
-    LOG_INFO("Parsing player response with cJSON (%zu bytes)", strlen(json));
+    // Sanitize JSON to escape control characters for cJSON
+    char *sanitized = sanitize_json(json, strlen(json));
+    if (!sanitized) {
+        LOG_ERROR("Failed to sanitize JSON");
+        return 0;
+    }
     
-    cJSON *root = cJSON_Parse(json);
+    LOG_INFO("Parsing player response with cJSON (%zu bytes)", strlen(sanitized));
+    
+    cJSON *root = cJSON_Parse(sanitized);
+    free(sanitized);
     if (!root) {
         const char *error_ptr = cJSON_GetErrorPtr();
         if (error_ptr) {
@@ -320,19 +331,21 @@ static char* extract_video_title(const char *player_response) {
 // Extract ytInitialPlayerResponse from HTML
 // Sanitize JSON by escaping control characters that QuickJS doesn't accept
 static char* sanitize_json(const char *json, size_t len) {
-    // Only remove embedded null bytes which definitely break JSON parsing
-    // Other control characters should already be properly escaped in valid JSON
+    // Replace control characters with spaces for cJSON compatibility
     char *sanitized = malloc(len + 1);
     if (!sanitized) return NULL;
     
-    size_t j = 0;
+    memcpy(sanitized, json, len);
+    sanitized[len] = '\0';
+    
+    // Replace any control characters (0x00-0x1F) except tab, newline, carriage return
+    // with spaces to avoid cJSON parse errors
     for (size_t i = 0; i < len; i++) {
-        // Skip null bytes
-        if (json[i] != '\0') {
-            sanitized[j++] = json[i];
+        unsigned char c = sanitized[i];
+        if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
+            sanitized[i] = ' ';
         }
     }
-    sanitized[j] = '\0';
     
     return sanitized;
 }

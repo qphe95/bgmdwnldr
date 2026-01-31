@@ -503,17 +503,10 @@ static void init_browser_environment(JSContext *ctx) {
     const char *early_shim = 
         "if (typeof window === 'undefined') { this.window = this; }"
         "if (typeof globalThis === 'undefined') { this.globalThis = this; }"
+        // Define es5Shimmed on window
         "this.es5Shimmed = true;"
         "this.es6Shimmed = true;"
         "this._babelPolyfill = true;"
-        // Also set on window if it's different from global
-        "if (window && window !== this) { window.es5Shimmed = true; window.es6Shimmed = true; window._babelPolyfill = true; }"
-        // Set on self
-        "if (typeof self !== 'undefined') { self.es5Shimmed = true; self.es6Shimmed = true; self._babelPolyfill = true; }"
-        // Set on top
-        "if (typeof top !== 'undefined') { top.es5Shimmed = true; top.es6Shimmed = true; top._babelPolyfill = true; }"
-        // Set on Object prototype so everything inherits it
-        "if (Object.prototype) { Object.prototype.es5Shimmed = true; Object.prototype.es6Shimmed = true; }"
     ;
     JS_Eval(ctx, early_shim, strlen(early_shim), "<early_shim>", 0);
     
@@ -571,6 +564,9 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, document, "documentElement", js_document_get_document_element(ctx, document));
     JS_SetPropertyStr(ctx, document, "createTextNode", JS_NewCFunction(ctx, js_dummy_function, "createTextNode", 1));
     JS_SetPropertyStr(ctx, document, "createComment", JS_NewCFunction(ctx, js_dummy_function, "createComment", 1));
+    JS_SetPropertyStr(ctx, document, "createElementNS", JS_NewCFunction(ctx, js_document_create_element, "createElementNS", 2));
+    JS_SetPropertyStr(ctx, document, "createDocumentFragment", JS_NewCFunction(ctx, js_dummy_function, "createDocumentFragment", 0));
+    JS_SetPropertyStr(ctx, document, "requestStorageAccessFor", JS_NewCFunction(ctx, js_dummy_function, "requestStorageAccessFor", 1));
     JS_SetPropertyStr(ctx, document, "write", JS_NewCFunction(ctx, js_dummy_function, "write", 1));
     JS_SetPropertyStr(ctx, document, "writeln", JS_NewCFunction(ctx, js_dummy_function, "writeln", 1));
     JS_SetPropertyStr(ctx, document, "location", JS_NewObject(ctx));
@@ -597,6 +593,7 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, window, "clearInterval", JS_NewCFunction(ctx, js_dummy_function, "clearInterval", 1));
     JS_SetPropertyStr(ctx, window, "requestAnimationFrame", JS_NewCFunction(ctx, js_dummy_function, "requestAnimationFrame", 1));
     JS_SetPropertyStr(ctx, window, "cancelAnimationFrame", JS_NewCFunction(ctx, js_dummy_function, "cancelAnimationFrame", 1));
+    JS_SetPropertyStr(ctx, window, "postMessage", JS_NewCFunction(ctx, js_dummy_function, "postMessage", 2));
     JS_SetPropertyStr(ctx, window, "alert", JS_NewCFunction(ctx, js_dummy_function, "alert", 1));
     JS_SetPropertyStr(ctx, window, "confirm", JS_NewCFunction(ctx, js_dummy_function, "confirm", 1));
     JS_SetPropertyStr(ctx, window, "prompt", JS_NewCFunction(ctx, js_dummy_function, "prompt", 2));
@@ -782,6 +779,14 @@ static void init_browser_environment(JSContext *ctx) {
         "function MouseEvent(type, init) { Event.call(this, type, init); this.clientX = 0; this.clientY = 0; }"
         "MouseEvent.prototype = Object.create(Event.prototype);"
         "window.MouseEvent = MouseEvent;"
+        // ErrorEvent
+        "function ErrorEvent(type, init) { Event.call(this, type, init); this.message = (init && init.message) || ''; this.filename = (init && init.filename) || ''; this.lineno = (init && init.lineno) || 0; this.colno = (init && init.colno) || 0; this.error = (init && init.error) || null; }"
+        "ErrorEvent.prototype = Object.create(Event.prototype);"
+        "window.ErrorEvent = ErrorEvent;"
+        // PromiseRejectionEvent
+        "function PromiseRejectionEvent(type, init) { Event.call(this, type, init); this.promise = (init && init.promise) || null; this.reason = (init && init.reason) || null; }"
+        "PromiseRejectionEvent.prototype = Object.create(Event.prototype);"
+        "window.PromiseRejectionEvent = PromiseRejectionEvent;"
     ;
     JS_Eval(ctx, event_js, strlen(event_js), "<event>", 0);
     
@@ -1179,6 +1184,12 @@ static void init_browser_environment(JSContext *ctx) {
         "IntersectionObserver.prototype.disconnect = function() {};"
         "IntersectionObserver.prototype.takeRecords = function() { return []; };"
         "window.IntersectionObserver = IntersectionObserver;"
+        "function IntersectionObserverEntry() {}"
+        "window.IntersectionObserverEntry = IntersectionObserverEntry;"
+        "// ShadyDOM stub"
+        "window.ShadyDOM = { inUse: false, force: false, noPatch: false };"
+        "// YouTube SPF state"
+        "window._spf_state = {};"
     ;
     JS_Eval(ctx, intersection_js, strlen(intersection_js), "<intersection>", 0);
     
@@ -1493,6 +1504,20 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
             JSValue exception = JS_GetException(ctx);
             const char *error = JS_ToCString(ctx, exception);
             LOG_ERROR("Script %d execution error: %s", i, error ? error : "unknown");
+            
+            // Get stack trace for debugging
+            JSValue stack_val = JS_GetPropertyStr(ctx, exception, "stack");
+            const char *stack = JS_ToCString(ctx, stack_val);
+            if (stack && strstr(error, "es5Shimmed")) {
+                LOG_ERROR("=== STACK TRACE for es5Shimmed error (Script %d) ===", i);
+                LOG_ERROR("%s", stack);
+                LOG_ERROR("=== END STACK TRACE ===");
+            } else if (stack) {
+                LOG_ERROR("Stack trace (Script %d): %.500s%s", i, stack, strlen(stack) > 500 ? "..." : "");
+            }
+            JS_FreeCString(ctx, stack);
+            JS_FreeValue(ctx, stack_val);
+            
             JS_FreeCString(ctx, error);
             JS_FreeValue(ctx, exception);
         } else {
