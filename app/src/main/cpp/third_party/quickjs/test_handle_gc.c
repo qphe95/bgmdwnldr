@@ -126,11 +126,22 @@ TEST(handle_reuse) {
     JSObjHandle h1 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
     JSObjHandle h2 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
     
-    js_handle_release(&gc, h1);  /* Free h1 */
+    js_handle_release(&gc, h1);  /* Free h1 - becomes zombie */
+    js_handle_release(&gc, h2);  /* Free h2 - becomes zombie */
     
-    /* Allocate new object - should reuse h1's handle */
+    /* Before GC: handles not reused (zombie state) */
     JSObjHandle h3 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
-    ASSERT_EQ(h3, h1);  /* Should reuse freed handle */
+    ASSERT_NE(h3, h1);  /* Should NOT reuse zombie handle yet */
+    ASSERT_NE(h3, h2);
+    
+    /* Run GC to collect dead objects */
+    js_handle_gc_run(&gc);
+    
+    /* After GC: handles with ptr==NULL are reused (scan from low index) */
+    JSObjHandle h4 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
+    JSObjHandle h5 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
+    ASSERT_EQ(h4, h1);  /* Lowest free index reused first */
+    ASSERT_EQ(h5, h2);
     
     js_handle_gc_free(&gc);
 }
@@ -345,23 +356,37 @@ TEST(stress_many_allocations) {
     JSObjHandle *handles = malloc(N * sizeof(JSObjHandle));
     
     /* Allocate many objects */
+    fprintf(stderr, "DEBUG: Starting allocation of %d objects\n", N);
     for (int i = 0; i < N; i++) {
         handles[i] = js_handle_alloc(&gc, 64 + (i % 256), JS_GC_OBJ_TYPE_JS_OBJECT);
+        if (handles[i] == JS_OBJ_HANDLE_NULL) {
+            fprintf(stderr, "DEBUG: Allocation failed at i=%d\n", i);
+        }
         ASSERT_NE(handles[i], JS_OBJ_HANDLE_NULL);
+        if (i % 1000 == 0) {
+            fprintf(stderr, "DEBUG: Allocated %d objects\n", i);
+        }
     }
+    fprintf(stderr, "DEBUG: Allocation complete\n");
     
     /* Root half of them */
+    fprintf(stderr, "DEBUG: Adding roots...\n");
     for (int i = 0; i < N; i += 2) {
         js_handle_add_root(&gc, handles[i]);
     }
+    fprintf(stderr, "DEBUG: Roots added\n");
     
     /* Release references to all */
+    fprintf(stderr, "DEBUG: Releasing references...\n");
     for (int i = 0; i < N; i++) {
         js_handle_release(&gc, handles[i]);
     }
+    fprintf(stderr, "DEBUG: References released\n");
     
     /* Run GC */
+    fprintf(stderr, "DEBUG: Running GC...\n");
     js_handle_gc_run(&gc);
+    fprintf(stderr, "DEBUG: GC complete\n");
     
     /* Check that even-numbered handles are still valid */
     for (int i = 0; i < N; i += 2) {

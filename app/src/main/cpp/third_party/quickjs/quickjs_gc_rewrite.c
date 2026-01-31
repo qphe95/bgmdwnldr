@@ -36,7 +36,6 @@ void js_handle_gc_init(JSHandleGCState *gc, size_t initial_stack_size) {
     
     /* Handle 0 is reserved as NULL */
     gc->handle_count = 1;
-    gc->handle_free_list = JS_OBJ_HANDLE_NULL;
     gc->generation = 1;
     
     /* Initialize stack */
@@ -95,16 +94,14 @@ void js_mem_stack_reset(JSMemStack *stack) {
     stack->top = stack->base;
 }
 
-/* Allocate a handle ID from the free list or by growing the table */
+/* Allocate a handle ID - scan for free slots or grow table */
 static JSObjHandle alloc_handle_id(JSHandleGCState *gc) {
-    /* Check free list first */
-    if (gc->handle_free_list != JS_OBJ_HANDLE_NULL) {
-        JSObjHandle id = gc->handle_free_list;
-        /* Next free ID is stored in the ptr field (as integer) */
-        gc->handle_free_list = (JSObjHandle)(uintptr_t)gc->handles[id].ptr;
-        gc->handles[id].ptr = NULL;
-        gc->handles[id].generation = gc->generation;
-        return id;
+    /* Scan for free handle (ptr == NULL and not handle 0) */
+    for (uint32_t i = 1; i < gc->handle_count; i++) {
+        if (gc->handles[i].ptr == NULL) {
+            gc->handles[i].generation = gc->generation;
+            return i;
+        }
     }
     
     /* Grow table if needed */
@@ -129,19 +126,14 @@ static JSObjHandle alloc_handle_id(JSHandleGCState *gc) {
 
 /* Allocate a new GC object */
 JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type) {
-    size_t total_size = sizeof(JSGCObjectHeader) + size;
+    size_t total_size = ALIGN8(sizeof(JSGCObjectHeader) + size);
     
     JSGCObjectHeader *obj = js_mem_stack_alloc(&gc->stack, total_size);
     if (__builtin_expect(!obj, 0)) {
-        /* Out of stack memory - try GC first */
-        js_handle_gc_run(gc);
-        
-        /* Try again */
-        obj = js_mem_stack_alloc(&gc->stack, total_size);
-        if (!obj) {
-            fprintf(stderr, "Out of memory: could not allocate %zu bytes\n", total_size);
-            return JS_OBJ_HANDLE_NULL;
-        }
+        /* Out of stack memory - cannot GC here because this object 
+         * isn't rooted yet and would be freed. Just fail. */
+        fprintf(stderr, "Out of memory: could not allocate %zu bytes\n", total_size);
+        return JS_OBJ_HANDLE_NULL;
     }
     
     /* Initialize header */
@@ -180,18 +172,18 @@ void js_handle_release(JSHandleGCState *gc, JSObjHandle handle) {
     JSGCObjectHeader *obj = js_handle_header(data);
     assert(obj->ref_count > 0);
     obj->ref_count--;
-    
-    if (obj->ref_count == 0) {
-        /* Free the handle - object will be collected by GC */
-        gc->handles[handle].ptr = (void*)(uintptr_t)gc->handle_free_list;
-        gc->handle_free_list = handle;
-        gc->total_freed++;
-    }
+    /* Object becomes "zombie" when ref_count reaches 0.
+     * It stays in memory until GC collects it.
+     * Handle stays valid but js_handle_deref returns NULL for zombies.
+     */
 }
 
 /* Add root */
 void js_handle_add_root(JSHandleGCState *gc, JSObjHandle handle) {
     if (handle == JS_OBJ_HANDLE_NULL) return;
+    
+    /* Increment refcount to keep object alive */
+    js_handle_retain(gc, handle);
     
     /* Grow if needed */
     if (gc->root_count >= gc->root_capacity) {
@@ -213,6 +205,8 @@ void js_handle_remove_root(JSHandleGCState *gc, JSObjHandle handle) {
         if (gc->roots[i] == handle) {
             /* Swap with last and shrink */
             gc->roots[i] = gc->roots[--gc->root_count];
+            /* Decrement refcount - may become zombie if last reference */
+            js_handle_release(gc, handle);
             return;
         }
     }
@@ -235,12 +229,19 @@ static void mark_children(JSHandleGCState *gc, JSGCObjectHeader *obj) {
 
 /* Mark a single object and its children */
 static void mark_object(JSHandleGCState *gc, JSObjHandle handle) {
-    void *data = js_handle_deref(gc, handle);
-    if (!data) return;
+    /* Mark from roots.
+     * Note: handle may be "zombie" (ref_count==0) but still in root set.
+     * We mark it anyway - GC will collect it if it's not reachable from live roots.
+     */
+    if (__builtin_expect(handle == 0 || handle >= gc->handle_count, 0)) {
+        return;
+    }
+    
+    void *data = gc->handles[handle].ptr;
+    if (!data) return;  /* Free handle */
     
     JSGCObjectHeader *obj = js_handle_header(data);
     if (obj->mark) return;
-    
     obj->mark = 1;
     mark_children(gc, obj);
 }
@@ -248,16 +249,20 @@ static void mark_object(JSHandleGCState *gc, JSObjHandle handle) {
 /* Mark phase - mark all reachable objects */
 void js_handle_gc_mark(JSHandleGCState *gc) {
     /* Clear all marks */
+    int count = 0;
     for (uint8_t *p = gc->stack.base; p < gc->stack.top; ) {
         JSGCObjectHeader *obj = (JSGCObjectHeader*)p;
         obj->mark = 0;
         p += obj->size;
+        count++;
     }
+    (void)count; /* suppress unused warning in non-debug builds */
     
     /* Mark from roots */
     for (uint32_t i = 0; i < gc->root_count; i++) {
         mark_object(gc, gc->roots[i]);
     }
+
 }
 
 /* Compact phase - move live objects, update handle table only */
@@ -278,16 +283,16 @@ void js_handle_gc_compact(JSHandleGCState *gc) {
                 
                 /* Update handle table with pointer to USER DATA (past header) */
                 gc->handles[handle].ptr = (void*)(write + sizeof(JSGCObjectHeader));
-                gc->handles[handle].generation = ++gc->generation;
             }
+            gc->handles[handle].generation = ++gc->generation;
             write += size;
         } else if (obj->mark && obj->pinned) {
             /* Live but pinned - don't move */
+            gc->handles[handle].generation = ++gc->generation;
             write = read + size;
         } else {
-            /* Dead object - free the handle */
-            gc->handles[handle].ptr = (void*)(uintptr_t)gc->handle_free_list;
-            gc->handle_free_list = handle;
+            /* Dead object - clear handle ptr (will be reused by scan) */
+            gc->handles[handle].ptr = NULL;
         }
         
         read += size;
@@ -301,10 +306,14 @@ void js_handle_gc_run(JSHandleGCState *gc) {
     gc->gc_count++;
     
     /* Mark phase */
+    /* Mark phase */
     js_handle_gc_mark(gc);
+    /* Mark complete */
     
     /* Compact phase */
+    /* Compact phase */
     js_handle_gc_compact(gc);
+    /* Compact complete */
 }
 
 /* Get stats */
@@ -315,10 +324,11 @@ void js_handle_gc_stats(JSHandleGCState *gc, JSHandleGCStats *stats) {
     stats->capacity_bytes = gc->stack.capacity;
     stats->available_bytes = gc->stack.capacity - (gc->stack.top - gc->stack.base);
     
-    /* Count free handles */
-    for (uint32_t h = gc->handle_free_list; h != JS_OBJ_HANDLE_NULL; ) {
-        stats->free_handles++;
-        h = (uint32_t)(uintptr_t)gc->handles[h].ptr;
+    /* Count free handles (ptr == NULL) */
+    for (uint32_t h = 1; h < gc->handle_count; h++) {
+        if (gc->handles[h].ptr == NULL) {
+            stats->free_handles++;
+        }
     }
     
     /* Count objects in stack */

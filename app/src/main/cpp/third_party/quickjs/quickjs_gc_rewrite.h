@@ -59,7 +59,6 @@ typedef struct JSHandleGCState {
     JSHandleEntry *handles;
     uint32_t handle_count;
     uint32_t handle_capacity;
-    uint32_t handle_free_list;        /* Linked list of free handles */
     uint32_t generation;              /* Incremented each GC cycle */
     
     /* Object stack - bump allocator */
@@ -76,6 +75,12 @@ typedef struct JSHandleGCState {
     uint32_t gc_count;
 } JSHandleGCState;
 
+/* Get header from user data pointer (internal use) */
+static inline JSGCObjectHeader* js_handle_header(void *data_ptr) {
+    if (!data_ptr) return NULL;
+    return (JSGCObjectHeader*)((uint8_t*)data_ptr - sizeof(JSGCObjectHeader));
+}
+
 /* Initialization and cleanup */
 void js_handle_gc_init(JSHandleGCState *gc, size_t initial_stack_size);
 void js_handle_gc_free(JSHandleGCState *gc);
@@ -90,17 +95,20 @@ static inline void* js_handle_deref(JSHandleGCState *gc, JSObjHandle handle) {
     if (__builtin_expect(handle == 0 || handle >= gc->handle_count, 0)) {
         return NULL;
     }
-    return gc->handles[handle].ptr;
+    void *ptr = gc->handles[handle].ptr;
+    if (__builtin_expect(!ptr, 0)) {
+        return NULL;  /* Free handle or zombie collected by GC */
+    }
+    /* Check if ref_count is 0 (zombie object - released but not yet collected) */
+    JSGCObjectHeader *obj = js_handle_header(ptr);
+    if (__builtin_expect(obj->ref_count == 0, 0)) {
+        return NULL;
+    }
+    return ptr;
 }
 
 /* Macro for type-safe dereference */
 #define JS_HANDLE_DEREF(gc, handle, type) ((type*)js_handle_deref(gc, handle))
-
-/* Get header from user data pointer (internal use) */
-static inline JSGCObjectHeader* js_handle_header(void *data_ptr) {
-    if (!data_ptr) return NULL;
-    return (JSGCObjectHeader*)((uint8_t*)data_ptr - sizeof(JSGCObjectHeader));
-}
 
 /* Stack allocation */
 void* js_mem_stack_alloc(JSMemStack *stack, size_t size);
