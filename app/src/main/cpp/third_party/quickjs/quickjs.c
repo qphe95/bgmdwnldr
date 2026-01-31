@@ -47,6 +47,10 @@
 #include "libunicode.h"
 #include "dtoa.h"
 
+/* Handle-based GC additions */
+typedef uint32_t JSObjHandle;
+#define JS_OBJ_HANDLE_NULL 0
+
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
 #if defined(EMSCRIPTEN)
@@ -360,6 +364,7 @@ struct JSGCObjectHeader {
     uint8_t dummy1; /* not used by the GC */
     uint16_t dummy2; /* not used by the GC */
     struct list_head link;
+    JSObjHandle handle; /* Handle ID for handle-based GC */
 };
 
 typedef enum {
@@ -6121,17 +6126,71 @@ static void gc_remove_weak_objects(JSRuntime *rt)
     free_zero_refcount(rt);
 }
 
+/* Handle-based GC integration */
+static JSObjHandle g_next_handle = 1;
+
+/* Stack bump allocator for handle-based GC */
+typedef struct {
+    uint8_t *base;
+    uint8_t *top;
+    uint8_t *limit;
+    size_t capacity;
+} JSGCStack;
+
+static int js_gc_stack_init(JSRuntime *rt, JSGCStack *stack, size_t capacity)
+{
+    stack->base = js_malloc_rt(rt, capacity);
+    if (!stack->base) return -1;
+    stack->top = stack->base;
+    stack->limit = stack->base + capacity;
+    stack->capacity = capacity;
+    return 0;
+}
+
+static void js_gc_stack_free(JSRuntime *rt, JSGCStack *stack)
+{
+    js_free_rt(rt, stack->base);
+    stack->base = NULL;
+    stack->top = NULL;
+    stack->limit = NULL;
+}
+
+static void* js_gc_stack_alloc(JSGCStack *stack, size_t size)
+{
+    size_t aligned = (size + 7) & ~7;
+    if (stack->top + aligned > stack->limit)
+        return NULL;
+    void *ptr = stack->top;
+    stack->top += aligned;
+    return ptr;
+}
+
+static void js_gc_stack_reset(JSGCStack *stack)
+{
+    stack->top = stack->base;
+}
+
+/* Handle table entry */
+typedef struct {
+    JSGCObjectHeader *ptr;
+    uint32_t generation;
+} JSGCHandleEntry;
+
 static void add_gc_object(JSRuntime *rt, JSGCObjectHeader *h,
                           JSGCObjectTypeEnum type)
 {
     h->mark = 0;
     h->gc_obj_type = type;
     list_add_tail(&h->link, &rt->gc_obj_list);
+    
+    /* Assign handle for handle-based GC */
+    h->handle = g_next_handle++;
 }
 
 static void remove_gc_object(JSGCObjectHeader *h)
 {
     list_del(&h->link);
+    h->handle = 0;  /* Clear handle */
 }
 
 void JS_MarkValue(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
@@ -6396,24 +6455,53 @@ static void gc_free_cycles(JSRuntime *rt)
     init_list_head(&rt->gc_zero_ref_count_list);
 }
 
+/* Handle-based mark phase */
+static void gc_mark_handle(JSRuntime *rt, JSGCObjectHeader *p)
+{
+    if (p->mark) return;
+    p->mark = 1;
+    mark_children(rt, p, gc_mark_handle);
+}
+
+/* Handle-based sweep phase - clears unmarked handles */
+static void gc_sweep_handles(JSRuntime *rt)
+{
+    struct list_head *el, *el1;
+    JSGCObjectHeader *p;
+    
+    list_for_each_safe(el, el1, &rt->gc_obj_list) {
+        p = list_entry(el, JSGCObjectHeader, link);
+        if (!p->mark) {
+            /* Object is dead - free it */
+            list_del(&p->link);
+            p->handle = 0;  /* Clear handle */
+            js_free_rt(rt, p);
+        } else {
+            /* Object is live - keep it, clear mark for next GC */
+            p->mark = 0;
+        }
+    }
+}
+
 static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
 {
+    struct list_head *el;
+    JSGCObjectHeader *p;
+    
     if (remove_weak_objects) {
-        /* free the weakly referenced object or symbol structures, delete
-           the associated Map/Set entries and queue the finalization
-           registry callbacks. */
         gc_remove_weak_objects(rt);
     }
     
-    /* decrement the reference of the children of each object. mark =
-       1 after this pass. */
-    gc_decref(rt);
-
-    /* keep the GC objects with a non zero refcount and their childs */
-    gc_scan(rt);
-
-    /* free the GC objects in a cycle */
-    gc_free_cycles(rt);
+    /* Handle-based GC: mark from roots (objects with ref_count > 0) */
+    list_for_each(el, &rt->gc_obj_list) {
+        p = list_entry(el, JSGCObjectHeader, link);
+        if (p->ref_count > 0 && !p->mark) {
+            gc_mark_handle(rt, p);
+        }
+    }
+    
+    /* Sweep unmarked objects */
+    gc_sweep_handles(rt);
 }
 
 void JS_RunGC(JSRuntime *rt)
