@@ -334,25 +334,60 @@ static char* extract_video_title(const char *player_response) {
 }
 
 // Extract ytInitialPlayerResponse from HTML
-// Sanitize JSON by escaping control characters that QuickJS doesn't accept
+// Sanitize JSON by escaping control characters that cJSON doesn't accept
 static char* sanitize_json(const char *json, size_t len) {
-    // Replace control characters with spaces for cJSON compatibility
-    char *sanitized = malloc(len + 1);
+    // Allocate extra space for potential escape sequences (worst case: every char doubled)
+    char *sanitized = malloc(len * 2 + 1);
     if (!sanitized) return NULL;
     
-    memcpy(sanitized, json, len);
-    sanitized[len] = '\0';
-    
-    // Replace any control characters (0x00-0x1F) except tab, newline, carriage return
-    // with spaces to avoid cJSON parse errors
+    size_t j = 0;
     for (size_t i = 0; i < len; i++) {
-        unsigned char c = sanitized[i];
+        unsigned char c = (unsigned char)json[i];
+        
+        // Replace control characters (0x00-0x1F) except tab, newline, carriage return with space
         if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
-            sanitized[i] = ' ';
+            sanitized[j++] = ' ';
+        }
+        // Handle DEL character (0x7F)
+        else if (c == 0x7F) {
+            sanitized[j++] = ' ';
+        }
+        // Handle high-byte characters (0x80-0xFF) that might be invalid standalone bytes
+        // In valid UTF-8, these should be part of multi-byte sequences
+        // For safety, we'll pass them through but log if we see suspicious patterns
+        else if (c >= 0x80) {
+            // Check if this looks like valid UTF-8
+            if ((c & 0xE0) == 0xC0 && i + 1 < len && (json[i+1] & 0xC0) == 0x80) {
+                // Valid 2-byte UTF-8, copy both
+                sanitized[j++] = json[i++];
+                sanitized[j++] = json[i];
+            } else if ((c & 0xF0) == 0xE0 && i + 2 < len && 
+                       (json[i+1] & 0xC0) == 0x80 && (json[i+2] & 0xC0) == 0x80) {
+                // Valid 3-byte UTF-8, copy all three
+                sanitized[j++] = json[i++];
+                sanitized[j++] = json[i++];
+                sanitized[j++] = json[i];
+            } else if ((c & 0xF8) == 0xF0 && i + 3 < len &&
+                       (json[i+1] & 0xC0) == 0x80 && (json[i+2] & 0xC0) == 0x80 && (json[i+3] & 0xC0) == 0x80) {
+                // Valid 4-byte UTF-8, copy all four
+                sanitized[j++] = json[i++];
+                sanitized[j++] = json[i++];
+                sanitized[j++] = json[i++];
+                sanitized[j++] = json[i];
+            } else {
+                // Invalid UTF-8 byte, replace with space
+                sanitized[j++] = ' ';
+            }
+        }
+        else {
+            sanitized[j++] = json[i];
         }
     }
+    sanitized[j] = '\0';
     
-    return sanitized;
+    // Realloc to actual size
+    char *result = realloc(sanitized, j + 1);
+    return result ? result : sanitized;
 }
 
 static char* extract_yt_player_response(const char *html) {
@@ -577,10 +612,52 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
         
         bool result = http_get_to_memory(script_urls[i], &buffer, error, sizeof(error));
         if (result && buffer.data && buffer.size > 0) {
-            scripts[loaded_count] = buffer.data;
-            script_lens[loaded_count] = buffer.size;
-            loaded_count++;
-            LOG_INFO("Loaded script %d: %zu bytes", i, buffer.size);
+            /* Validate that the response is actually JavaScript, not HTML (e.g., a login page) */
+            const char *content = buffer.data;
+            
+            /* Skip leading whitespace and BOM */
+            while (*content && (isspace((unsigned char)*content) || 
+                   (unsigned char)*content == 0xEF || 
+                   (unsigned char)*content == 0xBB || 
+                   (unsigned char)*content == 0xBF)) {
+                content++;
+            }
+            
+            /* Check for HTML indicators at the START of the file only
+             * (JS files might contain <head>/<body> as string literals later in the code) */
+            bool is_html = false;
+            if (strncasecmp(content, "<!doctype", 9) == 0 ||
+                strncasecmp(content, "<html", 5) == 0 ||
+                strncasecmp(content, "<?xml", 5) == 0) {
+                is_html = true;
+            }
+            
+            /* Also check first 500 chars for HTML structure tags appearing at the beginning */
+            if (!is_html) {
+                char first_500[501];
+                size_t check_len = strlen(content);
+                if (check_len > 500) check_len = 500;
+                memcpy(first_500, content, check_len);
+                first_500[check_len] = '\0';
+                
+                /* Only flag as HTML if these tags appear very early in the document */
+                if (strstr(first_500, "<head") != NULL || 
+                    strstr(first_500, "<body") != NULL ||
+                    strstr(first_500, "<title>") != NULL) {
+                    is_html = true;
+                }
+            }
+            
+            if (is_html) {
+                LOG_WARN("Script %d appears to be HTML, not JavaScript - skipping", i);
+                LOG_WARN("Content preview: %.100s...", content);
+                http_free_buffer(&buffer);
+            } else {
+                scripts[loaded_count] = buffer.data;
+                script_lens[loaded_count] = buffer.size;
+                loaded_count++;
+                LOG_INFO("Loaded script %d: %zu bytes", i, buffer.size);
+            }
         } else {
             LOG_WARN("Failed to fetch script %d: %s", i, error);
             if (buffer.data) http_free_buffer(&buffer);

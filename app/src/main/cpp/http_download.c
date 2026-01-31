@@ -330,7 +330,7 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
         set_cookie = strstr(line_end, "Set-Cookie:");
     }
     
-    /* Handle redirects */
+    /* Handle redirects - but don't follow cross-domain redirects for script/resource downloads */
     if (status >= 300 && status < 400) {
         char *location = strstr(outBuffer->data, "Location:");
         if (location) {
@@ -344,6 +344,39 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
             redirect_url[i] = '\0';
             
             LOGI("Redirect to: %s", redirect_url);
+            
+            /* Block redirects to authentication/login pages - these should never happen for JS files */
+            if (strstr(redirect_url, "accounts.google.com") ||
+                strstr(redirect_url, "ServiceLogin") ||
+                strstr(redirect_url, "/signin") ||
+                strstr(redirect_url, "/login")) {
+                LOGE("Blocking redirect to authentication page: %s", redirect_url);
+                snprintf(err, errLen, "Redirect to login page blocked");
+                free(outBuffer->data);
+                outBuffer->data = NULL;
+                return false;
+            }
+            
+            /* Check for cross-domain redirect from youtube.com to other domains */
+            if (strstr(host, "youtube.com")) {
+                char redirect_host[256] = {0};
+                char temp_path[2048], temp_port[8];
+                if (parse_url(redirect_url, redirect_host, sizeof(redirect_host), 
+                              temp_path, sizeof(temp_path), temp_port, sizeof(temp_port))) {
+                    if (!strstr(redirect_host, "youtube.com") && 
+                        !strstr(redirect_host, "googlevideo.com") &&
+                        !strstr(redirect_host, "ytimg.com") &&
+                        !strstr(redirect_host, "googleapis.com") &&
+                        !strstr(redirect_host, "gstatic.com")) {
+                        LOGE("Blocking cross-domain redirect from youtube.com to %s", redirect_host);
+                        snprintf(err, errLen, "Cross-domain redirect blocked");
+                        free(outBuffer->data);
+                        outBuffer->data = NULL;
+                        return false;
+                    }
+                }
+            }
+            
             free(outBuffer->data);
             outBuffer->data = NULL;
             return http_request_with_cookies(redirect_url, outBuffer, err, errLen, NULL);

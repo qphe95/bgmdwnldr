@@ -7,6 +7,7 @@
 #include "js_quickjs.h"
 #include "cutils.h"
 #include "quickjs.h"
+#include "browser_stubs.h"
 
 #define LOG_TAG "js_quickjs"
 #define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -499,14 +500,30 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val, int argc, J
 static void init_browser_environment(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
     
-    // Set up shims first, before any other code runs
+    // Load comprehensive browser stubs FIRST - this sets up window, document, navigator, goog, etc.
+    LOG_INFO("Setting up basic browser environment...");
+    JSValue stubs_result = JS_Eval(ctx, BROWSER_STUBS_JS, strlen(BROWSER_STUBS_JS), "<browser_stubs>", 0);
+    if (JS_IsException(stubs_result)) {
+        JSValue exc = JS_GetException(ctx);
+        const char *exc_str = JS_ToCString(ctx, exc);
+        LOG_ERROR("Failed to load browser stubs: %s", exc_str ? exc_str : "(unknown)");
+        JS_FreeCString(ctx, exc_str);
+        JS_FreeValue(ctx, exc);
+    } else {
+        LOG_INFO("JS: Basic browser environment ready");
+    }
+    JS_FreeValue(ctx, stubs_result);
+    
+    // Set up additional shims
     const char *early_shim = 
         "if (typeof window === 'undefined') { this.window = this; }"
         "if (typeof globalThis === 'undefined') { this.globalThis = this; }"
-        // Define es5Shimmed on window
+        // Define es5Shimmed on window and global
         "this.es5Shimmed = true;"
         "this.es6Shimmed = true;"
         "this._babelPolyfill = true;"
+        // Make sure goog.es5Shimmed is set
+        "if (typeof goog !== 'undefined') { goog.es5Shimmed = true; }"
     ;
     JS_Eval(ctx, early_shim, strlen(early_shim), "<early_shim>", 0);
     
