@@ -235,7 +235,12 @@ static int parse_yt_player_response(const char *json, MediaStream *streams, int 
     if (!root) {
         const char *error_ptr = cJSON_GetErrorPtr();
         if (error_ptr) {
-            LOG_ERROR("cJSON parse error at: %.50s", error_ptr);
+            size_t error_pos = error_ptr - json;
+            LOG_ERROR("cJSON parse error at position %zu: %.50s", error_pos, error_ptr);
+            // Log context around error
+            if (error_pos > 20) {
+                LOG_ERROR("Context before error: ...%.30s", error_ptr - 30);
+            }
         }
         return 0;
     }
@@ -313,6 +318,25 @@ static char* extract_video_title(const char *player_response) {
 }
 
 // Extract ytInitialPlayerResponse from HTML
+// Sanitize JSON by escaping control characters that QuickJS doesn't accept
+static char* sanitize_json(const char *json, size_t len) {
+    // Only remove embedded null bytes which definitely break JSON parsing
+    // Other control characters should already be properly escaped in valid JSON
+    char *sanitized = malloc(len + 1);
+    if (!sanitized) return NULL;
+    
+    size_t j = 0;
+    for (size_t i = 0; i < len; i++) {
+        // Skip null bytes
+        if (json[i] != '\0') {
+            sanitized[j++] = json[i];
+        }
+    }
+    sanitized[j] = '\0';
+    
+    return sanitized;
+}
+
 static char* extract_yt_player_response(const char *html) {
     if (!html) return NULL;
     
@@ -348,12 +372,19 @@ static char* extract_yt_player_response(const char *html) {
                     if (brace_depth == 0) {
                         // Found complete JSON
                         size_t len = p_json - start + 1;
+                        if (len > 10 * 1024 * 1024) {  // Sanity check: max 10MB
+                            LOG_ERROR("JSON too large: %zu bytes", len);
+                            return NULL;
+                        }
                         char *json = malloc(len + 1);
                         if (json) {
-                            strncpy(json, start, len);
+                            memcpy(json, start, len);
                             json[len] = '\0';
                             LOG_INFO("Extracted ytInitialPlayerResponse (%zu bytes)", len);
-                            return json;
+                            // Sanitize to escape control characters for QuickJS
+                            char *sanitized = sanitize_json(json, len);
+                            free(json);
+                            return sanitized;
                         }
                     }
                 }

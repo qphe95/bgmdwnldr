@@ -726,7 +726,7 @@ static void init_browser_environment(JSContext *ctx) {
     ;
     JS_Eval(ctx, event_target_js, strlen(event_target_js), "<event_target>", 0);
     
-    // URL capture array
+    // URL capture array and global navigator reference
     const char *init_js = 
         "var __capturedUrls = [];"
         "function __recordUrl(url) {"
@@ -735,6 +735,13 @@ static void init_browser_environment(JSContext *ctx) {
         "    if (console && console.log) console.log('Captured URL:', url.substring(0, 100));"
         "  }"
         "}"
+        // Make navigator available globally (some scripts access it directly)
+        "var navigator = window.navigator || {};"
+        // Make Element and Node available globally
+        "var Element = window.Element;"
+        "var Node = window.Node;"
+        "var HTMLElement = window.HTMLElement || Element;"
+        "var SVGElement = window.SVGElement || Element;"
     ;
     JS_Eval(ctx, init_js, strlen(init_js), "<init>", 0);
     
@@ -751,6 +758,269 @@ static void init_browser_environment(JSContext *ctx) {
         "};"
     ;
     JS_Eval(ctx, crypto_js, strlen(crypto_js), "<crypto>", 0);
+    
+    // Intl API (Internationalization) - needed for YouTube
+    const char *intl_js = 
+        "var Intl = {"
+        "  NumberFormat: function(locales, options) {"
+        "    this.format = function(num) { return num.toString(); };"
+        "  },"
+        "  DateTimeFormat: function(locales, options) {"
+        "    this.format = function(date) { return date.toString(); };"
+        "  },"
+        "  Collator: function(locales, options) {"
+        "    this.compare = function(a, b) { return a.localeCompare(b); };"
+        "  },"
+        "  ListFormat: function(locales, options) {"
+        "    this.format = function(list) { return list.join(', '); };"
+        "  },"
+        "  PluralRules: function(locales, options) {"
+        "    this.select = function(n) { return 'other'; };"
+        "  },"
+        "  RelativeTimeFormat: function(locales, options) {"
+        "    this.format = function(value, unit) { return value + ' ' + unit; };"
+        "  }"
+        "};"
+    ;
+    JS_Eval(ctx, intl_js, strlen(intl_js), "<intl>", 0);
+    
+    // Element and Node classes - needed for DOM operations
+    const char *dom_js = 
+        "function Node() {"
+        "  this.childNodes = [];"
+        "  this.parentNode = null;"
+        "  this.nodeType = 1;"
+        "}"
+        "Node.prototype.appendChild = function(child) {"
+        "  this.childNodes.push(child);"
+        "  child.parentNode = this;"
+        "  return child;"
+        "};"
+        "Node.prototype.removeChild = function(child) {"
+        "  var idx = this.childNodes.indexOf(child);"
+        "  if (idx >= 0) this.childNodes.splice(idx, 1);"
+        "  child.parentNode = null;"
+        "  return child;"
+        "};"
+        "Node.prototype.insertBefore = function(newChild, refChild) {"
+        "  return this.appendChild(newChild);"
+        "};"
+        "Node.prototype.cloneNode = function(deep) {"
+        "  return new Node();"
+        "};"
+        "Node.ELEMENT_NODE = 1;"
+        "Node.TEXT_NODE = 3;"
+        "Node.COMMENT_NODE = 8;"
+        "Node.DOCUMENT_NODE = 9;"
+        ""
+        // NodeFilter for TreeWalker
+        "var NodeFilter = {"
+        "  FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3,"
+        "  SHOW_ALL: -1, SHOW_ELEMENT: 1, SHOW_ATTRIBUTE: 2, SHOW_TEXT: 4,"
+        "  SHOW_CDATA_SECTION: 8, SHOW_ENTITY_REFERENCE: 16, SHOW_ENTITY: 32,"
+        "  SHOW_PROCESSING_INSTRUCTION: 64, SHOW_COMMENT: 128, SHOW_DOCUMENT: 256,"
+        "  SHOW_DOCUMENT_TYPE: 512, SHOW_DOCUMENT_FRAGMENT: 1024, SHOW_NOTATION: 2048"
+        "};"
+        "window.NodeFilter = NodeFilter;"
+        ""
+        "function Element() {"
+        "  Node.call(this);"
+        "  this.tagName = '';"
+        "  this.attributes = {};"
+        "  this.style = {};"
+        "  this.className = '';"
+        "  this.id = '';"
+        "}"
+        "Element.prototype = Object.create(Node.prototype);"
+        "Element.prototype.constructor = Element;"
+        "Element.prototype.setAttribute = function(name, value) {"
+        "  this.attributes[name] = value;"
+        "};"
+        "Element.prototype.getAttribute = function(name) {"
+        "  return this.attributes[name] || null;"
+        "};"
+        "Element.prototype.removeAttribute = function(name) {"
+        "  delete this.attributes[name];"
+        "};"
+        "Element.prototype.hasAttribute = function(name) {"
+        "  return name in this.attributes;"
+        "};"
+        "Element.prototype.getElementsByTagName = function(tagName) {"
+        "  return [];"
+        "};"
+        "Element.prototype.querySelector = function(selector) {"
+        "  return null;"
+        "};"
+        "Element.prototype.querySelectorAll = function(selector) {"
+        "  return [];"
+        "};"
+        ""
+        // HTMLElement extends Element
+        "function HTMLElement() {"
+        "  Element.call(this);"
+        "}"
+        "HTMLElement.prototype = Object.create(Element.prototype);"
+        "HTMLElement.prototype.constructor = HTMLElement;"
+        ""
+        // SVGElement extends Element
+        "function SVGElement() {"
+        "  Element.call(this);"
+        "}"
+        "SVGElement.prototype = Object.create(Element.prototype);"
+        "SVGElement.prototype.constructor = SVGElement;"
+        ""
+        // Expose to window
+        "window.Node = Node;"
+        "window.Element = Element;"
+        "window.HTMLElement = HTMLElement;"
+        "window.SVGElement = SVGElement;"
+        ""
+        // Document class
+        "function Document() {"
+        "  Node.call(this);"
+        "  this.body = null;"
+        "  this.documentElement = null;"
+        "  this.head = null;"
+        "}"
+        "Document.prototype = Object.create(Node.prototype);"
+        "Document.prototype.constructor = Document;"
+        "Document.prototype.createElement = function(tagName) {"
+        "  if (tagName.toLowerCase() === 'video') {"
+        "    return new HTMLVideoElement();"
+        "  }"
+        "  return new Element();"
+        "};"
+        "Document.prototype.getElementById = function(id) { return null; };"
+        "Document.prototype.querySelector = function(sel) { return null; };"
+        "Document.prototype.querySelectorAll = function(sel) { return []; };"
+        "Document.prototype.createTextNode = function(text) { return {textContent: text}; };"
+        "Document.prototype.createComment = function(data) { return {data: data}; };"
+        "window.Document = Document;"
+        ""
+        // TreeWalker for DOM traversal
+        "function TreeWalker(root, whatToShow, filter) {"
+        "  this.root = root;"
+        "  this.whatToShow = whatToShow;"
+        "  this.filter = filter;"
+        "  this.currentNode = root;"
+        "}"
+        "TreeWalker.prototype.nextNode = function() { return null; };"
+        "TreeWalker.prototype.previousNode = function() { return null; };"
+        "TreeWalker.prototype.firstChild = function() { return null; };"
+        "TreeWalker.prototype.lastChild = function() { return null; };"
+        "TreeWalker.prototype.nextSibling = function() { return null; };"
+        "TreeWalker.prototype.previousSibling = function() { return null; };"
+        "TreeWalker.prototype.parentNode = function() { return null; };"
+        "window.TreeWalker = TreeWalker;"
+    ;
+    JS_Eval(ctx, dom_js, strlen(dom_js), "<dom>", 0);
+    
+    // MutationObserver polyfill - needed for YouTube player
+    const char *mutation_observer_js = 
+        "function MutationObserver(callback) {"
+        "  this.callback = callback;"
+        "  this.observing = false;"
+        "}"
+        "MutationObserver.prototype.observe = function(target, options) {"
+        "  this.observing = true;"
+        "  this.target = target;"
+        "};"
+        "MutationObserver.prototype.disconnect = function() {"
+        "  this.observing = false;"
+        "};"
+        "MutationObserver.prototype.takeRecords = function() {"
+        "  return [];"
+        "};"
+        "window.MutationObserver = MutationObserver;"
+    ;
+    JS_Eval(ctx, mutation_observer_js, strlen(mutation_observer_js), "<mutation_observer>", 0);
+    
+    // Web Components API stubs
+    const char *webcomponents_js = 
+        "var customElements = {"
+        "  _registry: {},"
+        "  define: function(name, constructor, options) {"
+        "    this._registry[name] = constructor;"
+        "  },"
+        "  get: function(name) {"
+        "    return this._registry[name];"
+        "  },"
+        "  whenDefined: function(name) {"
+        "    return Promise.resolve();"
+        "  }"
+        "};"
+        "window.customElements = customElements;"
+        "window.HTMLElement = window.HTMLElement || function() {};"
+        "window.HTMLElement.prototype = window.HTMLElement.prototype || {};"
+    ;
+    JS_Eval(ctx, webcomponents_js, strlen(webcomponents_js), "<webcomponents>", 0);
+    
+    // WebVTT API stub
+    const char *webvtt_js = 
+        "function VTTCue(startTime, endTime, text) {"
+        "  this.startTime = startTime;"
+        "  this.endTime = endTime;"
+        "  this.text = text;"
+        "  this.id = '';"
+        "  this.pauseOnExit = false;"
+        "}"
+        "VTTCue.prototype.getCueAsHTML = function() {"
+        "  return { textContent: this.text };"
+        "};"
+        "window.VTTCue = VTTCue;"
+    ;
+    JS_Eval(ctx, webvtt_js, strlen(webvtt_js), "<webvtt>", 0);
+    
+    // IntersectionObserver polyfill
+    const char *intersection_js = 
+        "function IntersectionObserver(callback, options) {"
+        "  this.callback = callback;"
+        "  this.options = options || {};"
+        "}"
+        "IntersectionObserver.prototype.observe = function(target) {};"
+        "IntersectionObserver.prototype.unobserve = function(target) {};"
+        "IntersectionObserver.prototype.disconnect = function() {};"
+        "IntersectionObserver.prototype.takeRecords = function() { return []; };"
+        "window.IntersectionObserver = IntersectionObserver;"
+    ;
+    JS_Eval(ctx, intersection_js, strlen(intersection_js), "<intersection>", 0);
+    
+    // ResizeObserver polyfill
+    const char *resize_js = 
+        "function ResizeObserver(callback) {"
+        "  this.callback = callback;"
+        "}"
+        "ResizeObserver.prototype.observe = function(target) {};"
+        "ResizeObserver.prototype.unobserve = function(target) {};"
+        "ResizeObserver.prototype.disconnect = function() {};"
+        "window.ResizeObserver = ResizeObserver;"
+    ;
+    JS_Eval(ctx, resize_js, strlen(resize_js), "<resize>", 0);
+    
+    // CSS object
+    const char *css_js = 
+        "var CSS = {"
+        "  supports: function(property, value) { return false; },"
+        "  escape: function(str) { return str; },"
+        "  px: function(val) { return val + 'px'; }"
+        "};"
+        "window.CSS = CSS;"
+    ;
+    JS_Eval(ctx, css_js, strlen(css_js), "<css>", 0);
+    
+    // Web Animations API stub
+    const char *animation_js = 
+        "function Animation() {}"
+        "Animation.prototype.play = function() {};"
+        "Animation.prototype.pause = function() {};"
+        "Animation.prototype.cancel = function() {};"
+        "Animation.prototype.finish = function() {};"
+        "Animation.prototype.reverse = function() {};"
+        "function KeyframeEffect() {}"
+        "window.Animation = Animation;"
+        "window.KeyframeEffect = KeyframeEffect;"
+    ;
+    JS_Eval(ctx, animation_js, strlen(animation_js), "<animation>", 0);
     
     JS_FreeValue(ctx, global);
 }
@@ -968,23 +1238,22 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
     
     // Inject ytInitialPlayerResponse if provided
     if (player_response && strlen(player_response) > 0) {
-        size_t inject_len = strlen(player_response) + 64;
-        char *inject_code = malloc(inject_len);
-        if (inject_code) {
-            snprintf(inject_code, inject_len, "var ytInitialPlayerResponse = %s;", player_response);
-            LOG_INFO("Injecting ytInitialPlayerResponse (%zu bytes)", strlen(player_response));
-            JSValue result = JS_Eval(ctx, inject_code, strlen(inject_code), "<player_response>", 0);
-            if (JS_IsException(result)) {
-                JSValue exception = JS_GetException(ctx);
-                const char *error = JS_ToCString(ctx, exception);
-                LOG_ERROR("Error injecting ytInitialPlayerResponse: %s", error ? error : "unknown");
-                JS_FreeCString(ctx, error);
-                JS_FreeValue(ctx, exception);
-            } else {
-                LOG_INFO("ytInitialPlayerResponse injected successfully");
-            }
-            JS_FreeValue(ctx, result);
-            free(inject_code);
+        LOG_INFO("Injecting ytInitialPlayerResponse (%zu bytes)", strlen(player_response));
+        
+        // Use JS_ParseJSON to safely parse the JSON without injection issues
+        JSValue json_val = JS_ParseJSON(ctx, player_response, strlen(player_response), "<player_response>");
+        if (JS_IsException(json_val)) {
+            JSValue exception = JS_GetException(ctx);
+            const char *error = JS_ToCString(ctx, exception);
+            LOG_ERROR("Error parsing ytInitialPlayerResponse JSON: %s", error ? error : "unknown");
+            JS_FreeCString(ctx, error);
+            JS_FreeValue(ctx, exception);
+        } else {
+            // Set as global variable
+            JSValue global = JS_GetGlobalObject(ctx);
+            JS_SetPropertyStr(ctx, global, "ytInitialPlayerResponse", json_val);
+            JS_FreeValue(ctx, global);
+            LOG_INFO("ytInitialPlayerResponse injected successfully");
         }
     }
     

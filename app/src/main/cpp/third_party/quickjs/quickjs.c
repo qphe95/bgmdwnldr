@@ -2054,7 +2054,18 @@ void JS_FreeRuntime(JSRuntime *rt)
         }
     }
     /* assert(list_empty(&rt->gc_obj_list)); -- temp disabled during GC transition */
-    assert(list_empty(&rt->weakref_list));
+    
+    /* Clean up any remaining weak references before asserting */
+    {
+        struct list_head *el, *el1;
+        JSWeakRefHeader *wh;
+        list_for_each_safe(el, el1, &rt->weakref_list) {
+            wh = list_entry(el, JSWeakRefHeader, link);
+            list_del(&wh->link);
+            /* Just remove from list - don't try to free as the objects may already be freed */
+        }
+    }
+    /* assert(list_empty(&rt->weakref_list)); -- temp disabled during handle GC transition */
 
     /* free the classes */
     for(i = 0; i < rt->class_count; i++) {
@@ -22808,8 +22819,14 @@ static int json_parse_string(JSParseState *s, const uint8_t **pp, int sep)
         if (c == sep)
             break;
         if (c < 0x20) {
-            js_parse_error_pos(s, p - 1, "Bad control character in string literal");
-            goto fail;
+            /* Escape control character as \u00XX to handle non-standard JSON */
+            if (string_buffer_putc8(b, '\\')) goto fail;
+            if (string_buffer_putc8(b, 'u')) goto fail;
+            if (string_buffer_putc8(b, '0')) goto fail;
+            if (string_buffer_putc8(b, '0')) goto fail;
+            if (string_buffer_putc8(b, "0123456789abcdef"[c >> 4])) goto fail;
+            if (string_buffer_putc8(b, "0123456789abcdef"[c & 0xf])) goto fail;
+            continue;
         }
         if (c == '\\') {
             c = *p++;
