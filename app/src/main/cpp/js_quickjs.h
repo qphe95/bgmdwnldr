@@ -46,6 +46,16 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
 /* Get captured URLs from global storage (for backward compatibility) */
 int js_quickjs_get_captured_urls(char urls[][JS_MAX_URL_LEN], int max_urls);
 
+/* Execute decipher code to decrypt a signature
+ * decipher_code: The extracted decipher function code
+ * encrypted_sig: The encrypted signature string
+ * out_decrypted: Buffer to store the decrypted signature
+ * out_len: Size of the output buffer
+ * Returns true on success, false on failure
+ */
+bool js_quickjs_execute_decipher(const char *decipher_code, const char *encrypted_sig,
+                                  char *out_decrypted, size_t out_len);
+
 #ifdef __cplusplus
 }
 #endif

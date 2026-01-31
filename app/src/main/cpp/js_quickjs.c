@@ -510,6 +510,29 @@ static void init_browser_environment(JSContext *ctx) {
     ;
     JS_Eval(ctx, early_shim, strlen(early_shim), "<early_shim>", 0);
     
+    // Wrap global access to prevent undefined property errors
+    const char *undefined_shim = 
+        "(function() {"
+        "  var originalGet = Object.prototype.__lookupGetter__;"
+        "  // Define es5Shimmed on Object.prototype as fallback"
+        "  try {"
+        "    if (!Object.prototype.hasOwnProperty('es5Shimmed')) {"
+        "      Object.defineProperty(Object.prototype, 'es5Shimmed', {"
+        "        get: function() { return true; },"
+        "        configurable: true"
+        "      });"
+        "    }"
+        "    if (!Object.prototype.hasOwnProperty('es6Shimmed')) {"
+        "      Object.defineProperty(Object.prototype, 'es6Shimmed', {"
+        "        get: function() { return true; },"
+        "        configurable: true"
+        "      });"
+        "    }"
+        "  } catch(e) {}"
+        "})();"
+    ;
+    JS_Eval(ctx, undefined_shim, strlen(undefined_shim), "<undefined_shim>", 0);
+    
     // Create XMLHttpRequest class
     JSValue xhr_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, xhr_proto, js_xhr_proto_funcs, countof(js_xhr_proto_funcs));
@@ -603,8 +626,34 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, window, "blur", JS_NewCFunction(ctx, js_dummy_function, "blur", 0));
     JS_SetPropertyStr(ctx, window, "scrollTo", JS_NewCFunction(ctx, js_dummy_function, "scrollTo", 2));
     JS_SetPropertyStr(ctx, window, "scrollBy", JS_NewCFunction(ctx, js_dummy_function, "scrollBy", 2));
-    JS_SetPropertyStr(ctx, window, "localStorage", JS_NewObject(ctx));
-    JS_SetPropertyStr(ctx, window, "sessionStorage", JS_NewObject(ctx));
+    // localStorage with working methods
+    const char *local_storage_js = 
+        "var localStorage = {"
+        "  _data: {},"
+        "  getItem: function(k) { return this._data[k] || null; },"
+        "  setItem: function(k, v) { this._data[k] = String(v); },"
+        "  removeItem: function(k) { delete this._data[k]; },"
+        "  clear: function() { this._data = {}; },"
+        "  key: function(n) { var keys = Object.keys(this._data); return keys[n] || null; },"
+        "  get length() { return Object.keys(this._data).length; }"
+        "};"
+    ;
+    JS_Eval(ctx, local_storage_js, strlen(local_storage_js), "<localStorage>", 0);
+    
+    // sessionStorage with working methods
+    const char *session_storage_js = 
+        "var sessionStorage = {"
+        "  _data: {},"
+        "  getItem: function(k) { return this._data[k] || null; },"
+        "  setItem: function(k, v) { this._data[k] = String(v); },"
+        "  removeItem: function(k) { delete this._data[k]; },"
+        "  clear: function() { this._data = {}; },"
+        "  key: function(n) { var keys = Object.keys(this._data); return keys[n] || null; },"
+        "  get length() { return Object.keys(this._data).length; }"
+        "};"
+    ;
+    JS_Eval(ctx, session_storage_js, strlen(session_storage_js), "<sessionStorage>", 0);
+    
     JS_SetPropertyStr(ctx, window, "indexedDB", JS_NewObject(ctx));
     JS_SetPropertyStr(ctx, window, "location", JS_NewObject(ctx));
     JS_SetPropertyStr(ctx, window, "navigator", JS_NewObject(ctx));
@@ -1514,6 +1563,21 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
                 LOG_ERROR("=== END STACK TRACE ===");
             } else if (stack) {
                 LOG_ERROR("Stack trace (Script %d): %.500s%s", i, stack, strlen(stack) > 500 ? "..." : "");
+            }
+            
+            // Dump script content for syntax errors
+            if (error && strstr(error, "SyntaxError")) {
+                LOG_ERROR("=== SCRIPT %d CONTENT (first 2000 chars) ===", i);
+                char preview[2001];
+                size_t preview_len = script_lens[i] < 2000 ? script_lens[i] : 2000;
+                memcpy(preview, scripts[i], preview_len);
+                preview[preview_len] = '\0';
+                // Replace newlines with spaces for single-line log
+                for (size_t j = 0; j < preview_len; j++) {
+                    if (preview[j] == '\n' || preview[j] == '\r') preview[j] = ' ';
+                }
+                LOG_ERROR("%.2000s", preview);
+                LOG_ERROR("=== END SCRIPT %d CONTENT ===", i);
             }
             JS_FreeCString(ctx, stack);
             JS_FreeValue(ctx, stack_val);

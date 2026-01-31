@@ -242,19 +242,24 @@ static int parse_yt_player_response(const char *json, MediaStream *streams, int 
     LOG_INFO("Parsing player response with cJSON (%zu bytes)", strlen(sanitized));
     
     cJSON *root = cJSON_Parse(sanitized);
-    free(sanitized);
     if (!root) {
         const char *error_ptr = cJSON_GetErrorPtr();
         if (error_ptr) {
-            size_t error_pos = error_ptr - json;
+            size_t error_pos = error_ptr - sanitized;
             LOG_ERROR("cJSON parse error at position %zu: %.50s", error_pos, error_ptr);
             // Log context around error
-            if (error_pos > 20) {
+            if (error_pos > 30) {
                 LOG_ERROR("Context before error: ...%.30s", error_ptr - 30);
             }
+            // Also log the character code at error position
+            LOG_ERROR("Character at error: 0x%02X (decimal %d)", (unsigned char)*error_ptr, (unsigned char)*error_ptr);
+        } else {
+            LOG_ERROR("cJSON parse error (unknown position)");
         }
+        free(sanitized);
         return 0;
     }
+    free(sanitized);
     
     // Navigate to streamingData
     cJSON *streaming_data = cJSON_GetObjectItemCaseSensitive(root, "streamingData");
