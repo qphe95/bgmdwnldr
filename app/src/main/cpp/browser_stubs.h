@@ -77,11 +77,6 @@ static const char BROWSER_STUBS_JS[] =
     "CSSStyleDeclaration.prototype.setProperty = function() {};"
     "CSSStyleDeclaration.prototype.removeProperty = function() { return ''; };"
     ""
-    /* ShadowRoot stub for Shadow DOM */
-    "function ShadowRoot() { DocumentFragment.call(this); this.mode = 'open'; this.host = null; }"
-    "ShadowRoot.prototype = Object.create(DocumentFragment.prototype);"
-    "ShadowRoot.prototype.constructor = ShadowRoot;"
-    ""
     /* CSS interface for feature detection */
     "var CSS = {"
     "  supports: function(prop, value) { return false; },"
@@ -701,9 +696,7 @@ static const char BROWSER_STUBS_JS[] =
     "window.TouchEvent = TouchEvent;"
     "window.PointerEvent = PointerEvent;"
     "window.Touch = Touch;"
-    "window.ShadowRoot = ShadowRoot;"
     "window.CSS = CSS;"
-    "window.ShadyDOM = { force: false, noPatch: false, preferPerformance: false, qa: false, S: false, j: false, Rb: false, deferConnectionCallbacks: function() {}, querySelectorImplementation: undefined };"
     "window.yt = { config_: {} };"
     "window._spf_state = {};"
     "window.customElements = { define: function() {}, get: function() { return undefined; }, whenDefined: function() { return Promise.resolve(); }, upgrade: function() {}, observe: function() {} };"
