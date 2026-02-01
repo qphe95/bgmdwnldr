@@ -24,6 +24,80 @@ static JSClassID js_http_response_class_id;
 static JSClassID js_xhr_class_id;
 static JSClassID js_video_class_id;
 
+// Sanitize JSON string for QuickJS by handling invalid UTF-8 and control characters
+static char* sanitize_json_for_qjs(const char *json, size_t len) {
+    if (!json) return NULL;
+    
+    // Allocate extra space for replacements
+    char *sanitized = malloc(len * 2 + 1);
+    if (!sanitized) return NULL;
+    
+    size_t j = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)json[i];
+        
+        // ASCII control characters (0x00-0x1F) - keep tab, newline, carriage return
+        if (c < 0x20) {
+            if (c == '\t' || c == '\n' || c == '\r') {
+                sanitized[j++] = c;
+            } else {
+                sanitized[j++] = ' ';
+            }
+        }
+        // ASCII printable (0x20-0x7E)
+        else if (c <= 0x7E) {
+            sanitized[j++] = c;
+        }
+        // High bytes - need to validate UTF-8
+        else {
+            // Check for valid UTF-8 multi-byte sequence
+            // 2-byte sequence: 110xxxxx 10xxxxxx
+            if ((c & 0xE0) == 0xC0 && i + 1 < len) {
+                unsigned char c2 = (unsigned char)json[i + 1];
+                if ((c2 & 0xC0) == 0x80) {
+                    // Valid 2-byte sequence
+                    sanitized[j++] = c;
+                    sanitized[j++] = c2;
+                    i++;
+                    continue;
+                }
+            }
+            // 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx
+            else if ((c & 0xF0) == 0xE0 && i + 2 < len) {
+                unsigned char c2 = (unsigned char)json[i + 1];
+                unsigned char c3 = (unsigned char)json[i + 2];
+                if ((c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80) {
+                    // Valid 3-byte sequence
+                    sanitized[j++] = c;
+                    sanitized[j++] = c2;
+                    sanitized[j++] = c3;
+                    i += 2;
+                    continue;
+                }
+            }
+            // 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+            else if ((c & 0xF8) == 0xF0 && i + 3 < len) {
+                unsigned char c2 = (unsigned char)json[i + 1];
+                unsigned char c3 = (unsigned char)json[i + 2];
+                unsigned char c4 = (unsigned char)json[i + 3];
+                if ((c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80 && (c4 & 0xC0) == 0x80) {
+                    // Valid 4-byte sequence
+                    sanitized[j++] = c;
+                    sanitized[j++] = c2;
+                    sanitized[j++] = c3;
+                    sanitized[j++] = c4;
+                    i += 3;
+                    continue;
+                }
+            }
+            // Invalid UTF-8 sequence - replace with space
+            sanitized[j++] = ' ';
+        }
+    }
+    sanitized[j] = '\0';
+    return sanitized;
+}
+
 // Global state for URL capture
 static char g_captured_urls[MAX_CAPTURED_URLS][URL_MAX_LEN];
 static int g_captured_url_count = 0;
@@ -485,6 +559,18 @@ static JSValue js_dummy_function(JSContext *ctx, JSValueConst this_val, int argc
     return JS_UNDEFINED;
 }
 
+// Native logging function for JavaScript debugging
+static JSValue js_bgmdwnldr_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc > 0) {
+        const char *msg = JS_ToCString(ctx, argv[0]);
+        if (msg) {
+            __android_log_print(ANDROID_LOG_INFO, "js_debug", "%s", msg);
+            JS_FreeCString(ctx, msg);
+        }
+    }
+    return JS_UNDEFINED;
+}
+
 static JSValue js_console_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     for (int i = 0; i < argc; i++) {
         const char *str = JS_ToCString(ctx, argv[i]);
@@ -499,6 +585,9 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val, int argc, J
 // Initialize browser environment
 static void init_browser_environment(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
+    
+    // Register native logging function FIRST so it's available for all debugging
+    JS_SetPropertyStr(ctx, global, "__bgmdwnldr_log", JS_NewCFunction(ctx, js_bgmdwnldr_log, "__bgmdwnldr_log", 1));
     
     // Load comprehensive browser stubs FIRST - this sets up window, document, navigator, goog, etc.
     LOG_INFO("Setting up basic browser environment...");
@@ -522,33 +611,127 @@ static void init_browser_environment(JSContext *ctx) {
         "this.es5Shimmed = true;"
         "this.es6Shimmed = true;"
         "this._babelPolyfill = true;"
-        // Make sure goog.es5Shimmed is set
-        "if (typeof goog !== 'undefined') { goog.es5Shimmed = true; }"
+        // Ensure goog namespace exists (YouTube's Closure Library)
+        "var goog = goog || {};"
+        "goog.global = this;"
+        "goog.es5Shimmed = true;"
+        "goog.es6Shimmed = true;"
+        // Ensure common constructor names exist to prevent 'prototype of undefined' errors
+        "if (typeof Iterator === 'undefined') { this.Iterator = function() {}; }"
+        "if (typeof Generator === 'undefined') { this.Generator = function() {}; }"
+        "if (typeof Map === 'undefined') { this.Map = function() {}; }"
+        "if (typeof Set === 'undefined') { this.Set = function() {}; }"
+        "if (typeof WeakMap === 'undefined') { this.WeakMap = function() {}; }"
+        "if (typeof WeakSet === 'undefined') { this.WeakSet = function() {}; }"
+        "// Ensure constructors are also on window"
+        "window.Iterator = this.Iterator;"
+        "window.Generator = this.Generator;"
+        "window.Map = this.Map;"
+        "window.Set = this.Set;"
+        "window.WeakMap = this.WeakMap;"
+        "window.WeakSet = this.WeakSet;"
     ;
     JS_Eval(ctx, early_shim, strlen(early_shim), "<early_shim>", 0);
     
-    // Wrap global access to prevent undefined property errors
-    const char *undefined_shim = 
-        "(function() {"
-        "  var originalGet = Object.prototype.__lookupGetter__;"
-        "  // Define es5Shimmed on Object.prototype as fallback"
-        "  try {"
-        "    if (!Object.prototype.hasOwnProperty('es5Shimmed')) {"
-        "      Object.defineProperty(Object.prototype, 'es5Shimmed', {"
-        "        get: function() { return true; },"
-        "        configurable: true"
-        "      });"
-        "    }"
-        "    if (!Object.prototype.hasOwnProperty('es6Shimmed')) {"
-        "      Object.defineProperty(Object.prototype, 'es6Shimmed', {"
-        "        get: function() { return true; },"
-        "        configurable: true"
-        "      });"
-        "    }"
-        "  } catch(e) {}"
-        "})();"
+    // Ensure all window properties are proper objects (not undefined) for 'in' operator
+    const char *window_check_js = 
+        "// Ensure localStorage and sessionStorage exist on window\n"
+        "if (!window.localStorage) {\n"
+        "  window.localStorage = localStorage;\n"
+        "}\n"
+        "if (!window.sessionStorage) {\n"
+        "  window.sessionStorage = sessionStorage;\n"
+        "}\n"
+        "// Ensure navigator, location, document are objects\n"
+        "if (typeof window.navigator !== 'object') {\n"
+        "  window.navigator = {};\n"
+        "}\n"
+        "if (typeof window.location !== 'object') {\n"
+        "  window.location = {};\n"
+        "}\n"
+        "if (typeof window.document !== 'object') {\n"
+        "  window.document = {};\n"
+        "}\n"
     ;
-    JS_Eval(ctx, undefined_shim, strlen(undefined_shim), "<undefined_shim>", 0);
+    JS_Eval(ctx, window_check_js, strlen(window_check_js), "<window_check>", 0);
+    
+    // Create ALL common constructors upfront to prevent 'prototype of undefined' errors
+    const char *constructors_js = 
+        "function __log(msg) {"
+        "  if (typeof __bgmdwnldr_log === 'function') {"
+        "    __bgmdwnldr_log(msg);"
+        "  }"
+        "}"
+        "var __ctors = ['Iterator','Generator','AsyncGenerator','Map','Set','WeakMap','WeakSet',"
+        "'ArrayBuffer','SharedArrayBuffer','Uint8Array','Int8Array','Uint8ClampedArray',"
+        "'Uint16Array','Int16Array','Uint32Array','Int32Array','Float32Array','Float64Array',"
+        "'BigInt64Array','BigUint64Array','DataView','Promise','RegExp','Date','Error',"
+        "'TypeError','ReferenceError','SyntaxError','RangeError','URIError','EvalError',"
+        "'AggregateError','Symbol','Proxy','Reflect','WeakRef','FinalizationRegistry','Node','Element','Document','Window'];"
+        "for (var i=0; i<__ctors.length; i++) {"
+        "  var name=__ctors[i];"
+        "  if (typeof window[name]==='undefined') {"
+        "    __log('Creating stub: '+name);"
+        "    window[name]=function(){};"
+        "    window[name].prototype={};"
+        "  }"
+        "}"
+        "__log('Constructor setup done');"
+    ;
+    JS_Eval(ctx, constructors_js, strlen(constructors_js), "<constructors>", 0);
+    
+    // Wrap window with Proxy to detect undefined property accesses
+    const char *proxy_js = 
+        "if (typeof Proxy !== 'undefined') {"
+        "  var __loggedChains = {};"
+        "  function __createTracker(chain) {"
+        "    return new Proxy(function(){}, {"
+        "      get: function(t, p) {"
+        "        if (p === 'prototype' || p === '__proto__') return {};"
+        "        var newChain = chain + '.' + p;"
+        "        if (!__loggedChains[newChain]) {"
+        "          __loggedChains[newChain] = true;"
+        "          __log('UNDEFINED: ' + newChain);"
+        "        }"
+        "        return __createTracker(newChain);"
+        "      },"
+        "      apply: function(t, that, args) { return undefined; },"
+        "      construct: function(t, args) { return {}; }"
+        "    });"
+        "  }"
+        "  var __origWindow = window;"
+        "  window = new Proxy(__origWindow, {"
+        "    get: function(target, prop) {"
+        "      if (prop === Symbol.unscopables) return undefined;"
+        "      var val = target[prop];"
+        "      if (val === undefined && typeof prop === 'string') {"
+        "        var chain = 'window.' + prop;"
+        "        if (!__loggedChains[chain]) {"
+        "          __loggedChains[chain] = true;"
+        "          __log('UNDEFINED: ' + chain);"
+        "        }"
+        "        return __createTracker(chain);"
+        "      }"
+        "      return val;"
+        "    }"
+        "  });"
+        "  __log('Proxy installed');"
+        "}"
+    ;
+    JS_Eval(ctx, proxy_js, strlen(proxy_js), "<proxy>", 0);
+    
+    // Wrap Object.defineProperty to catch prototype assignments on undefined
+    const char *proto_trap_js = 
+        "var __origODP = Object.defineProperty;"
+        "Object.defineProperty = function(obj, prop, desc) {"
+        "  if (obj === undefined || obj === null) {"
+        "    __log('DEFINE_PROP_ERROR: obj=' + obj + ', prop=' + prop);"
+        "    return obj;"
+        "  }"
+        "  return __origODP.apply(this, arguments);"
+        "};"
+    ;
+    JS_Eval(ctx, proto_trap_js, strlen(proto_trap_js), "<proto_trap>", 0);
     
     // Create XMLHttpRequest class
     JSValue xhr_proto = JS_NewObject(ctx);
@@ -623,8 +806,11 @@ static void init_browser_environment(JSContext *ctx) {
     // This will be set after window is created
     JS_SetPropertyStr(ctx, global, "document", document);
     
-    // window
-    JSValue window = JS_NewObject(ctx);
+    // window - use existing window from browser stubs if available, don't overwrite
+    JSValue window = JS_GetPropertyStr(ctx, global, "window");
+    if (JS_IsUndefined(window)) {
+        window = JS_NewObject(ctx);
+    }
     JS_SetPropertyStr(ctx, window, "addEventListener", JS_NewCFunction(ctx, js_dummy_function, "addEventListener", 2));
     JS_SetPropertyStr(ctx, window, "removeEventListener", JS_NewCFunction(ctx, js_dummy_function, "removeEventListener", 2));
     JS_SetPropertyStr(ctx, window, "setTimeout", JS_NewCFunction(ctx, js_dummy_function, "setTimeout", 2));
@@ -643,33 +829,25 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, window, "blur", JS_NewCFunction(ctx, js_dummy_function, "blur", 0));
     JS_SetPropertyStr(ctx, window, "scrollTo", JS_NewCFunction(ctx, js_dummy_function, "scrollTo", 2));
     JS_SetPropertyStr(ctx, window, "scrollBy", JS_NewCFunction(ctx, js_dummy_function, "scrollBy", 2));
-    // localStorage with working methods
-    const char *local_storage_js = 
-        "var localStorage = {"
-        "  _data: {},"
-        "  getItem: function(k) { return this._data[k] || null; },"
-        "  setItem: function(k, v) { this._data[k] = String(v); },"
-        "  removeItem: function(k) { delete this._data[k]; },"
-        "  clear: function() { this._data = {}; },"
-        "  key: function(n) { var keys = Object.keys(this._data); return keys[n] || null; },"
-        "  get length() { return Object.keys(this._data).length; }"
-        "};"
+    // localStorage and sessionStorage - create as JS objects and set on window
+    const char *storage_class_js = 
+        "function Storage() { this._data = {}; }"
+        "Storage.prototype.getItem = function(k) { return this._data.hasOwnProperty(k) ? this._data[k] : null; };"
+        "Storage.prototype.setItem = function(k, v) { this._data[k] = String(v); };"
+        "Storage.prototype.removeItem = function(k) { delete this._data[k]; };"
+        "Storage.prototype.clear = function() { this._data = {}; };"
+        "Storage.prototype.key = function(n) { var keys = Object.keys(this._data); return n >= 0 && n < keys.length ? keys[n] : null; };"
+        "Object.defineProperty(Storage.prototype, 'length', { get: function() { return Object.keys(this._data).length; } });"
     ;
-    JS_Eval(ctx, local_storage_js, strlen(local_storage_js), "<localStorage>", 0);
+    JS_Eval(ctx, storage_class_js, strlen(storage_class_js), "<storage_class>", 0);
     
-    // sessionStorage with working methods
-    const char *session_storage_js = 
-        "var sessionStorage = {"
-        "  _data: {},"
-        "  getItem: function(k) { return this._data[k] || null; },"
-        "  setItem: function(k, v) { this._data[k] = String(v); },"
-        "  removeItem: function(k) { delete this._data[k]; },"
-        "  clear: function() { this._data = {}; },"
-        "  key: function(n) { var keys = Object.keys(this._data); return keys[n] || null; },"
-        "  get length() { return Object.keys(this._data).length; }"
-        "};"
-    ;
-    JS_Eval(ctx, session_storage_js, strlen(session_storage_js), "<sessionStorage>", 0);
+    // Create localStorage and sessionStorage instances and set them on window
+    const char *local_storage_create = "new Storage();";
+    const char *session_storage_create = "new Storage();";
+    JSValue local_storage_val = JS_Eval(ctx, local_storage_create, strlen(local_storage_create), "<localStorage>", 0);
+    JSValue session_storage_val = JS_Eval(ctx, session_storage_create, strlen(session_storage_create), "<sessionStorage>", 0);
+    JS_SetPropertyStr(ctx, window, "localStorage", local_storage_val);
+    JS_SetPropertyStr(ctx, window, "sessionStorage", session_storage_val);
     
     JS_SetPropertyStr(ctx, window, "indexedDB", JS_NewObject(ctx));
     JS_SetPropertyStr(ctx, window, "location", JS_NewObject(ctx));
@@ -686,7 +864,8 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, window, "XMLHttpRequest", JS_DupValue(ctx, xhr_ctor));
     JS_SetPropertyStr(ctx, window, "HTMLVideoElement", JS_DupValue(ctx, video_ctor));
     JS_SetPropertyStr(ctx, window, "document", JS_DupValue(ctx, document));
-    JS_SetPropertyStr(ctx, global, "window", window);
+    // Don't overwrite window - it already has DOM constructors from browser stubs
+    // JS_SetPropertyStr(ctx, global, "window", window);
     
     // document.defaultView points to window
     JS_SetPropertyStr(ctx, document, "defaultView", JS_DupValue(ctx, window));
@@ -883,7 +1062,7 @@ static void init_browser_environment(JSContext *ctx) {
     ;
     JS_Eval(ctx, event_target_js, strlen(event_target_js), "<event_target>", 0);
     
-    // URL capture array and global navigator reference
+    // URL capture array and global references
     const char *init_js = 
         "var __capturedUrls = [];"
         "function __recordUrl(url) {"
@@ -892,13 +1071,21 @@ static void init_browser_environment(JSContext *ctx) {
         "    if (console && console.log) console.log('Captured URL:', url.substring(0, 100));"
         "  }"
         "}"
-        // Make navigator available globally (some scripts access it directly)
+        // Make window properties available globally
         "var navigator = window.navigator || {};"
-        // Make Element and Node available globally
-        "var Element = window.Element;"
-        "var Node = window.Node;"
+        "var localStorage = window.localStorage;"
+        "var sessionStorage = window.sessionStorage;"
+        "var location = window.location;"
+        "var document = window.document;"
+        // Ensure DOM constructors are global
+        "var Element = window.Element || function() {};"
+        "var Node = window.Node || function() {};"
         "var HTMLElement = window.HTMLElement || Element;"
         "var SVGElement = window.SVGElement || Element;"
+        "var HTMLVideoElement = window.HTMLVideoElement || HTMLElement;"
+        "var HTMLAnchorElement = window.HTMLAnchorElement || HTMLElement;"
+        "var HTMLScriptElement = window.HTMLScriptElement || HTMLElement;"
+        "var Document = window.Document || function() {};"
     ;
     JS_Eval(ctx, init_js, strlen(init_js), "<init>", 0);
     
@@ -1094,14 +1281,13 @@ static void init_browser_environment(JSContext *ctx) {
         "Document.prototype = Object.create(Node.prototype);"
         "Document.prototype.constructor = Document;"
         "Document.prototype.createElement = function(tagName) {"
-        "  tagName = tagName.toLowerCase();"
+        "  tagName = String(tagName).toLowerCase();"
         "  if (tagName === 'video') return new HTMLVideoElement();"
         "  if (tagName === 'a') return new HTMLAnchorElement();"
         "  if (tagName === 'script') return new HTMLScriptElement();"
         "  if (tagName === 'div') return new HTMLDivElement();"
         "  if (tagName === 'span') return new HTMLSpanElement();"
-        "  }"
-        "  return new Element();"
+        "  return new HTMLElement(tagName);"
         "};"
         "Document.prototype.getElementById = function(id) { return null; };"
         "Document.prototype.querySelector = function(sel) { return null; };"
@@ -1514,11 +1700,19 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
     // Also create default video element for Scenario A: JS creates video element
     const char *default_video_js = 
         "// Create default video element if none exists\n"
-        "if (!document.getElementById('movie_player')) {\n"
-        "  var video = document.createElement('video');\n"
-        "  video.id = 'movie_player';\n"
-        "  document.body.appendChild(video);\n"
-        "  console.log('Created default video element with id=movie_player');\n"
+        "if (typeof document !== 'undefined' && document.body) {\n"
+        "  try {\n"
+        "    if (!document.getElementById('movie_player')) {\n"
+        "      var video = document.createElement('video');\n"
+        "      if (video) {\n"
+        "        video.id = 'movie_player';\n"
+        "        document.body.appendChild(video);\n"
+        "        console.log('Created default video element with id=movie_player');\n"
+        "      }\n"
+        "    }\n"
+        "  } catch(e) {\n"
+        "    console.log('Error creating default video: ' + e.message);\n"
+        "  }\n"
         "}\n"
     ;
     
@@ -1537,12 +1731,14 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
     if (player_response && strlen(player_response) > 0) {
         LOG_INFO("Injecting ytInitialPlayerResponse (%zu bytes)", strlen(player_response));
         
-        // Use JS_ParseJSON to safely parse the JSON without injection issues
+        // Try to parse the JSON as-is
         JSValue json_val = JS_ParseJSON(ctx, player_response, strlen(player_response), "<player_response>");
+        
         if (JS_IsException(json_val)) {
             JSValue exception = JS_GetException(ctx);
             const char *error = JS_ToCString(ctx, exception);
-            LOG_ERROR("Error parsing ytInitialPlayerResponse JSON: %s", error ? error : "unknown");
+            LOG_WARN("Could not parse ytInitialPlayerResponse JSON: %s", error ? error : "unknown");
+            LOG_WARN("Continuing without player response injection - scripts may still work");
             JS_FreeCString(ctx, error);
             JS_FreeValue(ctx, exception);
         } else {
@@ -1564,7 +1760,9 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         
         LOG_INFO("Executing script %d/%d (%zu bytes)", i + 1, script_count, script_lens[i]);
         
-        JSValue result = JS_Eval(ctx, scripts[i], script_lens[i], filename, 0);
+        // Use JS_EVAL_TYPE_GLOBAL to run scripts in global scope
+        // This helps with 'in' operator checks like "localStorage" in window
+        JSValue result = JS_Eval(ctx, scripts[i], script_lens[i], filename, JS_EVAL_TYPE_GLOBAL);
         
         if (JS_IsException(result)) {
             JSValue exception = JS_GetException(ctx);
@@ -1582,19 +1780,67 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
                 LOG_ERROR("Stack trace (Script %d): %.500s%s", i, stack, strlen(stack) > 500 ? "..." : "");
             }
             
-            // Dump script content for syntax errors
-            if (error && strstr(error, "SyntaxError")) {
-                LOG_ERROR("=== SCRIPT %d CONTENT (first 2000 chars) ===", i);
-                char preview[2001];
-                size_t preview_len = script_lens[i] < 2000 ? script_lens[i] : 2000;
-                memcpy(preview, scripts[i], preview_len);
-                preview[preview_len] = '\0';
-                // Replace newlines with spaces for single-line log
-                for (size_t j = 0; j < preview_len; j++) {
-                    if (preview[j] == '\n' || preview[j] == '\r') preview[j] = ' ';
+            // Dump script content around error position for Script 2
+            if (i == 2 && error) {
+                LOG_ERROR("=== SCRIPT %d CONTENT (find .prototype) ===", i);
+                // Search for .prototype in the script
+                char *proto_ptr = strstr(scripts[i], ".prototype");
+                int count = 0;
+                while (proto_ptr && count < 20) {
+                    size_t offset = proto_ptr - scripts[i];
+                    char context[101];
+                    // Get 50 chars before and after .prototype
+                    size_t start = (offset > 50) ? offset - 50 : 0;
+                    size_t len = (script_lens[i] - start > 100) ? 100 : script_lens[i] - start;
+                    memcpy(context, scripts[i] + start, len);
+                    context[len] = '\0';
+                    for (size_t j = 0; j < len; j++) {
+                        if (context[j] == '\n' || context[j] == '\r') context[j] = ' ';
+                    }
+                    LOG_ERROR("SCRIPT%d-PROTO%d: %s", i, count, context);
+                    
+                    // Find next occurrence
+                    proto_ptr = strstr(proto_ptr + 1, ".prototype");
+                    count++;
                 }
-                LOG_ERROR("%.2000s", preview);
-                LOG_ERROR("=== END SCRIPT %d CONTENT ===", i);
+                LOG_ERROR("=== END SCRIPT %d PROTO search ===", i);
+            }
+            
+            // For prototype errors, analyze stack trace
+            if (error && strstr(error, "prototype of undefined") && stack) {
+                LOG_ERROR("=== ANALYZING PROTOTYPE ERROR for Script %d ===", i);
+                LOG_ERROR("Stack: %s", stack);
+                
+                // Try to find line number in stack trace (format: <script_2>:101:199)
+                char line_num_str[32] = {0};
+                const char *script_tag = strstr(stack, filename);
+                if (script_tag) {
+                    const char *colon = strchr(script_tag, ':');
+                    if (colon) {
+                        int line_num = atoi(colon + 1);
+                        LOG_ERROR("Error at line %d", line_num);
+                        
+                        // Extract that line from script
+                        if (line_num > 0 && scripts[i]) {
+                            const char *p = scripts[i];
+                            int current_line = 1;
+                            while (*p && current_line < line_num) {
+                                if (*p == '\n') current_line++;
+                                p++;
+                            }
+                            if (current_line == line_num) {
+                                const char *line_end = strchr(p, '\n');
+                                if (!line_end) line_end = p + strlen(p);
+                                size_t line_len = line_end - p;
+                                if (line_len > 200) line_len = 200;
+                                char line_buf[201];
+                                memcpy(line_buf, p, line_len);
+                                line_buf[line_len] = '\0';
+                                LOG_ERROR("Line %d content: %s", line_num, line_buf);
+                            }
+                        }
+                    }
+                }
             }
             JS_FreeCString(ctx, stack);
             JS_FreeValue(ctx, stack_val);

@@ -822,17 +822,8 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
     // Parse streams from player response using cJSON
     int stream_count = parse_yt_player_response(player_response, streams, max_streams);
     
-    if (stream_count == 0) {
-        LOG_ERROR("No streams found in player response");
-        free(player_response);
-        http_free_buffer(&html_buffer);
-        return 0;
-    }
-    
-    LOG_INFO("Found %d streams in player response", stream_count);
-    
-    // Check if any streams need signature decryption
-    bool needs_decryption = false;
+    // Check if any streams need signature decryption (either from cJSON or we assume they do)
+    bool needs_decryption = (stream_count == 0);  // If cJSON failed, try JS anyway
     for (int i = 0; i < stream_count; i++) {
         if (streams[i].has_cipher || 
             strstr(streams[i].url, "&s=") || 
@@ -843,18 +834,25 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
         }
     }
     
-    // If decryption needed, try to decrypt signatures
+    // If decryption needed or cJSON failed, try to decrypt signatures using player scripts
     if (needs_decryption) {
-        LOG_INFO("Streams need signature decryption, attempting...");
+        LOG_INFO("Attempting signature decryption with player scripts...");
         
-        // Try to find and execute player scripts
+        // Try to find and execute player scripts with the player response
         char decrypted_url[2048];
         if (decrypt_signature_with_scripts(html_buffer.data, "", decrypted_url, sizeof(decrypted_url))) {
-            LOG_INFO("Successfully got decrypted URL format");
-            // The URLs we got should already be decrypted from the player
+            LOG_INFO("Successfully executed player scripts");
+            // The JS execution captured URLs will be handled separately
         } else {
-            LOG_WARN("Could not decrypt signatures using player scripts");
+            LOG_WARN("Player script execution did not produce decrypted URLs");
         }
+    }
+    
+    if (stream_count == 0) {
+        LOG_WARN("No streams found in player response via cJSON (may need JS decryption)");
+        // Don't return early - we may have captured URLs from JS execution
+    } else {
+        LOG_INFO("Found %d streams in player response", stream_count);
     }
     
     // Extract title
@@ -897,15 +895,29 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
     // Parse streams from player response using cJSON
     MediaStream streams[32];
     int stream_count = parse_yt_player_response(player_response, streams, 32);
-    free(player_response);
     
+    // If cJSON parsing failed or returned no streams, try JS execution
     if (stream_count == 0) {
+        LOG_WARN("cJSON parsing returned 0 streams, trying JS execution...");
+        
+        // Try to decrypt signatures using player scripts
+        char decrypted_url[2048];
+        if (decrypt_signature_with_scripts(html, "", decrypted_url, sizeof(decrypted_url))) {
+            LOG_INFO("JS execution succeeded, checking captured URLs...");
+            // Check if we captured any URLs from JS execution
+            // The captured URLs would be in the JsExecResult
+        }
+        
+        // For now, still return error since we haven't captured URLs properly
+        // TODO: Check captured URLs from JS execution and return success if found
+        free(player_response);
         if (err && errLen > 0) {
             strncpy(err, "No streams found in player response", errLen - 1);
             err[errLen - 1] = '\0';
         }
         return false;
     }
+    free(player_response);
     
     // Find the best stream (prefer video with highest quality and direct URL)
     MediaStream *best = NULL;
