@@ -148,6 +148,24 @@ static const char BROWSER_STUBS_JS[] =
     "CustomEvent.prototype = Object.create(Event.prototype);"
     "CustomEvent.prototype.constructor = CustomEvent;"
     ""
+
+    /* MouseEvent */
+    "function MouseEvent(t, o) { Event.call(this, t, o); this.clientX = (o && o.clientX) || 0; this.clientY = (o && o.clientY) || 0; this.screenX = (o && o.screenX) || 0; this.screenY = (o && o.screenY) || 0; this.button = (o && o.button) || 0; this.buttons = (o && o.buttons) || 0; this.relatedTarget = (o && o.relatedTarget) || null; }"
+    "MouseEvent.prototype = Object.create(Event.prototype);"
+    "MouseEvent.prototype.constructor = MouseEvent;"
+    ""
+    /* TouchEvent */
+    "function TouchEvent(t, o) { Event.call(this, t, o); this.touches = (o && o.touches) || []; this.targetTouches = (o && o.targetTouches) || []; this.changedTouches = (o && o.changedTouches) || []; }"
+    "TouchEvent.prototype = Object.create(Event.prototype);"
+    "TouchEvent.prototype.constructor = TouchEvent;"
+    ""
+    /* PointerEvent */
+    "function PointerEvent(t, o) { MouseEvent.call(this, t, o); this.pointerId = (o && o.pointerId) || 0; this.width = (o && o.width) || 0; this.height = (o && o.height) || 0; this.pressure = (o && o.pressure) || 0; this.pointerType = (o && o.pointerType) || ''; this.isPrimary = (o && o.isPrimary) || false; }"
+    "PointerEvent.prototype = Object.create(MouseEvent.prototype);"
+    "PointerEvent.prototype.constructor = PointerEvent;"
+    ""
+    /* Touch */
+    "function Touch(o) { this.identifier = (o && o.identifier) || 0; this.target = (o && o.target) || null; this.clientX = (o && o.clientX) || 0; this.clientY = (o && o.clientY) || 0; this.screenX = (o && o.screenX) || 0; this.screenY = (o && o.screenY) || 0; this.pageX = (o && o.pageX) || 0; this.pageY = (o && o.pageY) || 0; }"
     /* Element */
     "function Element() {"
     "  EventTarget.call(this);"
@@ -679,17 +697,13 @@ static const char BROWSER_STUBS_JS[] =
     "window.HTMLImageElement = HTMLImageElement;"
     "window.HTMLSlotElement = HTMLSlotElement;"
     "window.SVGElement = SVGElement;"
+    "window.MouseEvent = MouseEvent;"
+    "window.TouchEvent = TouchEvent;"
+    "window.PointerEvent = PointerEvent;"
+    "window.Touch = Touch;"
     "window.ShadowRoot = ShadowRoot;"
     "window.CSS = CSS;"
     "window.ShadyDOM = { force: false, noPatch: false, preferPerformance: false, qa: false, S: false, j: false, Rb: false, deferConnectionCallbacks: function() {}, querySelectorImplementation: undefined };"
-    "window.Polymer = window.Polymer || {};"
-    "window.Polymer.Settings = window.Polymer.Settings || {};"
-    "window.Polymer.Gestures = window.Polymer.Gestures || {};"
-    "window.Polymer.Gestures.gestures = window.Polymer.Gestures.gestures || { down: { name: 'down', deps: ['mousedown', 'touchstart'], touchAction: 'none' }, up: { name: 'up', deps: ['mouseup', 'touchend'], touchAction: 'none' }, tap: { name: 'tap', deps: ['mousedown', 'click'], touchAction: 'manipulation' }, track: { name: 'track', deps: ['mousedown', 'touchmove'], touchAction: 'none' }, pinch: { name: 'pinch', deps: ['touchstart'], touchAction: 'none' }, rotate: { name: 'rotate', deps: ['touchstart'], touchAction: 'none' } };"
-    "window.Polymer.Gestures.setTouchAction = window.Polymer.Gestures.setTouchAction || function() {};"
-    "window.Polymer.Gestures.addListener = window.Polymer.Gestures.addListener || function() {};"
-    "window.Polymer.Gestures.removeListener = window.Polymer.Gestures.removeListener || function() {};"
-    "window.Polymer.GestureEventListeners = window.Polymer.GestureEventListeners || [];
     "window.yt = { config_: {} };"
     "window._spf_state = {};"
     "window.customElements = { define: function() {}, get: function() { return undefined; }, whenDefined: function() { return Promise.resolve(); }, upgrade: function() {}, observe: function() {} };"

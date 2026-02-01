@@ -508,6 +508,8 @@ static int extract_all_script_urls(const char *html, char out_urls[][SCRIPT_URL_
             
             LOG_INFO("Found script URL: %.80s...", out_urls[count]);
             count++;
+        } else {
+            LOG_WARN("Skipping script with invalid URL format");
         }
         
         p = end;
