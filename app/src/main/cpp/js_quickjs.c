@@ -1842,6 +1842,27 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
                     }
                 }
             }
+            // For Script 9 (main player), dump context around errors
+            if (i == 9 && error) {
+                LOG_ERROR("=== SCRIPT 9 ERROR ANALYSIS ===");
+                // Dump at multiple offsets to find the error location
+                // Error is at line 7875:45, which is approximately character position ~280000
+                size_t error_pos = 289574; // From previous touchAction search
+                if (error_pos < script_lens[i]) {
+                    // Dump 200 chars before and after error position
+                    size_t start = (error_pos > 200) ? error_pos - 200 : 0;
+                    size_t len = (script_lens[i] - start > 400) ? 400 : script_lens[i] - start;
+                    char context[401];
+                    memcpy(context, scripts[i] + start, len);
+                    context[len] = '\0';
+                    for (size_t j = 0; j < len; j++) {
+                        if (context[j] == '\n' || context[j] == '\r') context[j] = ' ';
+                    }
+                    LOG_ERROR("SCRIPT9-CONTEXT: %s", context);
+                }
+                LOG_ERROR("=== END SCRIPT 9 ANALYSIS ===");
+            }
+            
             JS_FreeCString(ctx, stack);
             JS_FreeValue(ctx, stack_val);
             
