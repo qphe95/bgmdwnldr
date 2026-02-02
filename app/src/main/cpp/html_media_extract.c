@@ -16,7 +16,7 @@
 
 #define MAX_SCRIPT_URLS 32
 #define SCRIPT_URL_MAX_LEN 512
-#define MAX_HTML_SIZE (2 * 1024 * 1024)  // 2MB max
+#define MAX_HTML_SIZE (10 * 1024 * 1024)  // 10MB max for large YouTube pages
 
 // Media stream structure
 typedef struct MediaStream {
@@ -678,6 +678,12 @@ static int extract_inline_scripts(const char *html, char **out_scripts, int max_
         if (*first_nonspace == '{' || *first_nonspace == '[') {
             skip = true; // Might be JSON, skip
         }
+        // Skip data payload scripts that cause parsing issues
+        if (strncmp(first_nonspace, "var ytInitialPlayerResponse", 27) == 0 ||
+            strncmp(first_nonspace, "window.ytInitialPlayerResponse", 30) == 0 ||
+            (strncmp(first_nonspace, "(function()", 11) == 0 && strstr(first_nonspace, "window.ytAtR") != NULL)) {
+            skip = true; // Data payload scripts - not needed for signature decryption
+        }
         // Skip very large scripts (>500KB) as they're likely data, not code
         if (content_len > 500000) {
             skip = true;
@@ -694,35 +700,13 @@ static int extract_inline_scripts(const char *html, char **out_scripts, int max_
             memcpy(script, content_start, content_len);
             script[content_len] = '\0';
             
-            // Sanitize script content for JavaScript execution
-            // Remove null bytes and other characters that break JS parsing
-            size_t j = 0;
-            for (size_t i = 0; i < content_len; i++) {
-                unsigned char c = (unsigned char)script[i];
-                
-                // Skip null bytes (they terminate strings in C but shouldn't be in JS)
-                if (c == 0x00) {
-                    continue;
-                }
-                // Replace other control characters (except tab, newline, carriage return) with space
-                else if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
-                    script[j++] = ' ';
-                }
-                // Replace DEL character
-                else if (c == 0x7F) {
-                    script[j++] = ' ';
-                }
-                // Keep all other characters (including valid UTF-8)
-                else {
-                    script[j++] = script[i];
-                }
-            }
-            script[j] = '\0';
+            // Note: QuickJS has been modified to handle all characters properly
+            // No sanitization needed - pass raw script content
             
-            // Only keep script if it still has meaningful content
-            if (j > 50) {
+            // Only keep script if it has meaningful content
+            if (content_len > 50) {
                 out_scripts[count] = script;
-                LOG_INFO("Extracted inline script %d: %zu bytes (sanitized from %zu)", count, j, content_len);
+                LOG_INFO("Extracted inline script %d: %zu bytes", count, content_len);
                 count++;
             } else {
                 free(script);
@@ -900,40 +884,8 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
     
     LOG_INFO("Successfully loaded %d external scripts", loaded_count);
     
-    // Sanitize external scripts (remove null bytes that can break JS parsing)
-    for (int i = 0; i < loaded_count; i++) {
-        if (scripts[i] && script_lens[i] > 0) {
-            char *sanitized = malloc(script_lens[i] + 1);
-            if (sanitized) {
-                size_t j = 0;
-                for (size_t k = 0; k < script_lens[i]; k++) {
-                    unsigned char c = (unsigned char)scripts[i][k];
-                    // Skip null bytes
-                    if (c == 0x00) {
-                        continue;
-                    }
-                    // Replace control characters (except tab, newline, carriage return) with space
-                    else if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
-                        sanitized[j++] = ' ';
-                    }
-                    // Replace DEL character
-                    else if (c == 0x7F) {
-                        sanitized[j++] = ' ';
-                    }
-                    else {
-                        sanitized[j++] = scripts[i][k];
-                    }
-                }
-                sanitized[j] = '\0';
-                
-                // Replace original script with sanitized version
-                HttpBuffer old_buffer = { .data = (char*)scripts[i], .size = script_lens[i] };
-                http_free_buffer(&old_buffer);
-                scripts[i] = sanitized;
-                script_lens[i] = j;
-            }
-        }
-    }
+    // Note: QuickJS has been modified to handle all characters properly
+    // No sanitization needed for external scripts
     
     // Extract ytInitialPlayerResponse from HTML
     char *player_response = extract_yt_player_response(html);

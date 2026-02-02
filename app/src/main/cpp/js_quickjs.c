@@ -1549,6 +1549,10 @@ static void init_browser_environment(JSContext *ctx) {
         "yt.app.application = yt.app.application || {};"
         "yt.app.application.createComponent = yt.app.application.createComponent || function() {};"
         
+        // ytsignals - used for app loading
+        "window.ytsignals = window.ytsignals || {};"
+        "window.ytsignals.getInstance = window.ytsignals.getInstance || function() { return { whenReady: function() { return Promise.resolve(); } }; };"
+        
         // spf (Structured Page Fragments) - used by YouTube for navigation
         "var spf = spf || {};"
         "spf.init = spf.init || function() {};"
@@ -1885,8 +1889,21 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         "if (!goog.base) goog.base = function() {};"
         "if (!goog.require) goog.require = function() {};"
         "if (!goog.provide) goog.provide = function() {};"
+        "if (!goog.module) goog.module = function() {};"
+        "if (!goog.define) goog.define = function(name, val) { return val; };"
+        "if (!goog.global) goog.global = window;"
+        // Ensure ytsignals exists (used for app loading)
+        "if (typeof ytsignals === 'undefined') window.ytsignals = {};"
+        "if (!ytsignals.getInstance) ytsignals.getInstance = function() { return { whenReady: function() { return Promise.resolve(); }, get: function() { return null; }, set: function() {} }; };"
     ;
     JSValue pre_exec_result = JS_Eval(ctx, pre_exec_stubs, strlen(pre_exec_stubs), "<pre_exec_stubs>", 0);
+    if (JS_IsException(pre_exec_result)) {
+        JSValue ex = JS_GetException(ctx);
+        const char *ex_str = JS_ToCString(ctx, ex);
+        LOG_WARN("Pre-exec stubs error: %s", ex_str ? ex_str : "unknown");
+        JS_FreeCString(ctx, ex_str);
+        JS_FreeValue(ctx, ex);
+    }
     JS_FreeValue(ctx, pre_exec_result);
     
     // Execute all scripts
@@ -1902,13 +1919,17 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         // Wrap scripts that tend to fail in try-catch so they don't crash the whole execution
         // The signature decryption function might still be set up even if some parts fail
         JSValue result;
-        if (script_lens[i] > 5000000 || i == 0 || i == 6 || i == 7 || i == 8) {
+        // Wrap large scripts and base.js (contains signature decryption)
+        if (script_lens[i] > 5000000 || strstr(scripts[i], "_yt_player") != NULL || strstr(scripts[i], "player") != NULL) {
             // Wrap large scripts and known problematic scripts in try-catch
-            size_t wrapped_len = script_lens[i] + 100;
-            char *wrapped = malloc(wrapped_len);
+            size_t wrapped_size = script_lens[i] + 100;
+            char *wrapped = malloc(wrapped_size);
             if (wrapped) {
-                snprintf(wrapped, wrapped_len, "try{\n%s\n}catch(e){/*console.log('Script %d error:',e.message)*/}", scripts[i], i);
-                result = JS_Eval(ctx, wrapped, strlen(wrapped), filename, JS_EVAL_TYPE_GLOBAL);
+                int header_len = snprintf(wrapped, wrapped_size, "try{");
+                memcpy(wrapped + header_len, scripts[i], script_lens[i]);
+                int footer_len = snprintf(wrapped + header_len + script_lens[i], wrapped_size - header_len - script_lens[i], "}catch(e){}");
+                size_t total_len = header_len + script_lens[i] + footer_len;
+                result = JS_Eval(ctx, wrapped, total_len, filename, JS_EVAL_TYPE_GLOBAL);
                 free(wrapped);
             } else {
                 result = JS_Eval(ctx, scripts[i], script_lens[i], filename, JS_EVAL_TYPE_GLOBAL);
@@ -1921,6 +1942,19 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
             JSValue exception = JS_GetException(ctx);
             const char *error = JS_ToCString(ctx, exception);
             LOG_ERROR("Script %d execution error: %s", i, error ? error : "unknown");
+            
+            // Log first 200 chars of failing script for debugging
+            if (script_lens[i] > 0) {
+                char preview[201];
+                size_t preview_len = script_lens[i] < 200 ? script_lens[i] : 200;
+                memcpy(preview, scripts[i], preview_len);
+                preview[preview_len] = '\0';
+                // Replace newlines with spaces for single-line log
+                for (size_t j = 0; j < preview_len; j++) {
+                    if (preview[j] == '\n' || preview[j] == '\r') preview[j] = ' ';
+                }
+                LOG_ERROR("Script %d content: %.200s%s", i, preview, script_lens[i] > 200 ? "..." : "");
+            }
             
             // Get stack trace for debugging
             JSValue stack_val = JS_GetPropertyStr(ctx, exception, "stack");

@@ -22121,8 +22121,13 @@ static __exception int js_parse_string(JSParseState *s, int sep,
                accepting invalid escapes */
             switch(c) {
             case '\0':
-                if (p >= s->buf_end)
-                    goto invalid_char;
+                if (p >= s->buf_end) {
+                    /* Backslash at EOF - treat as literal backslash and finish */
+                    c = '\\';
+                    goto done;
+                }
+                /* Escaped null character (\0) */
+                c = '\0';
                 p++;
                 break;
             case '\'':
