@@ -60,46 +60,52 @@ adb logcat -d --pid=$APP_PID | grep -E "js_quickjs:|HtmlExtract:|Executed|Captur
 ## Current Status
 
 ### Script Execution
-- **Current:** 4/11 scripts executing successfully
-- **Target:** 9+/11 for signature decryption to work
+- **Current:** 10/10 scripts executing successfully ✅
+- **Previous:** 4/11 scripts executing
+- **Target:** Signature decryption working
 
-### Key Blocking Errors
+### Recent Achievements (Feb 1, 2026)
 
-1. **`TypeError: cannot read property 'es5Shimmed' of undefined`** (Script 10)
-   - This is the main blocker
-   - Happens because code tries to access `.es5Shimmed` on an undefined object
-   - Setting `Object.prototype.es5Shimmed` doesn't help because the base object is undefined
-   - **Need to identify:** Which object becomes undefined before this check
+1. **Fixed Script Execution Order**
+   - Moved native constructor setup BEFORE BROWSER_STUBS_JS loads
+   - Native HTMLVideoElement, XMLHttpRequest, document, window now available when JS stubs execute
 
-2. **`SyntaxError: expecting ';'`** (Script 9)
-   - Likely malformed JavaScript in the source
-   - May need to skip this script or handle syntax errors gracefully
+2. **Fixed ShadyDOM Polyfill (Script 2)**
+   - Added missing DOM APIs: `Element.prototype.attachShadow`, `Node.prototype.getRootNode`
+   - Implemented proper `document.createTreeWalker` returning TreeWalker with `firstChild()`, `parentNode()`, etc.
+   - Added `document.implementation.createHTMLDocument`
+   - Added all ShadyDOM configuration properties (`inUse`, `force`, `noPatch`, `preferPerformance`, etc.)
+   - Added `window.top`, `window.parent`, `window.self` self-references
 
-3. **`TypeError: invalid 'in' operand`** (Scripts 7, 8)
-   - Code doing `'prop' in someObject` where `someObject` is not an object
+3. **Fixed Video Element Creation**
+   - Native HTMLVideoElement constructor properly available to JS
+   - `document.createElement('video')` now works correctly
+   - No more "not a function" errors
 
-4. **`TypeError: cannot read property 'prototype' of undefined`** (Script 2)
-   - Some constructor/function is undefined when script tries to extend it
+### Remaining Issue: Signature Decryption
 
-### PROBE System
-Implemented a proxy-based logging system to detect what browser APIs scripts are checking:
-- Logs all property accesses on `window`, `document`, `navigator`
-- Logs when `es5Shimmed` is accessed (via PROBE_SHIM logs)
-- Currently NOT catching the es5Shimmed access, meaning it happens on:
-  - An object not wrapped by our proxies
-  - `undefined` itself (cannot add properties to undefined)
-  - An object created dynamically by scripts
+**Problem:** All 10 scripts execute successfully but signature decryption doesn't happen automatically.
+
+**Root Cause:** YouTube's player.js doesn't automatically decrypt URLs when scripts load. It waits for:
+- Player initialization events
+- Specific API calls from the player UI
+- Stream selection triggers
+
+**Next Steps:**
+1. Manually call the decipher function after scripts execute
+2. Extract the decipher function from base.js and call it with cipher parameters
+3. Simulate player initialization to trigger URL processing
 
 ## QuickJS Integration
 
 ### Browser APIs Currently Implemented
-- XMLHttpRequest, HTMLVideoElement
+- XMLHttpRequest, HTMLVideoElement (native C implementations)
 - Event, CustomEvent, KeyboardEvent, MouseEvent, ErrorEvent, PromiseRejectionEvent
 - Node, Element, HTMLElement, SVGElement, Document
 - HTMLAnchorElement, HTMLScriptElement, HTMLDivElement, HTMLSpanElement
 - MutationObserver, IntersectionObserver, ResizeObserver, IntersectionObserverEntry
 - DOMParser, DOMImplementation
-- TreeWalker, NodeFilter
+- TreeWalker, NodeFilter (with full traversal methods)
 - fetch (mock), matchMedia
 - URL, Location, postMessage
 - Navigator, Screen, History
@@ -110,6 +116,7 @@ Implemented a proxy-based logging system to detect what browser APIs scripts are
 - ShadyDOM, _spf_state (YouTube specific)
 - CustomElements
 - document.createElementNS, createDocumentFragment, requestStorageAccessFor
+- Element.prototype.attachShadow, Node.prototype.getRootNode
 
 ### Known Missing APIs
 - Full DOM traversal implementation
@@ -133,17 +140,22 @@ adb logcat -c && adb logcat -s js_quickjs:* bgmdwldr:* *:S
 
 ## Next Steps for Debugging
 
-1. **Identify the undefined object causing es5Shimmed error:**
-   - Wrap more global objects in proxies (self, top, parent)
-   - Add try-catch around script execution with detailed stack traces
-   - Log all global object creations
+### Signature Decryption
+1. **Extract decipher function:**
+   - Look for function patterns in base.js (typically named something like `sig`, `decrypt`, or obfuscated)
+   - Call it manually with the cipher string from stream URLs
 
-2. **Fix remaining API gaps:**
-   - Add missing Element prototype methods
-   - Implement proper document.createElementNS
-   - Add CSSStyleDeclaration
+2. **Trigger player initialization:**
+   - Simulate player events that trigger stream URL resolution
+   - Call internal player methods that process stream data
 
-3. **Alternative approaches:**
-   - Try running scripts in non-strict mode
-   - Use different QuickJS flags
-   - Extract decipher function statically instead of executing scripts
+3. **Alternative approach:**
+   - Extract decipher algorithm statically from base.js
+   - Implement it in C without needing full JS execution
+
+### Code Architecture Notes
+- Native constructors must be set up BEFORE BROWSER_STUBS_JS loads
+- BROWSER_STUBS_JS now runs after native setup and can use native implementations
+- Video element creation happens in two places:
+  1. From HTML parsing (create_video_elements_from_html)
+  2. Default video element creation (movie_player)
