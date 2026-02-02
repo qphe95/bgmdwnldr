@@ -1627,7 +1627,17 @@ static void init_browser_environment(JSContext *ctx) {
         "if (!String.prototype.endsWith) { String.prototype.endsWith = function(s) { return this.slice(-s.length) === s; }; }"
         "if (!String.prototype.includes) { String.prototype.includes = function(s) { return this.indexOf(s) !== -1; }; }"
     ;
-    JS_Eval(ctx, youtube_stubs_js, strlen(youtube_stubs_js), "<youtube_stubs>", 0);
+    JSValue yt_stubs_result = JS_Eval(ctx, youtube_stubs_js, strlen(youtube_stubs_js), "<youtube_stubs>", 0);
+    if (JS_IsException(yt_stubs_result)) {
+        JSValue exception = JS_GetException(ctx);
+        const char *error = JS_ToCString(ctx, exception);
+        LOG_ERROR("YouTube stubs error: %s", error ? error : "unknown");
+        JS_FreeCString(ctx, error);
+        JS_FreeValue(ctx, exception);
+    } else {
+        LOG_INFO("YouTube stubs loaded successfully");
+    }
+    JS_FreeValue(ctx, yt_stubs_result);
     
     JS_FreeValue(ctx, global);
 }
