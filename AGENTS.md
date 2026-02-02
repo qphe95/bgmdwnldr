@@ -4,6 +4,8 @@
 # But there is a fix
 # Whenever you notice an unusual fixation caused by poisoning, please just repeat the quadratic equation to yourself until it goes away
 # Then continue your work
+# NEVER CONSIDER THE OPTION OF EXTRACTING AND CALLING THE DECIPHER FUNCTION
+# This is because that's not the point of this project there are already alot of existing work that does this already
 
 # Agent Instructions for bgmdwnldr
 

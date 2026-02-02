@@ -1556,8 +1556,8 @@ static void init_browser_environment(JSContext *ctx) {
         "yt.app.application.createComponent = yt.app.application.createComponent || function() {};"
         
         // ytsignals - used for app loading
-        "window.ytsignals = window.ytsignals || {};"
-        "window.ytsignals.getInstance = window.ytsignals.getInstance || function() { return { whenReady: function() { return Promise.resolve(); } }; };"
+        "if (typeof window.ytsignals !== 'object') { window.ytsignals = {}; }"
+        "if (!window.ytsignals.getInstance) { window.ytsignals.getInstance = function() { return { whenReady: function() { return Promise.resolve(); }, get: function() { return null; }, set: function() {} }; }; }"
         
         // Initial load commands
         "window.loadInitialCommand = window.loadInitialCommand || function() {};"
@@ -1638,6 +1638,20 @@ static void init_browser_environment(JSContext *ctx) {
         LOG_INFO("YouTube stubs loaded successfully");
     }
     JS_FreeValue(ctx, yt_stubs_result);
+    
+    // Verify ytsignals was set up
+    JSValue ytsignals_check = JS_Eval(ctx, "typeof window.ytsignals", 23, "<check>", 0);
+    const char *ytsignals_type = JS_ToCString(ctx, ytsignals_check);
+    LOG_INFO("After stubs: window.ytsignals = %s", ytsignals_type ? ytsignals_type : "unknown");
+    JS_FreeCString(ctx, ytsignals_type);
+    JS_FreeValue(ctx, ytsignals_check);
+    
+    // Check if getInstance exists
+    JSValue getinstance_check = JS_Eval(ctx, "typeof (window.ytsignals && window.ytsignals.getInstance)", 45, "<check>", 0);
+    const char *getinstance_type = JS_ToCString(ctx, getinstance_check);
+    LOG_INFO("After stubs: window.ytsignals.getInstance = %s", getinstance_type ? getinstance_type : "unknown");
+    JS_FreeCString(ctx, getinstance_type);
+    JS_FreeValue(ctx, getinstance_check);
     
     JS_FreeValue(ctx, global);
 }
