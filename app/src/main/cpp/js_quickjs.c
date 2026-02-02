@@ -678,6 +678,9 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, window, "clearInterval", JS_NewCFunction(ctx, js_dummy_function, "clearInterval", 1));
     JS_SetPropertyStr(ctx, window, "requestAnimationFrame", JS_NewCFunction(ctx, js_dummy_function, "requestAnimationFrame", 1));
     JS_SetPropertyStr(ctx, window, "cancelAnimationFrame", JS_NewCFunction(ctx, js_dummy_function, "cancelAnimationFrame", 1));
+    // Also set on global for scripts that access it as a global function
+    JS_SetPropertyStr(ctx, global, "requestAnimationFrame", JS_NewCFunction(ctx, js_dummy_function, "requestAnimationFrame", 1));
+    JS_SetPropertyStr(ctx, global, "cancelAnimationFrame", JS_NewCFunction(ctx, js_dummy_function, "cancelAnimationFrame", 1));
     JS_SetPropertyStr(ctx, window, "postMessage", JS_NewCFunction(ctx, js_dummy_function, "postMessage", 2));
     JS_SetPropertyStr(ctx, window, "alert", JS_NewCFunction(ctx, js_dummy_function, "alert", 1));
     JS_SetPropertyStr(ctx, window, "confirm", JS_NewCFunction(ctx, js_dummy_function, "confirm", 1));
@@ -1517,6 +1520,33 @@ static void init_browser_environment(JSContext *ctx) {
     ;
     JS_Eval(ctx, animation_js, strlen(animation_js), "<animation>", 0);
     
+    // YouTube-specific stubs - needed for player scripts
+    const char *youtube_stubs_js = 
+        // ytplayer - main player global
+        "var ytplayer = ytplayer || {};"
+        "ytplayer.config = ytplayer.config || {};"
+        
+        // Polymer - web components library used by YouTube
+        "var Polymer = Polymer || function() {};"
+        "Polymer.Element = Polymer.Element || function() {};"
+        "Polymer.dom = Polymer.dom || function() { return { querySelector: function() { return null; } }; };"
+        
+        // YouTube app globals
+        "var ytcfg = ytcfg || {};"
+        "ytcfg.set = ytcfg.set || function() {};"
+        "ytcfg.get = ytcfg.get || function() { return null; };"
+        
+        // yt namespace
+        "var yt = yt || {};"
+        "yt.player = yt.player || {};"
+        "yt.player.Application = yt.player.Application || function() {};"
+        
+        // Google Closure library namespace
+        "var goog = goog || {};"
+        "goog.global = window;"
+    ;
+    JS_Eval(ctx, youtube_stubs_js, strlen(youtube_stubs_js), "<youtube_stubs>", 0);
+    
     JS_FreeValue(ctx, global);
 }
 
@@ -1923,6 +1953,52 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         "if (document.getElementById('movie_player')) {\n"
         "  console.log('movie_player element exists');\n"
         "}\n"
+        "\n"
+        "// === DISCOVER PLAYER APIS ===\n"
+        "console.log('=== DISCOVERING PLAYER APIS ===');\n"
+        "\n"
+        "// Check for yt object\n"
+        "if (typeof yt !== 'undefined') {\n"
+        "  console.log('yt object found');\n"
+        "  for (var key in yt) {\n"
+        "    console.log('  yt.' + key + ' = ' + typeof yt[key]);\n"
+        "  }\n"
+        "  if (yt.player) {\n"
+        "    console.log('yt.player found');\n"
+        "    for (var key in yt.player) {\n"
+        "      console.log('  yt.player.' + key + ' = ' + typeof yt.player[key]);\n"
+        "    }\n"
+        "  }\n"
+        "} else {\n"
+        "  console.log('yt object NOT found');\n"
+        "}\n"
+        "\n"
+        "// Check for player-related globals\n"
+        "var playerGlobals = ['player', 'ytPlayer', 'ytplayer', 'Player'];\n"
+        "for (var i = 0; i < playerGlobals.length; i++) {\n"
+        "  var name = playerGlobals[i];\n"
+        "  if (typeof window[name] !== 'undefined') {\n"
+        "    console.log('window.' + name + ' = ' + typeof window[name]);\n"
+        "  }\n"
+        "}\n"
+        "\n"
+        "// Check for decipher-related functions\n"
+        "console.log('=== LOOKING FOR DECIPHER FUNCTIONS ===');\n"
+        "var funcCount = 0;\n"
+        "for (var key in window) {\n"
+        "  if (typeof window[key] === 'function' && key.length < 10) {\n"
+        "    try {\n"
+        "      var fnStr = window[key].toString();\n"
+        "      // Look for signature manipulation patterns\n"
+        "      if (fnStr.indexOf('split') > -1 && fnStr.length < 500) {\n"
+        "        console.log('Potential func ' + key + ': ' + fnStr.substring(0, 100));\n"
+        "        funcCount++;\n"
+        "        if (funcCount > 5) break;\n"
+        "      }\n"
+        "    } catch(e) {}\n"
+        "  }\n"
+        "}\n"
+        "console.log('=== END DISCOVERY ===');\n"
     ;
     
     LOG_INFO("Triggering DOMContentLoaded...");

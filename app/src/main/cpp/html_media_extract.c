@@ -334,9 +334,10 @@ static char* extract_video_title(const char *player_response) {
 }
 
 // Extract ytInitialPlayerResponse from HTML
-// Sanitize JSON by escaping control characters that cJSON doesn't accept
+// Sanitize JSON by handling control characters for cJSON compatibility
+// More lenient: preserve all valid UTF-8 and most printable characters
 static char* sanitize_json(const char *json, size_t len) {
-    // Allocate extra space for potential escape sequences (worst case: every char doubled)
+    // Allocate extra space just in case
     char *sanitized = malloc(len * 2 + 1);
     if (!sanitized) return NULL;
     
@@ -344,43 +345,62 @@ static char* sanitize_json(const char *json, size_t len) {
     for (size_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)json[i];
         
-        // Replace control characters (0x00-0x1F) except tab, newline, carriage return with space
-        if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
+        // Null byte - terminate here as cJSON expects null-terminated strings
+        if (c == 0x00) {
+            break;
+        }
+        // Replace control characters (0x01-0x1F) except tab, newline, carriage return with space
+        else if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
             sanitized[j++] = ' ';
         }
-        // Handle DEL character (0x7F)
+        // Handle DEL character (0x7F) - replace with space
         else if (c == 0x7F) {
             sanitized[j++] = ' ';
         }
-        // Handle high-byte characters (0x80-0xFF) that might be invalid standalone bytes
-        // In valid UTF-8, these should be part of multi-byte sequences
-        // For safety, we'll pass them through but log if we see suspicious patterns
+        // High-byte characters (0x80-0xFF) - validate UTF-8 sequences
         else if (c >= 0x80) {
-            // Check if this looks like valid UTF-8
-            if ((c & 0xE0) == 0xC0 && i + 1 < len && (json[i+1] & 0xC0) == 0x80) {
-                // Valid 2-byte UTF-8, copy both
-                sanitized[j++] = json[i++];
-                sanitized[j++] = json[i];
-            } else if ((c & 0xF0) == 0xE0 && i + 2 < len && 
-                       (json[i+1] & 0xC0) == 0x80 && (json[i+2] & 0xC0) == 0x80) {
-                // Valid 3-byte UTF-8, copy all three
-                sanitized[j++] = json[i++];
-                sanitized[j++] = json[i++];
-                sanitized[j++] = json[i];
-            } else if ((c & 0xF8) == 0xF0 && i + 3 < len &&
-                       (json[i+1] & 0xC0) == 0x80 && (json[i+2] & 0xC0) == 0x80 && (json[i+3] & 0xC0) == 0x80) {
-                // Valid 4-byte UTF-8, copy all four
-                sanitized[j++] = json[i++];
-                sanitized[j++] = json[i++];
-                sanitized[j++] = json[i++];
-                sanitized[j++] = json[i];
-            } else {
-                // Invalid UTF-8 byte, replace with space
-                sanitized[j++] = ' ';
+            // Check for valid UTF-8 multi-byte sequence
+            if ((c & 0xE0) == 0xC0 && i + 1 < len) {
+                // Potential 2-byte UTF-8
+                unsigned char c2 = (unsigned char)json[i + 1];
+                if ((c2 & 0xC0) == 0x80) {
+                    sanitized[j++] = c;
+                    sanitized[j++] = c2;
+                    i++;
+                    continue;
+                }
+            } else if ((c & 0xF0) == 0xE0 && i + 2 < len) {
+                // Potential 3-byte UTF-8
+                unsigned char c2 = (unsigned char)json[i + 1];
+                unsigned char c3 = (unsigned char)json[i + 2];
+                if ((c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80) {
+                    sanitized[j++] = c;
+                    sanitized[j++] = c2;
+                    sanitized[j++] = c3;
+                    i += 2;
+                    continue;
+                }
+            } else if ((c & 0xF8) == 0xF0 && i + 3 < len) {
+                // Potential 4-byte UTF-8
+                unsigned char c2 = (unsigned char)json[i + 1];
+                unsigned char c3 = (unsigned char)json[i + 2];
+                unsigned char c4 = (unsigned char)json[i + 3];
+                if ((c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80 && (c4 & 0xC0) == 0x80) {
+                    sanitized[j++] = c;
+                    sanitized[j++] = c2;
+                    sanitized[j++] = c3;
+                    sanitized[j++] = c4;
+                    i += 3;
+                    continue;
+                }
             }
+            // Invalid UTF-8 sequence start - try to preserve the byte anyway
+            // as it might be valid in some other encoding
+            sanitized[j++] = c;
         }
         else {
-            sanitized[j++] = json[i];
+            // ASCII printable and standard whitespace
+            sanitized[j++] = c;
         }
     }
     sanitized[j] = '\0';
@@ -517,6 +537,182 @@ static int extract_all_script_urls(const char *html, char out_urls[][SCRIPT_URL_
     
     LOG_INFO("Extracted %d script URLs", count);
     return count;
+}
+
+// Extract inline scripts from HTML (scripts without src attribute)
+// These contain initialization code like ytcfg, ytInitialData, etc.
+static int extract_inline_scripts(const char *html, char **out_scripts, int max_scripts) {
+    if (!html || !out_scripts || max_scripts <= 0) return 0;
+    
+    int count = 0;
+    const char *p = html;
+    
+    while ((p = strstr(p, "<script")) != NULL && count < max_scripts) {
+        // Find end of opening tag properly (handling quotes)
+        const char *tag_start = p;
+        const char *tag_end = tag_start + 7; // Skip "<script"
+        bool in_quote = false;
+        char quote_char = 0;
+        
+        while (*tag_end) {
+            if (!in_quote) {
+                if (*tag_end == '"' || *tag_end == '\'') {
+                    in_quote = true;
+                    quote_char = *tag_end;
+                } else if (*tag_end == '>') {
+                    break;
+                }
+            } else {
+                if (*tag_end == quote_char) {
+                    in_quote = false;
+                }
+            }
+            tag_end++;
+        }
+        
+        if (*tag_end != '>') break; // No closing bracket found
+        
+        // Check for src= in the tag (must be outside quotes)
+        bool has_src = false;
+        const char *check = tag_start;
+        in_quote = false;
+        quote_char = 0;
+        
+        while (check < tag_end) {
+            if (!in_quote) {
+                if (*check == '"' || *check == '\'') {
+                    in_quote = true;
+                    quote_char = *check;
+                } else if (strncmp(check, "src=", 4) == 0) {
+                    has_src = true;
+                    break;
+                }
+            } else {
+                if (*check == quote_char) {
+                    in_quote = false;
+                }
+            }
+            check++;
+        }
+        
+        if (has_src) {
+            // This is an external script, skip
+            p = tag_end + 1;
+            continue;
+        }
+        
+        // Check for type="text/javascript" or no type (default)
+        bool is_js = true;
+        const char *type_attr = tag_start;
+        while ((type_attr = strstr(type_attr, "type=")) != NULL && type_attr < tag_end) {
+            // Check if this type= is inside quotes
+            bool type_in_quote = false;
+            char type_quote_char = 0;
+            for (const char *c = tag_start; c < type_attr; c++) {
+                if (!type_in_quote) {
+                    if (*c == '"' || *c == '\'') {
+                        type_in_quote = true;
+                        type_quote_char = *c;
+                    }
+                } else {
+                    if (*c == type_quote_char) {
+                        type_in_quote = false;
+                    }
+                }
+            }
+            
+            if (!type_in_quote) {
+                // Check if it's JavaScript type
+                const char *type_val = type_attr + 5;
+                while (*type_val && isspace((unsigned char)*type_val)) type_val++;
+                char quote = *type_val;
+                if (quote == '"' || quote == '\'') {
+                    type_val++;
+                    if (strncmp(type_val, "text/javascript", 15) != 0 &&
+                        strncmp(type_val, "application/javascript", 22) != 0 &&
+                        strncmp(type_val, "module", 6) != 0) {
+                        // Not JavaScript, skip
+                        is_js = false;
+                        break;
+                    }
+                }
+            }
+            type_attr++;
+        }
+        
+        if (!is_js) {
+            p = tag_end + 1;
+            continue;
+        }
+        
+        // Find the closing </script> tag (case insensitive)
+        const char *content_start = tag_end + 1;
+        const char *script_end = NULL;
+        const char *search = content_start;
+        
+        while ((search = strstr(search, "<")) != NULL) {
+            if (strncasecmp(search, "</script>", 9) == 0) {
+                script_end = search;
+                break;
+            }
+            search++;
+        }
+        
+        if (!script_end) {
+            LOG_WARN("No closing </script> tag found");
+            break;
+        }
+        
+        size_t content_len = script_end - content_start;
+        
+        // Skip empty scripts or very short ones
+        if (content_len < 50) {
+            p = script_end + 9;
+            continue;
+        }
+        
+        // Skip scripts that are likely not initialization code
+        bool skip = false;
+        const char *first_nonspace = content_start;
+        while (*first_nonspace && isspace((unsigned char)*first_nonspace)) first_nonspace++;
+        if (*first_nonspace == '{' || *first_nonspace == '[') {
+            skip = true; // Might be JSON, skip
+        }
+        // Skip very large scripts (>500KB) as they're likely data, not code
+        if (content_len > 500000) {
+            skip = true;
+        }
+        
+        if (skip) {
+            p = script_end + 9;
+            continue;
+        }
+        
+        // Extract the script content
+        char *script = malloc(content_len + 1);
+        if (script) {
+            memcpy(script, content_start, content_len);
+            script[content_len] = '\0';
+            out_scripts[count] = script;
+            LOG_INFO("Extracted inline script %d: %zu bytes", count, content_len);
+            count++;
+        }
+        
+        p = script_end + 9;
+    }
+    
+    LOG_INFO("Extracted %d inline initialization scripts", count);
+    return count;
+}
+
+// Free inline scripts
+static void free_inline_scripts(char **scripts, int count) {
+    for (int i = 0; i < count; i++) {
+        if (scripts[i]) {
+            free(scripts[i]);
+            scripts[i] = NULL;
+        }
+    }
 }
 
 // Find and extract the base.js player script (most important for signature decryption)
@@ -671,23 +867,51 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
         return false;
     }
     
-    LOG_INFO("Successfully loaded %d scripts", loaded_count);
+    LOG_INFO("Successfully loaded %d external scripts", loaded_count);
     
     // Extract ytInitialPlayerResponse from HTML
     char *player_response = extract_yt_player_response(html);
+    
+    // Extract inline scripts (initialization code like ytcfg, ytInitialData)
+    char *inline_scripts[MAX_SCRIPT_URLS];
+    int inline_count = extract_inline_scripts(html, inline_scripts, MAX_SCRIPT_URLS);
+    
+    // Combine inline and external scripts
+    // Inline scripts must run FIRST to set up globals
+    const char *all_scripts[MAX_SCRIPT_URLS * 2];
+    size_t all_script_lens[MAX_SCRIPT_URLS * 2];
+    int total_count = 0;
+    
+    // Add inline scripts first
+    for (int i = 0; i < inline_count && total_count < MAX_SCRIPT_URLS * 2; i++) {
+        all_scripts[total_count] = inline_scripts[i];
+        all_script_lens[total_count] = strlen(inline_scripts[i]);
+        total_count++;
+    }
+    
+    // Add external scripts
+    for (int i = 0; i < loaded_count && total_count < MAX_SCRIPT_URLS * 2; i++) {
+        all_scripts[total_count] = scripts[i];
+        all_script_lens[total_count] = script_lens[i];
+        total_count++;
+    }
     
     // Execute all scripts with the player response injected
     JsExecResult js_result;
     memset(&js_result, 0, sizeof(JsExecResult));
     
-    LOG_INFO("Executing %d scripts with ytInitialPlayerResponse", loaded_count);
+    LOG_INFO("Executing %d total scripts (%d inline + %d external) with ytInitialPlayerResponse", 
+             total_count, inline_count, loaded_count);
     
     bool js_success = js_quickjs_exec_scripts_with_data(
-        (const char**)scripts, script_lens, loaded_count,
+        all_scripts, all_script_lens, total_count,
         player_response, html, &js_result
     );
     
-    // Free scripts
+    // Free inline scripts
+    free_inline_scripts(inline_scripts, inline_count);
+    
+    // Free external scripts
     for (int i = 0; i < loaded_count; i++) {
         if (scripts[i]) {
             HttpBuffer buffer = { .data = (char*)scripts[i], .size = script_lens[i] };
