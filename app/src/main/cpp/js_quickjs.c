@@ -858,10 +858,6 @@ static void init_browser_environment(JSContext *ctx) {
     const char *early_shim = 
         "if (typeof window === 'undefined') { this.window = this; }"
         "if (typeof globalThis === 'undefined') { this.globalThis = this; }"
-        // Define generic polyfill flags on window and global
-        "this.es5Shimmed = true;"
-        "this.es6Shimmed = true;"
-        "this._babelPolyfill = true;"
         // Ensure common constructor names exist to prevent 'prototype of undefined' errors
         "if (typeof Iterator === 'undefined') { this.Iterator = function() {}; }"
         "if (typeof Generator === 'undefined') { this.Generator = function() {}; }"
