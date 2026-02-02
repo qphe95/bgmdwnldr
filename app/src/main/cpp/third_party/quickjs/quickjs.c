@@ -21893,6 +21893,19 @@ static int js_parse_error_reserved_identifier(JSParseState *s)
                                         s->token.u.ident.atom));
 }
 
+/* Helper function to convert hex digit to value */
+static inline int hex_value(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+}
+
+/* Helper function to check if character is a hex digit */
+static inline int is_hex_digit(int c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
 static __exception int js_parse_template_part(JSParseState *s, const uint8_t *p)
 {
     uint32_t c;
@@ -21916,26 +21929,107 @@ static __exception int js_parse_template_part(JSParseState *s, const uint8_t *p)
             break;
         }
         if (c == '\\') {
-            if (string_buffer_putc8(b, c))
-                goto fail;
+            /* Handle escape sequences in template literals more leniently */
             if (p >= s->buf_end)
                 goto unexpected_eof;
-            c = *p++;
-        }
-        /* newline sequences are normalized as single '\n' bytes */
-        if (c == '\r') {
-            if (*p == '\n')
+            int ec = *p;
+            
+            /* Handle common escape sequences */
+            switch (ec) {
+            case 'n': c = '\n'; p++; break;
+            case 'r': c = '\r'; p++; break;
+            case 't': c = '\t'; p++; break;
+            case 'b': c = '\b'; p++; break;
+            case 'f': c = '\f'; p++; break;
+            case 'v': c = '\v'; p++; break;
+            case '0': 
+                if (p[1] >= '0' && p[1] <= '9') {
+                    /* Octal escape - copy as-is for leniency */
+                    if (string_buffer_putc8(b, '\\')) goto fail;
+                    c = *p++;
+                } else {
+                    c = '\0'; p++;
+                }
+                break;
+            case 'x':
+                /* Hex escape \xNN */
+                if (p + 2 < s->buf_end && is_hex_digit(p[1]) && is_hex_digit(p[2])) {
+                    c = (hex_value(p[1]) << 4) | hex_value(p[2]);
+                    p += 3;
+                } else {
+                    /* Invalid hex escape - keep literal */
+                    if (string_buffer_putc8(b, '\\')) goto fail;
+                    c = *p++;
+                }
+                break;
+            case 'u':
+                /* Unicode escape \uNNNN or \u{NNNNN} */
+                if (p[1] == '{') {
+                    /* \u{...} - variable length */
+                    const uint8_t *u_start = p + 2;
+                    const uint8_t *u_end = u_start;
+                    uint32_t u_val = 0;
+                    while (u_end < s->buf_end && *u_end != '}' && is_hex_digit(*u_end)) {
+                        u_val = (u_val << 4) | hex_value(*u_end);
+                        u_end++;
+                    }
+                    if (u_end < s->buf_end && *u_end == '}' && u_val <= 0x10FFFF) {
+                        c = u_val;
+                        p = u_end + 1;
+                    } else {
+                        /* Invalid - keep literal */
+                        if (string_buffer_putc8(b, '\\')) goto fail;
+                        c = *p++;
+                    }
+                } else if (p + 4 < s->buf_end && is_hex_digit(p[1]) && is_hex_digit(p[2]) && 
+                           is_hex_digit(p[3]) && is_hex_digit(p[4])) {
+                    /* \uNNNN */
+                    c = (hex_value(p[1]) << 12) | (hex_value(p[2]) << 8) |
+                        (hex_value(p[3]) << 4) | hex_value(p[4]);
+                    p += 5;
+                } else {
+                    /* Invalid unicode escape - keep literal */
+                    if (string_buffer_putc8(b, '\\')) goto fail;
+                    c = *p++;
+                }
+                break;
+            case '\n':
+            case '\r':
+                /* Line continuation - skip both chars */
+                if (ec == '\r' && p[1] == '\n') p++;
                 p++;
-            c = '\n';
+                continue; /* Don't output anything for line continuation */
+            case '`':
+            case '$':
+            case '\\':
+            case '"':
+            case '\'':
+                c = ec; p++;
+                break;
+            default:
+                /* Unknown escape - keep literal (lenient mode) */
+                if (string_buffer_putc8(b, '\\')) goto fail;
+                c = *p++;
+                break;
+            }
+        } else {
+            /* newline sequences are normalized as single '\n' bytes */
+            if (c == '\r') {
+                if (*p == '\n')
+                    p++;
+                c = '\n';
+            }
         }
         if (c >= 0x80) {
             const uint8_t *p_next;
             c = unicode_from_utf8(p - 1, UTF8_CHAR_LEN_MAX, &p_next);
             if (c > 0x10FFFF) {
-                js_parse_error_pos(s, p - 1, "invalid UTF-8 sequence");
-                goto fail;
+                /* Be lenient with invalid UTF-8 - replace with replacement char */
+                c = 0xFFFD; /* Unicode replacement character */
+                p = p - 1 + 1; /* Skip one byte and continue */
+            } else {
+                p = p_next;
             }
-            p = p_next;
         }
         if (string_buffer_putc(b, c))
             goto fail;
@@ -22019,40 +22113,49 @@ static __exception int js_parse_string(JSParseState *s, int sep,
                 continue;
             default:
                 if (c >= '0' && c <= '9') {
-                    if (!(s->cur_func->js_mode & JS_MODE_STRICT) && sep != '`')
-                        goto parse_escape;
                     if (c == '0' && !(p[1] >= '0' && p[1] <= '9')) {
+                        /* \0 - null character */
                         p++;
                         c = '\0';
+                    } else if (!(s->cur_func->js_mode & JS_MODE_STRICT) && sep != '`') {
+                        /* Non-strict mode: parse octal escapes for regular strings */
+                        goto parse_escape;
+                    } else if (c >= '8') {
+                        /* \8 and \9 - treat as literal '8' or '9' for leniency
+                           (browsers accept these even in template literals) */
+                        c = c;  /* Keep the digit as-is */
+                        p++;
                     } else {
-                        if (c >= '8' || sep == '`') {
-                            /* Note: according to ES2021, \8 and \9 are not
-                               accepted in strict mode or in templates. */
-                            goto invalid_escape;
-                        } else {
-                            if (do_throw)
-                                js_parse_error_pos(s, p_escape, "octal escape sequences are not allowed in strict mode");
-                        }
-                        goto fail;
+                        /* Octal in strict mode or template - treat as literal digits */
+                        c = c;
+                        p++;
                     }
                 } else if (c >= 0x80) {
                     const uint8_t *p_next;
                     c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p_next);
                     if (c > 0x10FFFF) {
-                        goto invalid_utf8;
+                        /* Invalid UTF-8 in escape - be lenient, treat as literal */
+                        c = '\\';  /* Output backslash */
+                        if (string_buffer_putc(b, c))
+                            goto fail;
+                        c = *p;  /* Output original char */
+                        p++;
+                    } else {
+                        p = p_next;
+                        /* LS or PS are skipped */
+                        if (c == CP_LS || c == CP_PS)
+                            continue;
                     }
-                    p = p_next;
-                    /* LS or PS are skipped */
-                    if (c == CP_LS || c == CP_PS)
-                        continue;
                 } else {
                 parse_escape:
                     ret = lre_parse_escape(&p, TRUE);
                     if (ret == -1) {
-                    invalid_escape:
-                        if (do_throw)
-                            js_parse_error_pos(s, p_escape, "malformed escape sequence in string literal");
-                        goto fail;
+                        /* Invalid escape sequence - be lenient, keep literal */
+                        c = '\\';
+                        if (string_buffer_putc(b, c))
+                            goto fail;
+                        c = *p;
+                        p++;
                     } else if (ret < 0) {
                         /* ignore the '\' (could output a warning) */
                         p++;
@@ -22065,9 +22168,13 @@ static __exception int js_parse_string(JSParseState *s, int sep,
         } else if (c >= 0x80) {
             const uint8_t *p_next;
             c = unicode_from_utf8(p - 1, UTF8_CHAR_LEN_MAX, &p_next);
-            if (c > 0x10FFFF)
-                goto invalid_utf8;
-            p = p_next;
+            if (c > 0x10FFFF) {
+                /* Invalid UTF-8 - be lenient, use replacement char */
+                c = 0xFFFD;  /* Unicode replacement character */
+                p = p;  /* Skip one byte and continue */
+            } else {
+                p = p_next;
+            }
         }
         if (string_buffer_putc(b, c))
             goto fail;
