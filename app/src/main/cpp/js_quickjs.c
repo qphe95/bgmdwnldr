@@ -858,15 +858,10 @@ static void init_browser_environment(JSContext *ctx) {
     const char *early_shim = 
         "if (typeof window === 'undefined') { this.window = this; }"
         "if (typeof globalThis === 'undefined') { this.globalThis = this; }"
-        // Define es5Shimmed on window and global
+        // Define generic polyfill flags on window and global
         "this.es5Shimmed = true;"
         "this.es6Shimmed = true;"
         "this._babelPolyfill = true;"
-        // Ensure goog namespace exists (YouTube's Closure Library)
-        "var goog = goog || {};"
-        "goog.global = this;"
-        "goog.es5Shimmed = true;"
-        "goog.es6Shimmed = true;"
         // Ensure common constructor names exist to prevent 'prototype of undefined' errors
         "if (typeof Iterator === 'undefined') { this.Iterator = function() {}; }"
         "if (typeof Generator === 'undefined') { this.Generator = function() {}; }"
@@ -881,8 +876,6 @@ static void init_browser_environment(JSContext *ctx) {
         "window.Set = this.Set;"
         "window.WeakMap = this.WeakMap;"
         "window.WeakSet = this.WeakSet;"
-        // Ensure _spf_state exists for spf.js (checked with 'in' operator)
-        "if (typeof window._spf_state === 'undefined') { window._spf_state = {}; }"
     ;
     JS_Eval(ctx, early_shim, strlen(early_shim), "<early_shim>", 0);
     

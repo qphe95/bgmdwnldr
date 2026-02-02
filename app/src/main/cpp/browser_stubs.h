@@ -703,8 +703,6 @@ static const char BROWSER_STUBS_JS[] =
     "window.GroupEffect = GroupEffect;"
     "window.SequenceEffect = SequenceEffect;"
     "window.CSS = CSS;"
-    "window.yt = { config_: {} };"
-    "window._spf_state = {};"
     "window.customElements = { define: function() {}, get: function() { return undefined; }, whenDefined: function() { return Promise.resolve(); }, upgrade: function() {}, observe: function() {} };"
     ""
     /* performance */
@@ -725,10 +723,6 @@ static const char BROWSER_STUBS_JS[] =
     "  setResourceTimingBufferSize: function() {},"
     "  toJSON: function() { return {}; }"
     "};"
-    ""
-    /* ytcsi - YouTube performance monitoring */
-    "var ytcsi = { tick: function() {}, info: function() {}, setStartTime: function() {} };"
-    "window.ytcsi = ytcsi;"
     ""
     ""
     /* Web Animations API */
