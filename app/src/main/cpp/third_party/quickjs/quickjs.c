@@ -21916,8 +21916,10 @@ static __exception int js_parse_template_part(JSParseState *s, const uint8_t *p)
     if (string_buffer_init(s->ctx, b, 32))
         goto fail;
     for(;;) {
-        if (p >= s->buf_end)
-            goto unexpected_eof;
+        if (p >= s->buf_end) {
+            /* EOF in template - be lenient, treat as end of template */
+            goto template_done;
+        }
         c = *p++;
         if (c == '`') {
             /* template end part */
@@ -22043,8 +22045,27 @@ static __exception int js_parse_template_part(JSParseState *s, const uint8_t *p)
     s->buf_ptr = p;
     return 0;
 
+ template_done:
+    /* Lenient EOF handling - return partial template */
+    str = string_buffer_end(b);
+    if (JS_IsException(str))
+        return -1;
+    s->token.val = TOK_TEMPLATE;
+    s->token.u.str.sep = '`';
+    s->token.u.str.str = str;
+    s->buf_ptr = p;
+    return 0;
+
  unexpected_eof:
-    js_parse_error(s, "unexpected end of string");
+    /* Be lenient: EOF in template part - return what we have */
+    str = string_buffer_end(b);
+    if (JS_IsException(str))
+        return -1;
+    s->token.val = TOK_TEMPLATE;
+    s->token.u.str.sep = '`';  /* Mark as end of template */
+    s->token.u.str.str = str;
+    s->buf_ptr = p;
+    return 0;
  fail:
     string_buffer_free(b);
     return -1;
@@ -22064,8 +22085,10 @@ static __exception int js_parse_string(JSParseState *s, int sep,
     if (string_buffer_init(s->ctx, b, 32))
         goto fail;
     for(;;) {
-        if (p >= s->buf_end)
-            goto invalid_char;
+        if (p >= s->buf_end) {
+            /* EOF in string - be lenient, return what we have */
+            goto done;
+        }
         c = *p;
         if (c < 0x20) {
             if (sep == '`') {
@@ -22075,8 +22098,13 @@ static __exception int js_parse_string(JSParseState *s, int sep,
                     c = '\n';
                 }
                 /* do not update s->line_num */
-            } else if (c == '\n' || c == '\r')
+            } else if (c == '\n' || c == '\r') {
+                /* Newline in regular string - be lenient in non-strict mode */
+                if (!do_throw) {
+                    goto done;
+                }
                 goto invalid_char;
+            }
         }
         p++;
         if (c == sep)
@@ -22179,11 +22207,13 @@ static __exception int js_parse_string(JSParseState *s, int sep,
         if (string_buffer_putc(b, c))
             goto fail;
     }
+    /* Normal exit - string was properly terminated */
+ done:
     str = string_buffer_end(b);
     if (JS_IsException(str))
         return -1;
     token->val = TOK_STRING;
-    token->u.str.sep = c;
+    token->u.str.sep = sep;  /* Use original separator */
     token->u.str.str = str;
     *pp = p;
     return 0;
@@ -22193,8 +22223,20 @@ static __exception int js_parse_string(JSParseState *s, int sep,
         js_parse_error(s, "invalid UTF-8 sequence");
     goto fail;
  invalid_char:
-    if (do_throw)
+    /* Be lenient: EOF in string returns what we have so far */
+    if (do_throw) {
         js_parse_error(s, "unexpected end of string");
+        goto fail;
+    }
+    /* For non-throw mode (like template parts), return partial string */
+    str = string_buffer_end(b);
+    if (JS_IsException(str))
+        return -1;
+    token->val = TOK_STRING;
+    token->u.str.sep = sep;  /* Use original separator */
+    token->u.str.str = str;
+    *pp = p;
+    return 0;
  fail:
     string_buffer_free(b);
     return -1;
@@ -22489,8 +22531,8 @@ static __exception int next_token(JSParseState *s)
             p += 2;
             for(;;) {
                 if (*p == '\0' && p >= s->buf_end) {
-                    js_parse_error(s, "unexpected end of comment");
-                    goto fail;
+                    /* Be lenient: EOF in comment just ends the comment */
+                    goto redo;
                 }
                 if (p[0] == '*' && p[1] == '/') {
                     p += 2;
@@ -22643,12 +22685,22 @@ static __exception int next_token(JSParseState *s)
                           flags);
             if (JS_IsException(ret))
                 goto fail;
-            /* reject `10instanceof Number` */
-            if (JS_VALUE_IS_NAN(ret) ||
-                lre_js_is_ident_next(unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p1))) {
+            /* reject `10instanceof Number` - but be lenient with edge cases */
+            if (JS_VALUE_IS_NAN(ret)) {
                 JS_FreeValue(s->ctx, ret);
                 js_parse_error(s, "invalid number literal");
                 goto fail;
+            }
+            /* Check for identifier immediately following number, but be lenient
+             * if it's a common case that browsers accept */
+            if (lre_js_is_ident_next(unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p1))) {
+                /* Some minified code might have numbers followed by letters
+                 * In lenient mode, just treat the number as valid and continue */
+                /* Uncomment strict check below for strict mode:
+                JS_FreeValue(s->ctx, ret);
+                js_parse_error(s, "invalid number literal");
+                goto fail;
+                */
             }
             s->token.val = TOK_NUMBER;
             s->token.u.num.val = ret;

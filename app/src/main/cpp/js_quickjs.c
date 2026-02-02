@@ -1530,20 +1530,81 @@ static void init_browser_environment(JSContext *ctx) {
         "var Polymer = Polymer || function() {};"
         "Polymer.Element = Polymer.Element || function() {};"
         "Polymer.dom = Polymer.dom || function() { return { querySelector: function() { return null; } }; };"
+        "Polymer.RenderStatus = Polymer.RenderStatus || {};"
+        "Polymer.RenderStatus.afterNextRender = function() {};"
         
         // YouTube app globals
         "var ytcfg = ytcfg || {};"
         "ytcfg.set = ytcfg.set || function() {};"
         "ytcfg.get = ytcfg.get || function() { return null; };"
         
-        // yt namespace
+        // yt namespace - comprehensive stubs
         "var yt = yt || {};"
         "yt.player = yt.player || {};"
         "yt.player.Application = yt.player.Application || function() {};"
+        "yt.scheduler = yt.scheduler || {};"
+        "yt.scheduler.scheduleAppLoad = yt.scheduler.scheduleAppLoad || function() {};"
+        "yt.scheduler.cancelAppLoad = yt.scheduler.cancelAppLoad || function() {};"
+        "yt.app = yt.app || {};"
+        "yt.app.application = yt.app.application || {};"
+        "yt.app.application.createComponent = yt.app.application.createComponent || function() {};"
+        
+        // spf (Structured Page Fragments) - used by YouTube for navigation
+        "var spf = spf || {};"
+        "spf.init = spf.init || function() {};"
+        "spf.navigate = spf.navigate || function() {};"
+        "spf.load = spf.load || function() {};"
+        "spf.process = spf.process || function() {};"
+        "spf.prefetch = spf.prefetch || function() {};"
         
         // Google Closure library namespace
         "var goog = goog || {};"
         "goog.global = window;"
+        "goog.require = goog.require || function() {};"
+        "goog.provide = goog.provide || function() {};"
+        "goog.module = goog.module || function() {};"
+        "goog.exportSymbol = goog.exportSymbol || function() {};"
+        "goog.exportProperty = goog.exportProperty || function() {};"
+        "goog.inherits = goog.inherits || function() {};"
+        "goog.base = goog.base || function() {};"
+        
+        // Common missing functions that cause "not a function" errors
+        "if (typeof queueMicrotask === 'undefined') {"
+        "  window.queueMicrotask = function(fn) { setTimeout(fn, 0); };"
+        "}"
+        "if (typeof requestIdleCallback === 'undefined') {"
+        "  window.requestIdleCallback = function(fn) { return setTimeout(fn, 1); };"
+        "}"
+        "if (typeof cancelIdleCallback === 'undefined') {"
+        "  window.cancelIdleCallback = function(id) { clearTimeout(id); };"
+        "}"
+        
+        // Fix for "cannot read property of undefined" errors
+        "window.yt = window.yt || yt;"
+        "window.ytcfg = window.ytcfg || ytcfg;"
+        "window.ytplayer = window.ytplayer || ytplayer;"
+        "window.goog = window.goog || goog;"
+        "window.spf = window.spf || spf;"
+        "window.Polymer = window.Polymer || Polymer;"
+        
+        // Additional stubs for functions that might be called but not defined
+        "window.getComputedStyle = window.getComputedStyle || function() { return {}; };"
+        "window.matchMedia = window.matchMedia || function() { return { matches: false, addListener: function() {}, removeListener: function() {} }; };"
+        "window.CustomEvent = window.CustomEvent || window.Event;"
+        
+        // Object.prototype stubs that might be missing
+        "if (!Object.prototype.hasOwnProperty) { Object.prototype.hasOwnProperty = function(key) { return key in this; }; }"
+        "if (!Object.prototype.toString) { Object.prototype.toString = function() { return '[object Object]'; }; }"
+        
+        // Array.prototype stubs
+        "if (!Array.prototype.includes) { Array.prototype.includes = function(item) { return this.indexOf(item) !== -1; }; }"
+        "if (!Array.prototype.find) { Array.prototype.find = function(fn) { for (var i = 0; i < this.length; i++) if (fn(this[i], i, this)) return this[i]; }; }"
+        "if (!Array.prototype.findIndex) { Array.prototype.findIndex = function(fn) { for (var i = 0; i < this.length; i++) if (fn(this[i], i, this)) return i; return -1; }; }"
+        
+        // String.prototype stubs
+        "if (!String.prototype.startsWith) { String.prototype.startsWith = function(s) { return this.indexOf(s) === 0; }; }"
+        "if (!String.prototype.endsWith) { String.prototype.endsWith = function(s) { return this.slice(-s.length) === s; }; }"
+        "if (!String.prototype.includes) { String.prototype.includes = function(s) { return this.indexOf(s) !== -1; }; }"
     ;
     JS_Eval(ctx, youtube_stubs_js, strlen(youtube_stubs_js), "<youtube_stubs>", 0);
     
@@ -1794,6 +1855,39 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
     
     // Note: base.js has bundled Polymer that manages its own state
     // We cannot easily patch it since it uses local variables, not window.Polymer
+    
+    // Pre-execution stubs - ensure critical functions exist before running scripts
+    const char *pre_exec_stubs = 
+        // Ensure scheduleAppLoad and related functions exist
+        "if (typeof yt === 'undefined') window.yt = {};"
+        "if (!yt.scheduler) yt.scheduler = {};"
+        "if (!yt.scheduler.scheduleAppLoad) yt.scheduler.scheduleAppLoad = function() {};"
+        "if (!yt.scheduler.cancelAppLoad) yt.scheduler.cancelAppLoad = function() {};"
+        "if (!yt.app) yt.app = {};"
+        "if (!yt.app.application) yt.app.application = {};"
+        "if (!yt.app.application.createComponent) yt.app.application.createComponent = function() {};"
+        // Ensure spf exists
+        "if (typeof spf === 'undefined') window.spf = {};"
+        "if (!spf.init) spf.init = function() {};"
+        "if (!spf.navigate) spf.navigate = function() {};"
+        "if (!spf.load) spf.load = function() {};"
+        "if (!spf.process) spf.process = function() {};"
+        // Ensure Polymer methods exist
+        "if (typeof Polymer === 'undefined') window.Polymer = function() {};"
+        "if (!Polymer.RenderStatus) Polymer.RenderStatus = {};"
+        "if (!Polymer.RenderStatus.afterNextRender) Polymer.RenderStatus.afterNextRender = function() {};"
+        "if (!Polymer.dom) Polymer.dom = function() { return { querySelector: function() { return null; } }; };"
+        // Ensure Closure library functions exist
+        "if (typeof goog === 'undefined') window.goog = {};"
+        "if (!goog.exportSymbol) goog.exportSymbol = function() {};"
+        "if (!goog.exportProperty) goog.exportProperty = function() {};"
+        "if (!goog.inherits) goog.inherits = function() {};"
+        "if (!goog.base) goog.base = function() {};"
+        "if (!goog.require) goog.require = function() {};"
+        "if (!goog.provide) goog.provide = function() {};"
+    ;
+    JSValue pre_exec_result = JS_Eval(ctx, pre_exec_stubs, strlen(pre_exec_stubs), "<pre_exec_stubs>", 0);
+    JS_FreeValue(ctx, pre_exec_result);
     
     // Execute all scripts
     int success_count = 0;
