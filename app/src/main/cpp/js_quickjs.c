@@ -589,152 +589,7 @@ static void init_browser_environment(JSContext *ctx) {
     // Register native logging function FIRST so it's available for all debugging
     JS_SetPropertyStr(ctx, global, "__bgmdwnldr_log", JS_NewCFunction(ctx, js_bgmdwnldr_log, "__bgmdwnldr_log", 1));
     
-    // Load comprehensive browser stubs FIRST - this sets up window, document, navigator, goog, etc.
-    LOG_INFO("Setting up basic browser environment...");
-    JSValue stubs_result = JS_Eval(ctx, BROWSER_STUBS_JS, strlen(BROWSER_STUBS_JS), "<browser_stubs>", 0);
-    if (JS_IsException(stubs_result)) {
-        JSValue exc = JS_GetException(ctx);
-        const char *exc_str = JS_ToCString(ctx, exc);
-        LOG_ERROR("Failed to load browser stubs: %s", exc_str ? exc_str : "(unknown)");
-        JS_FreeCString(ctx, exc_str);
-        JS_FreeValue(ctx, exc);
-    } else {
-        LOG_INFO("JS: Basic browser environment ready");
-    }
-    JS_FreeValue(ctx, stubs_result);
-    
-    // Set up additional shims
-    const char *early_shim = 
-        "if (typeof window === 'undefined') { this.window = this; }"
-        "if (typeof globalThis === 'undefined') { this.globalThis = this; }"
-        // Define es5Shimmed on window and global
-        "this.es5Shimmed = true;"
-        "this.es6Shimmed = true;"
-        "this._babelPolyfill = true;"
-        // Ensure goog namespace exists (YouTube's Closure Library)
-        "var goog = goog || {};"
-        "goog.global = this;"
-        "goog.es5Shimmed = true;"
-        "goog.es6Shimmed = true;"
-        // Ensure common constructor names exist to prevent 'prototype of undefined' errors
-        "if (typeof Iterator === 'undefined') { this.Iterator = function() {}; }"
-        "if (typeof Generator === 'undefined') { this.Generator = function() {}; }"
-        "if (typeof Map === 'undefined') { this.Map = function() {}; }"
-        "if (typeof Set === 'undefined') { this.Set = function() {}; }"
-        "if (typeof WeakMap === 'undefined') { this.WeakMap = function() {}; }"
-        "if (typeof WeakSet === 'undefined') { this.WeakSet = function() {}; }"
-        "// Ensure constructors are also on window"
-        "window.Iterator = this.Iterator;"
-        "window.Generator = this.Generator;"
-        "window.Map = this.Map;"
-        "window.Set = this.Set;"
-        "window.WeakMap = this.WeakMap;"
-        "window.WeakSet = this.WeakSet;"
-        // Ensure _spf_state exists for spf.js (checked with 'in' operator)
-        "if (typeof window._spf_state === 'undefined') { window._spf_state = {}; }"
-    ;
-    JS_Eval(ctx, early_shim, strlen(early_shim), "<early_shim>", 0);
-    
-    // Ensure all window properties are proper objects (not undefined) for 'in' operator
-    const char *window_check_js = 
-        "// Ensure localStorage and sessionStorage exist on window\n"
-        "if (!window.localStorage) {\n"
-        "  window.localStorage = localStorage;\n"
-        "}\n"
-        "if (!window.sessionStorage) {\n"
-        "  window.sessionStorage = sessionStorage;\n"
-        "}\n"
-        "// Ensure navigator, location, document are objects\n"
-        "if (typeof window.navigator !== 'object') {\n"
-        "  window.navigator = {};\n"
-        "}\n"
-        "if (typeof window.location !== 'object') {\n"
-        "  window.location = {};\n"
-        "}\n"
-        "if (typeof window.document !== 'object') {\n"
-        "  window.document = {};\n"
-        "}\n"
-    ;
-    JS_Eval(ctx, window_check_js, strlen(window_check_js), "<window_check>", 0);
-    
-    // Create ALL common constructors upfront to prevent 'prototype of undefined' errors
-    const char *constructors_js = 
-        "function __log(msg) {"
-        "  if (typeof __bgmdwnldr_log === 'function') {"
-        "    __bgmdwnldr_log(msg);"
-        "  }"
-        "}"
-        "var __ctors = ['Iterator','Generator','AsyncGenerator','Map','Set','WeakMap','WeakSet',"
-        "'ArrayBuffer','SharedArrayBuffer','Uint8Array','Int8Array','Uint8ClampedArray',"
-        "'Uint16Array','Int16Array','Uint32Array','Int32Array','Float32Array','Float64Array',"
-        "'BigInt64Array','BigUint64Array','DataView','Promise','RegExp','Date','Error',"
-        "'TypeError','ReferenceError','SyntaxError','RangeError','URIError','EvalError',"
-        "'AggregateError','Symbol','Proxy','Reflect','WeakRef','FinalizationRegistry','Node','Element','Document','Window'];"
-        "for (var i=0; i<__ctors.length; i++) {"
-        "  var name=__ctors[i];"
-        "  if (typeof window[name]==='undefined') {"
-        "    __log('Creating stub: '+name);"
-        "    window[name]=function(){};"
-        "    window[name].prototype={};"
-        "  }"
-        "}"
-        "__log('Constructor setup done');"
-    ;
-    JS_Eval(ctx, constructors_js, strlen(constructors_js), "<constructors>", 0);
-    
-    // Wrap window with Proxy to detect undefined property accesses
-    const char *proxy_js = 
-        "if (typeof Proxy !== 'undefined') {"
-        "  var __loggedChains = {};"
-        "  function __createTracker(chain) {"
-        "    return new Proxy(function(){}, {"
-        "      get: function(t, p) {"
-        "        if (p === 'prototype' || p === '__proto__') return {};"
-        "        var newChain = chain + '.' + p;"
-        "        if (!__loggedChains[newChain]) {"
-        "          __loggedChains[newChain] = true;"
-        "          __log('UNDEFINED: ' + newChain);"
-        "        }"
-        "        return __createTracker(newChain);"
-        "      },"
-        "      apply: function(t, that, args) { return undefined; },"
-        "      construct: function(t, args) { return {}; }"
-        "    });"
-        "  }"
-        "  var __origWindow = window;"
-        "  window = new Proxy(__origWindow, {"
-        "    get: function(target, prop) {"
-        "      if (prop === Symbol.unscopables) return undefined;"
-        "      var val = target[prop];"
-        "      if (val === undefined && typeof prop === 'string') {"
-        "        var chain = 'window.' + prop;"
-        "        if (!__loggedChains[chain]) {"
-        "          __loggedChains[chain] = true;"
-        "          __log('UNDEFINED: ' + chain);"
-        "        }"
-        "        return __createTracker(chain);"
-        "      }"
-        "      return val;"
-        "    }"
-        "  });"
-        "  __log('Proxy installed');"
-        "}"
-    ;
-    JS_Eval(ctx, proxy_js, strlen(proxy_js), "<proxy>", 0);
-    
-    // Wrap Object.defineProperty to catch prototype assignments on undefined
-    const char *proto_trap_js = 
-        "var __origODP = Object.defineProperty;"
-        "Object.defineProperty = function(obj, prop, desc) {"
-        "  if (obj === undefined || obj === null) {"
-        "    __log('DEFINE_PROP_ERROR: obj=' + obj + ', prop=' + prop);"
-        "    return obj;"
-        "  }"
-        "  return __origODP.apply(this, arguments);"
-        "};"
-    ;
-    JS_Eval(ctx, proto_trap_js, strlen(proto_trap_js), "<proto_trap>", 0);
-    
+    // === NATIVE SETUP (moved here to be available before BROWSER_STUBS_JS) ===
     // Create XMLHttpRequest class
     JSValue xhr_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, xhr_proto, js_xhr_proto_funcs, countof(js_xhr_proto_funcs));
@@ -802,6 +657,8 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, document, "characterSet", JS_NewString(ctx, "UTF-8"));
     JS_SetPropertyStr(ctx, document, "charset", JS_NewString(ctx, "UTF-8"));
     JS_SetPropertyStr(ctx, document, "contentType", JS_NewString(ctx, "text/html"));
+    // createTreeWalker and createNodeIterator - set up after BROWSER_STUBS_JS defines TreeWalker
+    // These will be overridden by the JS stubs below, but provide safe fallbacks
     JS_SetPropertyStr(ctx, document, "createTreeWalker", JS_NewCFunction(ctx, js_dummy_function, "createTreeWalker", 3));
     JS_SetPropertyStr(ctx, document, "createNodeIterator", JS_NewCFunction(ctx, js_dummy_function, "createNodeIterator", 3));
     // document.defaultView should point to window
@@ -980,12 +837,151 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, console, "trace", JS_NewCFunction(ctx, js_console_log, "trace", 1));
     JS_SetPropertyStr(ctx, global, "console", console);
     
-    // performance
-    JSValue performance = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, performance, "now", JS_NewCFunction(ctx, js_dummy_function, "now", 0));
-    JS_SetPropertyStr(ctx, performance, "timing", JS_NewObject(ctx));
-    JS_SetPropertyStr(ctx, performance, "navigation", JS_NewObject(ctx));
-    JS_SetPropertyStr(ctx, window, "performance", performance);
+    // === THEN LOAD BROWSER_STUBS_JS ===
+    LOG_INFO("Setting up basic browser environment...");
+    JSValue stubs_result = JS_Eval(ctx, BROWSER_STUBS_JS, strlen(BROWSER_STUBS_JS), "<browser_stubs>", 0);
+    if (JS_IsException(stubs_result)) {
+        JSValue exc = JS_GetException(ctx);
+        const char *exc_str = JS_ToCString(ctx, exc);
+        LOG_ERROR("Failed to load browser stubs: %s", exc_str ? exc_str : "(unknown)");
+        JS_FreeCString(ctx, exc_str);
+        JS_FreeValue(ctx, exc);
+    } else {
+        LOG_INFO("JS: Basic browser environment ready");
+    }
+    JS_FreeValue(ctx, stubs_result);
+    
+    // Set up additional shims
+    const char *early_shim = 
+        "if (typeof window === 'undefined') { this.window = this; }"
+        "if (typeof globalThis === 'undefined') { this.globalThis = this; }"
+        // Define es5Shimmed on window and global
+        "this.es5Shimmed = true;"
+        "this.es6Shimmed = true;"
+        "this._babelPolyfill = true;"
+        // Ensure goog namespace exists (YouTube's Closure Library)
+        "var goog = goog || {};"
+        "goog.global = this;"
+        "goog.es5Shimmed = true;"
+        "goog.es6Shimmed = true;"
+        // Ensure common constructor names exist to prevent 'prototype of undefined' errors
+        "if (typeof Iterator === 'undefined') { this.Iterator = function() {}; }"
+        "if (typeof Generator === 'undefined') { this.Generator = function() {}; }"
+        "if (typeof Map === 'undefined') { this.Map = function() {}; }"
+        "if (typeof Set === 'undefined') { this.Set = function() {}; }"
+        "if (typeof WeakMap === 'undefined') { this.WeakMap = function() {}; }"
+        "if (typeof WeakSet === 'undefined') { this.WeakSet = function() {}; }"
+        "// Ensure constructors are also on window"
+        "window.Iterator = this.Iterator;"
+        "window.Generator = this.Generator;"
+        "window.Map = this.Map;"
+        "window.Set = this.Set;"
+        "window.WeakMap = this.WeakMap;"
+        "window.WeakSet = this.WeakSet;"
+        // Ensure _spf_state exists for spf.js (checked with 'in' operator)
+        "if (typeof window._spf_state === 'undefined') { window._spf_state = {}; }"
+    ;
+    JS_Eval(ctx, early_shim, strlen(early_shim), "<early_shim>", 0);
+    
+    // Ensure all window properties are proper objects (not undefined) for 'in' operator
+    const char *window_check_js = 
+        "// Ensure localStorage and sessionStorage exist on window\n"
+        "if (!window.localStorage) {\n"
+        "  window.localStorage = localStorage;\n"
+        "}\n"
+        "if (!window.sessionStorage) {\n"
+        "  window.sessionStorage = sessionStorage;\n"
+        "}\n"
+        "// Ensure navigator, location, document are objects\n"
+        "if (typeof window.navigator !== 'object') {\n"
+        "  window.navigator = {};\n"
+        "}\n"
+        "if (typeof window.location !== 'object') {\n"
+        "  window.location = {};\n"
+        "}\n"
+        "if (typeof window.document !== 'object') {\n"
+        "  window.document = {};\n"
+        "}\n"
+    ;
+    JS_Eval(ctx, window_check_js, strlen(window_check_js), "<window_check>", 0);
+    
+    // Create ALL common constructors upfront to prevent 'prototype of undefined' errors
+    const char *constructors_js = 
+        "function __log(msg) {"
+        "  if (typeof __bgmdwnldr_log === 'function') {"
+        "    __bgmdwnldr_log(msg);"
+        "  }"
+        "}"
+        "var __ctors = ['Iterator','Generator','AsyncGenerator','Map','Set','WeakMap','WeakSet',"
+        "'ArrayBuffer','SharedArrayBuffer','Uint8Array','Int8Array','Uint8ClampedArray',"
+        "'Uint16Array','Int16Array','Uint32Array','Int32Array','Float32Array','Float64Array',"
+        "'BigInt64Array','BigUint64Array','DataView','Promise','RegExp','Date','Error',"
+        "'TypeError','ReferenceError','SyntaxError','RangeError','URIError','EvalError',"
+        "'AggregateError','Symbol','Proxy','Reflect','WeakRef','FinalizationRegistry','Node','Element','Document','Window'];"
+        "for (var i=0; i<__ctors.length; i++) {"
+        "  var name=__ctors[i];"
+        "  if (typeof window[name]==='undefined') {"
+        "    __log('Creating stub: '+name);"
+        "    window[name]=function(){};"
+        "    window[name].prototype={};"
+        "  }"
+        "}"
+        "__log('Constructor setup done');"
+    ;
+    JS_Eval(ctx, constructors_js, strlen(constructors_js), "<constructors>", 0);
+    
+    // Wrap window with Proxy to detect undefined property accesses
+    const char *proxy_js = 
+        "if (typeof Proxy !== 'undefined') {"
+        "  var __loggedChains = {};"
+        "  function __createTracker(chain) {"
+        "    return new Proxy(function(){}, {"
+        "      get: function(t, p) {"
+        "        if (p === 'prototype' || p === '__proto__') return {};"
+        "        var newChain = chain + '.' + p;"
+        "        if (!__loggedChains[newChain]) {"
+        "          __loggedChains[newChain] = true;"
+        "          __log('UNDEFINED: ' + newChain);"
+        "        }"
+        "        return __createTracker(newChain);"
+        "      },"
+        "      apply: function(t, that, args) { return undefined; },"
+        "      construct: function(t, args) { return {}; }"
+        "    });"
+        "  }"
+        "  var __origWindow = window;"
+        "  window = new Proxy(__origWindow, {"
+        "    get: function(target, prop) {"
+        "      if (prop === Symbol.unscopables) return undefined;"
+        "      var val = target[prop];"
+        "      if (val === undefined && typeof prop === 'string') {"
+        "        var chain = 'window.' + prop;"
+        "        if (!__loggedChains[chain]) {"
+        "          __loggedChains[chain] = true;"
+        "          __log('UNDEFINED: ' + chain);"
+        "        }"
+        "        return __createTracker(chain);"
+        "      }"
+        "      return val;"
+        "    }"
+        "  });"
+        "  __log('Proxy installed');"
+        "}"
+    ;
+    JS_Eval(ctx, proxy_js, strlen(proxy_js), "<proxy>", 0);
+    
+    // Wrap Object.defineProperty to catch prototype assignments on undefined
+    const char *proto_trap_js = 
+        "var __origODP = Object.defineProperty;"
+        "Object.defineProperty = function(obj, prop, desc) {"
+        "  if (obj === undefined || obj === null) {"
+        "    __log('DEFINE_PROP_ERROR: obj=' + obj + ', prop=' + prop);"
+        "    return obj;"
+        "  }"
+        "  return __origODP.apply(this, arguments);"
+        "};"
+    ;
+    JS_Eval(ctx, proto_trap_js, strlen(proto_trap_js), "<proto_trap>", 0);
     
     // Event and CustomEvent constructors
     const char *event_js = 
@@ -1154,6 +1150,11 @@ static void init_browser_environment(JSContext *ctx) {
         "Node.prototype.cloneNode = function(deep) {"
         "  return new Node();"
         "};"
+        "Node.prototype.getRootNode = function(options) {"
+        "  var node = this;"
+        "  while (node.parentNode) node = node.parentNode;"
+        "  return node;"
+        "};"
         "Node.ELEMENT_NODE = 1;"
         "Node.TEXT_NODE = 3;"
         "Node.COMMENT_NODE = 8;"
@@ -1179,6 +1180,9 @@ static void init_browser_environment(JSContext *ctx) {
         "}"
         "Element.prototype = Object.create(Node.prototype);"
         "Element.prototype.constructor = Element;"
+        "Element.prototype.attachShadow = function(init) {"
+        "  return { mode: init && init.mode, host: this };"
+        "};"
         "Element.prototype.setAttribute = function(name, value) {"
         "  this.attributes[name] = value;"
         "};"
@@ -1313,6 +1317,12 @@ static void init_browser_environment(JSContext *ctx) {
         "TreeWalker.prototype.previousSibling = function() { return null; };"
         "TreeWalker.prototype.parentNode = function() { return null; };"
         "window.TreeWalker = TreeWalker;"
+        "document.createTreeWalker = function(root, whatToShow, filter, entityReferenceExpansion) {"
+        "  return new TreeWalker(root, whatToShow, filter);"
+        "};"
+        "document.createNodeIterator = function(root, whatToShow, filter) {"
+        "  return { nextNode: function() { return null; }, previousNode: function() { return null; } };"
+        "};"
     ;
     JS_Eval(ctx, dom_js, strlen(dom_js), "<dom>", 0);
     
