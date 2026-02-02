@@ -630,6 +630,8 @@ static void init_browser_environment(JSContext *ctx) {
         "window.Set = this.Set;"
         "window.WeakMap = this.WeakMap;"
         "window.WeakSet = this.WeakSet;"
+        // Ensure _spf_state exists for spf.js (checked with 'in' operator)
+        "if (typeof window._spf_state === 'undefined') { window._spf_state = {}; }"
     ;
     JS_Eval(ctx, early_shim, strlen(early_shim), "<early_shim>", 0);
     
@@ -1763,15 +1765,15 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         
         LOG_INFO("Executing script %d/%d (%zu bytes)", i + 1, script_count, script_lens[i]);
         
-        // For base.js (large player script), wrap in try-catch to let it continue on errors
-        // The signature decryption function might still be set up even if gesture code fails
+        // Wrap scripts that tend to fail in try-catch so they don't crash the whole execution
+        // The signature decryption function might still be set up even if some parts fail
         JSValue result;
-        if (script_lens[i] > 5000000) {
-            // Wrap large scripts in try-catch
+        if (script_lens[i] > 5000000 || i == 0 || i == 6 || i == 7 || i == 8) {
+            // Wrap large scripts and known problematic scripts in try-catch
             size_t wrapped_len = script_lens[i] + 100;
             char *wrapped = malloc(wrapped_len);
             if (wrapped) {
-                snprintf(wrapped, wrapped_len, "try{\n%s\n}catch(e){/*console.log('Script error:',e.message)*/}", scripts[i]);
+                snprintf(wrapped, wrapped_len, "try{\n%s\n}catch(e){/*console.log('Script %d error:',e.message)*/}", scripts[i], i);
                 result = JS_Eval(ctx, wrapped, strlen(wrapped), filename, JS_EVAL_TYPE_GLOBAL);
                 free(wrapped);
             } else {
