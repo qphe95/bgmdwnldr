@@ -711,7 +711,7 @@ static const char BROWSER_STUBS_JS[] =
     "var performance = {"
     "  now: function() { return Date.now(); },"
     "  timeOrigin: Date.now(),"
-    "  timing: {},"
+    "  timing: { navigationStart: Date.now(), responseStart: Date.now(), domLoading: Date.now(), domInteractive: Date.now(), domContentLoadedEventStart: Date.now(), domContentLoadedEventEnd: Date.now(), domComplete: Date.now(), loadEventStart: Date.now(), loadEventEnd: Date.now() },"
     "  navigation: { type: 0, redirectCount: 0 },"
     "  memory: { usedJSHeapSize: 0, totalJSHeapSize: 0, jsHeapSizeLimit: 0 },"
     "  mark: function() {},"
@@ -725,6 +725,10 @@ static const char BROWSER_STUBS_JS[] =
     "  setResourceTimingBufferSize: function() {},"
     "  toJSON: function() { return {}; }"
     "};"
+    ""
+    /* ytcsi - YouTube performance monitoring */
+    "var ytcsi = { tick: function() {}, info: function() {}, setStartTime: function() {} };"
+    "window.ytcsi = ytcsi;"
     ""
     ""
     /* Web Animations API */

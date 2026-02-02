@@ -1525,6 +1525,12 @@ static void init_browser_environment(JSContext *ctx) {
         // ytplayer - main player global
         "var ytplayer = ytplayer || {};"
         "ytplayer.config = ytplayer.config || {};"
+        "ytplayer.bootstrapPlayerContainer = ytplayer.bootstrapPlayerContainer || function() {};"
+        "ytplayer.bootstrapWebPlayerContextConfig = ytplayer.bootstrapWebPlayerContextConfig || function() { return {}; };"
+        "ytplayer.load = ytplayer.load || function() {};"
+        "ytplayer.getPlayer = ytplayer.getPlayer || function() { return null; };"
+        "ytplayer.setPlayer = ytplayer.setPlayer || function() {};"
+        "ytplayer.destroy = ytplayer.destroy || function() {};"
         
         // Polymer - web components library used by YouTube
         "var Polymer = Polymer || function() {};"
@@ -1552,6 +1558,17 @@ static void init_browser_environment(JSContext *ctx) {
         // ytsignals - used for app loading
         "window.ytsignals = window.ytsignals || {};"
         "window.ytsignals.getInstance = window.ytsignals.getInstance || function() { return { whenReady: function() { return Promise.resolve(); } }; };"
+        
+        // Initial load commands
+        "window.loadInitialCommand = window.loadInitialCommand || function() {};"
+        "window.loadInitialData = window.loadInitialData || function() {};"
+        "window.ytInitialData = window.ytInitialData || {};"
+        "window.ytInitialReelWatchSequenceResponse = window.ytInitialReelWatchSequenceResponse || {};"
+        "window.ytPreviousCsn = window.ytPreviousCsn || '';"
+        "window.__shady_native_addEventListener = window.__shady_native_addEventListener || function() {};"
+        "window.HTMLTemplateElement = window.HTMLTemplateElement || function() {};"
+        "window.CharacterData = window.CharacterData || function() {};"
+        "window.ShadyCSS = window.ShadyCSS || { prepareTemplate: function() {}, styleElement: function() {} };"
         
         // spf (Structured Page Fragments) - used by YouTube for navigation
         "var spf = spf || {};"
@@ -1893,8 +1910,8 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         "if (!goog.define) goog.define = function(name, val) { return val; };"
         "if (!goog.global) goog.global = window;"
         // Ensure ytsignals exists (used for app loading)
-        "if (typeof ytsignals === 'undefined') window.ytsignals = {};"
-        "if (!ytsignals.getInstance) ytsignals.getInstance = function() { return { whenReady: function() { return Promise.resolve(); }, get: function() { return null; }, set: function() {} }; };"
+        "if (typeof window.ytsignals === 'undefined') window.ytsignals = {};"
+        "if (!window.ytsignals.getInstance) window.ytsignals.getInstance = function() { return { whenReady: function() { return Promise.resolve(); }, get: function() { return null; }, set: function() {} }; };"
     ;
     JSValue pre_exec_result = JS_Eval(ctx, pre_exec_stubs, strlen(pre_exec_stubs), "<pre_exec_stubs>", 0);
     if (JS_IsException(pre_exec_result)) {
