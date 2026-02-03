@@ -1425,152 +1425,36 @@ static void init_browser_environment(JSContext *ctx) {
     ;
     JS_Eval(ctx, animation_js, strlen(animation_js), "<animation>", 0);
     
-    // YouTube-specific stubs - needed for player scripts
-    const char *youtube_stubs_js = 
-        // ytplayer - main player global
-        "var ytplayer = ytplayer || {};"
-        "ytplayer.config = ytplayer.config || {};"
-        "ytplayer.bootstrapPlayerContainer = ytplayer.bootstrapPlayerContainer || function() {};"
-        "ytplayer.bootstrapWebPlayerContextConfig = ytplayer.bootstrapWebPlayerContextConfig || function() { return {}; };"
-        "ytplayer.load = ytplayer.load || function() {};"
-        "ytplayer.getPlayer = ytplayer.getPlayer || function() { return null; };"
-        "ytplayer.setPlayer = ytplayer.setPlayer || function() {};"
-        "ytplayer.destroy = ytplayer.destroy || function() {};"
-        
-        // Polymer - web components library used by YouTube
-        "var Polymer = Polymer || function() {};"
-        "Polymer.Element = Polymer.Element || function() {};"
-        "Polymer.dom = Polymer.dom || function() { return { querySelector: function() { return null; } }; };"
-        "Polymer.RenderStatus = Polymer.RenderStatus || {};"
-        "Polymer.RenderStatus.afterNextRender = function() {};"
-        
-        // YouTube app globals
-        "var ytcfg = ytcfg || {};"
-        "ytcfg.set = ytcfg.set || function() {};"
-        "ytcfg.get = ytcfg.get || function() { return null; };"
-        
-        // yt namespace - comprehensive stubs
-        "var yt = yt || {};"
-        "yt.player = yt.player || {};"
-        "yt.player.Application = yt.player.Application || function() {};"
-        "yt.scheduler = yt.scheduler || {};"
-        "yt.scheduler.scheduleAppLoad = yt.scheduler.scheduleAppLoad || function() {};"
-        "yt.scheduler.cancelAppLoad = yt.scheduler.cancelAppLoad || function() {};"
-        "yt.app = yt.app || {};"
-        "yt.app.application = yt.app.application || {};"
-        "yt.app.application.createComponent = yt.app.application.createComponent || function() {};"
-        
-        // ytsignals - used for app loading
-        "if (typeof window.ytsignals !== 'object') { window.ytsignals = {}; }"
-        "if (!window.ytsignals.getInstance) { window.ytsignals.getInstance = function() { return { whenReady: function() { return Promise.resolve(); }, get: function() { return null; }, set: function() {} }; }; }"
-        
-        // Initial load commands
-        "window.loadInitialCommand = window.loadInitialCommand || function() {};"
-        "window.loadInitialData = window.loadInitialData || function() {};"
-        "window.ytInitialData = window.ytInitialData || {};"
-        "window.ytInitialReelWatchSequenceResponse = window.ytInitialReelWatchSequenceResponse || {};"
-        "window.ytPreviousCsn = window.ytPreviousCsn || '';"
-        "window.__shady_native_addEventListener = window.__shady_native_addEventListener || function() {};"
-        "window.HTMLTemplateElement = window.HTMLTemplateElement || function() {};"
-        "window.CharacterData = window.CharacterData || function() {};"
-        "window.ShadyCSS = window.ShadyCSS || { prepareTemplate: function() {}, styleElement: function() {} };"
-        
-        // spf (Structured Page Fragments) - used by YouTube for navigation
-        "var spf = spf || {};"
-        "spf.init = spf.init || function() {};"
-        "spf.navigate = spf.navigate || function() {};"
-        "spf.load = spf.load || function() {};"
-        "spf.process = spf.process || function() {};"
-        "spf.prefetch = spf.prefetch || function() {};"
-        
-        // Google Closure library namespace
-        "var goog = goog || {};"
-        "goog.global = window;"
-        "goog.require = goog.require || function() {};"
-        "goog.provide = goog.provide || function() {};"
-        "goog.module = goog.module || function() {};"
-        "goog.exportSymbol = goog.exportSymbol || function() {};"
-        "goog.exportProperty = goog.exportProperty || function() {};"
-        "goog.inherits = goog.inherits || function() {};"
-        "goog.base = goog.base || function() {};"
-        
-        // Common missing functions that cause "not a function" errors
+    // Browser polyfills (NOT YouTube-specific - these are standard Web APIs)
+    const char *browser_polyfills_js = 
+        // queueMicrotask
         "if (typeof queueMicrotask === 'undefined') {"
         "  window.queueMicrotask = function(fn) { setTimeout(fn, 0); };"
         "}"
+        // requestIdleCallback/cancelIdleCallback
         "if (typeof requestIdleCallback === 'undefined') {"
         "  window.requestIdleCallback = function(fn) { return setTimeout(fn, 1); };"
         "}"
         "if (typeof cancelIdleCallback === 'undefined') {"
         "  window.cancelIdleCallback = function(id) { clearTimeout(id); };"
         "}"
-        
-        // Fix for "cannot read property of undefined" errors
-        "window.yt = window.yt || yt;"
-        "window.ytcfg = window.ytcfg || ytcfg;"
-        "window.ytplayer = window.ytplayer || ytplayer;"
-        "window.goog = window.goog || goog;"
-        "window.spf = window.spf || spf;"
-        "window.Polymer = window.Polymer || Polymer;"
-        
-        // Additional stubs for functions that might be called but not defined
+        // getComputedStyle
         "window.getComputedStyle = window.getComputedStyle || function() { return {}; };"
+        // matchMedia
         "window.matchMedia = window.matchMedia || function() { return { matches: false, addListener: function() {}, removeListener: function() {} }; };"
+        // CustomEvent
         "window.CustomEvent = window.CustomEvent || window.Event;"
-        
-        // Object.prototype stubs that might be missing
-        "if (!Object.prototype.hasOwnProperty) { Object.prototype.hasOwnProperty = function(key) { return key in this; }; }"
-        "if (!Object.prototype.toString) { Object.prototype.toString = function() { return '[object Object]'; }; }"
-        
-        // Array.prototype stubs
+        // Array.prototype polyfills
         "if (!Array.prototype.includes) { Array.prototype.includes = function(item) { return this.indexOf(item) !== -1; }; }"
         "if (!Array.prototype.find) { Array.prototype.find = function(fn) { for (var i = 0; i < this.length; i++) if (fn(this[i], i, this)) return this[i]; }; }"
         "if (!Array.prototype.findIndex) { Array.prototype.findIndex = function(fn) { for (var i = 0; i < this.length; i++) if (fn(this[i], i, this)) return i; return -1; }; }"
-        
-        // String.prototype stubs
+        // String.prototype polyfills
         "if (!String.prototype.startsWith) { String.prototype.startsWith = function(s) { return this.indexOf(s) === 0; }; }"
         "if (!String.prototype.endsWith) { String.prototype.endsWith = function(s) { return this.slice(-s.length) === s; }; }"
         "if (!String.prototype.includes) { String.prototype.includes = function(s) { return this.indexOf(s) !== -1; }; }"
     ;
-    JSValue yt_stubs_result = JS_Eval(ctx, youtube_stubs_js, strlen(youtube_stubs_js), "<youtube_stubs>", 0);
-    if (JS_IsException(yt_stubs_result)) {
-        JSValue exception = JS_GetException(ctx);
-        const char *error = JS_ToCString(ctx, exception);
-        LOG_ERROR("YouTube stubs error: %s", error ? error : "unknown");
-        JS_FreeCString(ctx, error);
-        JS_FreeValue(ctx, exception);
-    } else {
-        LOG_INFO("YouTube stubs loaded successfully");
-    }
-    JS_FreeValue(ctx, yt_stubs_result);
-    
-    // Verify ytsignals was set up
-    JSValue ytsignals_check = JS_Eval(ctx, "typeof window.ytsignals", 23, "<check>", 0);
-    const char *ytsignals_type = JS_ToCString(ctx, ytsignals_check);
-    LOG_INFO("After stubs: window.ytsignals = %s", ytsignals_type ? ytsignals_type : "unknown");
-    JS_FreeCString(ctx, ytsignals_type);
-    JS_FreeValue(ctx, ytsignals_check);
-    
-    // Check if getInstance exists
-    JSValue getinstance_check = JS_Eval(ctx, "typeof (window.ytsignals && window.ytsignals.getInstance)", 45, "<check>", 0);
-    const char *getinstance_type = JS_ToCString(ctx, getinstance_check);
-    LOG_INFO("After stubs: window.ytsignals.getInstance = %s", getinstance_type ? getinstance_type : "unknown");
-    JS_FreeCString(ctx, getinstance_type);
-    JS_FreeValue(ctx, getinstance_check);
-    
-    // Check window.yt existence
-    JSValue yt_check = JS_Eval(ctx, "typeof window.yt", 16, "<check>", 0);
-    const char *yt_type = JS_ToCString(ctx, yt_check);
-    LOG_INFO("After stubs: window.yt = %s", yt_type ? yt_type : "unknown");
-    JS_FreeCString(ctx, yt_type);
-    JS_FreeValue(ctx, yt_check);
-    
-    // Check window.ytcfg existence  
-    JSValue ytcfg_check = JS_Eval(ctx, "typeof window.ytcfg", 19, "<check>", 0);
-    const char *ytcfg_type = JS_ToCString(ctx, ytcfg_check);
-    LOG_INFO("After stubs: window.ytcfg = %s", ytcfg_type ? ytcfg_type : "unknown");
-    JS_FreeCString(ctx, ytcfg_type);
-    JS_FreeValue(ctx, ytcfg_check);
+    JSValue polyfills_result = JS_Eval(ctx, browser_polyfills_js, strlen(browser_polyfills_js), "<polyfills>", 0);
+    JS_FreeValue(ctx, polyfills_result);
     
     JS_FreeValue(ctx, global);
 }
