@@ -638,12 +638,17 @@ static char* extract_yt_player_response(const char *html) {
                 }
             }
             
-            if (!escape && *p_json == '"') {
-                in_string = !in_string;
-            } else if (!escape && *p_json == '\\') {
-                escape = true;
+            if (escape) {
+                // Previous character was a backslash, so this character is escaped.
+                // Clear escape flag unless this is also a backslash (\\ means second \ starts a new escape).
+                escape = (*p_json == '\\');
             } else {
-                escape = false;
+                // Not currently escaping
+                if (*p_json == '"') {
+                    in_string = !in_string;
+                } else if (*p_json == '\\') {
+                    escape = true;
+                }
             }
             
             p_json++;
