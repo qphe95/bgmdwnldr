@@ -253,7 +253,8 @@ static char* clean_json_content(const char *input, size_t input_len) {
 #define MAX_SCRIPT_URLS 32
 #define SCRIPT_URL_MAX_LEN 512
 #define MAX_SCRIPTS 64  // Total scripts (external + inline)
-#define MAX_HTML_SIZE (10 * 1024 * 1024)  // 10MB max for large YouTube pages
+#define MAX_HTML_SIZE (20 * 1024 * 1024)  // 20MB max for large YouTube pages with big JSON payloads
+#define MAX_JSON_SIZE (2 * 1024 * 1024)   // 2MB max for individual JSON payloads (ytInitialPlayerResponse)
 
 // Script types
 typedef enum {
@@ -573,8 +574,82 @@ static char* extract_video_title(const char *player_response) {
     return title;
 }
 
-// Extract ytInitialPlayerResponse from HTML
+// Find the true end of a script tag, handling strings and comments
+// This prevents premature termination when </script> appears inside JS strings
+static const char* find_script_end(const char *content_start) {
+    if (!content_start) return NULL;
+    
+    const char *p = content_start;
+    bool in_string = false;
+    char string_char = 0;
+    bool escape = false;
+    int comment_state = 0;  // 0=none, 1=maybe single-line, 2=single-line, 3=maybe multi, 4=multi
+    
+    while (*p) {
+        // Handle comments
+        if (!in_string) {
+            if (comment_state == 0) {
+                if (*p == '/') {
+                    comment_state = 1;  // Maybe starting comment
+                }
+            } else if (comment_state == 1) {
+                if (*p == '/') {
+                    comment_state = 2;  // Single-line comment started
+                } else if (*p == '*') {
+                    comment_state = 4;  // Multi-line comment started
+                } else {
+                    comment_state = 0;  // Not a comment
+                }
+            } else if (comment_state == 2) {
+                if (*p == '\n') {
+                    comment_state = 0;  // End single-line comment
+                }
+            } else if (comment_state == 4) {
+                if (*p == '*') {
+                    comment_state = 3;  // Maybe ending multi-line
+                }
+            } else if (comment_state == 3) {
+                if (*p == '/') {
+                    comment_state = 0;  // End multi-line comment
+                } else if (*p != '*') {
+                    comment_state = 4;  // Still in multi-line comment
+                }
+            }
+            
+            // Check for </script> when not in string and not in comment
+            if (comment_state == 0 && *p == '<') {
+                if (strncasecmp(p, "</script>", 9) == 0) {
+                    return p;  // Found actual script end
+                }
+            }
+        }
+        
+        // Handle strings
+        if (comment_state == 0) {
+            if (escape) {
+                escape = false;
+            } else if (*p == '\\') {
+                escape = true;
+            } else if (!in_string) {
+                if (*p == '"' || *p == '\'' || *p == '`') {
+                    in_string = true;
+                    string_char = *p;
+                }
+            } else {
+                if (*p == string_char) {
+                    in_string = false;
+                    string_char = 0;
+                }
+            }
+        }
+        
+        p++;
+    }
+    
+    return NULL;  // No closing tag found
+}
 
+// Extract ytInitialPlayerResponse from HTML with support for large payloads
 static char* extract_yt_player_response(const char *html) {
     if (!html) return NULL;
     
@@ -610,14 +685,17 @@ static char* extract_yt_player_response(const char *html) {
                     if (brace_depth == 0) {
                         // Found complete JSON
                         size_t len = p_json - start + 1;
-                        if (len > 10 * 1024 * 1024) {  // Sanity check: max 10MB
-                            LOG_ERROR("JSON too large: %zu bytes", len);
+                        if (len > MAX_JSON_SIZE) {  // Sanity check: max 2MB
+                            LOG_ERROR("JSON too large: %zu bytes (max %d)", len, MAX_JSON_SIZE);
                             return NULL;
                         }
                         
                         // Extract raw JSON content
                         char *raw_json = malloc(len + 1);
-                        if (!raw_json) return NULL;
+                        if (!raw_json) {
+                            LOG_ERROR("Failed to allocate %zu bytes for JSON", len + 1);
+                            return NULL;
+                        }
                         
                         memcpy(raw_json, start, len);
                         raw_json[len] = '\0';
@@ -639,16 +717,11 @@ static char* extract_yt_player_response(const char *html) {
             }
             
             if (escape) {
-                // Previous character was a backslash, so this character is escaped.
-                // Clear escape flag unless this is also a backslash (\\ means second \ starts a new escape).
-                escape = (*p_json == '\\');
-            } else {
-                // Not currently escaping
-                if (*p_json == '"') {
-                    in_string = !in_string;
-                } else if (*p_json == '\\') {
-                    escape = true;
-                }
+                escape = false;
+            } else if (*p_json == '\\') {
+                escape = true;
+            } else if (*p_json == '"') {
+                in_string = !in_string;
             }
             
             p_json++;
@@ -766,18 +839,9 @@ static int extract_inline_scripts(const char *html, char **out_scripts, int max_
             continue;
         }
         
-        // Find the closing </script> tag (case insensitive)
+        // Find the closing </script> tag using robust parser (handles strings)
         const char *content_start = tag_end + 1;
-        const char *script_end = NULL;
-        const char *search = content_start;
-        
-        while ((search = strstr(search, "<")) != NULL) {
-            if (strncasecmp(search, "</script>", 9) == 0) {
-                script_end = search;
-                break;
-            }
-            search++;
-        }
+        const char *script_end = find_script_end(content_start);
         
         if (!script_end) {
             LOG_WARN("No closing </script> tag found");
@@ -799,30 +863,17 @@ static int extract_inline_scripts(const char *html, char **out_scripts, int max_
         if (*first_nonspace == '{' || *first_nonspace == '[') {
             skip = true; // Might be JSON, skip
         }
-        // Skip data payload scripts that cause parsing issues
-        if (strncmp(first_nonspace, "var ytInitialPlayerResponse", 27) == 0 ||
-            strncmp(first_nonspace, "window.ytInitialPlayerResponse", 30) == 0 ||
-            (strncmp(first_nonspace, "(function()", 11) == 0 && strstr(first_nonspace, "window.ytAtR") != NULL)) {
-            skip = true; // Data payload scripts - not needed for signature decryption
-        }
-        // Skip very large scripts (>500KB) as they're likely data, not code
-        if (content_len > 500000) {
-            skip = true;
-        }
         
         if (skip) {
             p = script_end + 9;
             continue;
         }
         
-        // Extract the script content
+        // Extract the script content with proper handling for large scripts
         char *script = malloc(content_len + 1);
         if (script) {
             memcpy(script, content_start, content_len);
             script[content_len] = '\0';
-            
-            // Note: QuickJS has been modified to handle all characters properly
-            // No sanitization needed - pass raw script content
             
             // Only keep script if it has meaningful content
             if (content_len > 50) {
@@ -832,6 +883,8 @@ static int extract_inline_scripts(const char *html, char **out_scripts, int max_
             } else {
                 free(script);
             }
+        } else {
+            LOG_ERROR("Failed to allocate %zu bytes for script", content_len + 1);
         }
         
         p = script_end + 9;
@@ -998,16 +1051,9 @@ static int extract_scripts_in_order(const char *html, ScriptInfo *scripts, int m
         } else {
             // Inline script - find the closing </script> tag
             const char *content_start = tag_end + 1;
-            const char *script_end = NULL;
-            const char *search = content_start;
             
-            while ((search = strstr(search, "<")) != NULL) {
-                if (strncasecmp(search, "</script>", 9) == 0) {
-                    script_end = search;
-                    break;
-                }
-                search++;
-            }
+            // Use robust script end finder that handles strings with </script>
+            const char *script_end = find_script_end(content_start);
             
             if (!script_end) {
                 LOG_WARN("No closing </script> tag found");
@@ -1022,26 +1068,44 @@ static int extract_scripts_in_order(const char *html, ScriptInfo *scripts, int m
                 continue;
             }
             
-            // Note: We now execute ALL scripts including data payload scripts
-            // They will define ytInitialPlayerResponse, ytInitialData, etc. naturally
-            // This is more reliable than manual JSON extraction and injection
-            
-            // Extract the script content
-            char *script_content = malloc(content_len + 1);
-            if (script_content) {
-                memcpy(script_content, content_start, content_len);
-                script_content[content_len] = '\0';
-                
-                scripts[count].url[0] = '\0';
-                scripts[count].parse_order = parse_order++;
-                scripts[count].type = SCRIPT_TYPE_INLINE;
-                scripts[count].content = script_content;
-                scripts[count].content_len = content_len;
-                
-                LOG_INFO("Found inline script [%d]: %zu bytes", 
-                         scripts[count].parse_order, content_len);
-                count++;
+            // Warn about very large scripts but still process them
+            if (content_len > 500000) {
+                LOG_INFO("Found large inline script: %zu bytes (may be data payload)", content_len);
             }
+            
+            // Extract the script content with proper size handling for large payloads
+            char *script_content = NULL;
+            
+            // For very large scripts, verify we can allocate the memory
+            if (content_len > 1000000) {
+                // Try to allocate, if it fails, skip this script
+                script_content = malloc(content_len + 1);
+                if (!script_content) {
+                    LOG_ERROR("Failed to allocate %zu bytes for script content", content_len + 1);
+                    p = script_end + 9;
+                    continue;
+                }
+            } else {
+                script_content = malloc(content_len + 1);
+                if (!script_content) {
+                    LOG_ERROR("Failed to allocate %zu bytes for script content", content_len + 1);
+                    p = script_end + 9;
+                    continue;
+                }
+            }
+            
+            memcpy(script_content, content_start, content_len);
+            script_content[content_len] = '\0';
+            
+            scripts[count].url[0] = '\0';
+            scripts[count].parse_order = parse_order++;
+            scripts[count].type = SCRIPT_TYPE_INLINE;
+            scripts[count].content = script_content;
+            scripts[count].content_len = content_len;
+            
+            LOG_INFO("Found inline script [%d]: %zu bytes", 
+                     scripts[count].parse_order, content_len);
+            count++;
             
             p = script_end + 9;
         }
