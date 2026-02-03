@@ -5,7 +5,6 @@
 #include <pthread.h>
 #include <android/log.h>
 #include <stdint.h>
-#include "cJSON.h"
 #include "html_media_extract.h"
 #include "http_download.h"
 #include "js_quickjs.h"
@@ -411,145 +410,7 @@ static bool parse_signature_cipher(const char *cipher_text, char *out_url, size_
     return out_url[0] != '\0';
 }
 
-// Parse a single format object using cJSON
-static void parse_format_object(cJSON *format, MediaStream *stream) {
-    if (!format || !stream) return;
-    
-    memset(stream, 0, sizeof(MediaStream));
-    
-    // Get itag
-    cJSON *itag = cJSON_GetObjectItemCaseSensitive(format, "itag");
-    if (cJSON_IsNumber(itag)) {
-        stream->itag = itag->valueint;
-    }
-    
-    // Get mimeType
-    cJSON *mime = cJSON_GetObjectItemCaseSensitive(format, "mimeType");
-    if (cJSON_IsString(mime)) {
-        strncpy(stream->mime_type, mime->valuestring, sizeof(stream->mime_type) - 1);
-    }
-    
-    // Get width/height
-    cJSON *width = cJSON_GetObjectItemCaseSensitive(format, "width");
-    if (cJSON_IsNumber(width)) {
-        stream->width = width->valueint;
-    }
-    
-    cJSON *height = cJSON_GetObjectItemCaseSensitive(format, "height");
-    if (cJSON_IsNumber(height)) {
-        stream->height = height->valueint;
-    }
-    
-    // Get qualityLabel
-    cJSON *quality = cJSON_GetObjectItemCaseSensitive(format, "qualityLabel");
-    if (cJSON_IsString(quality)) {
-        strncpy(stream->quality, quality->valuestring, sizeof(stream->quality) - 1);
-    }
-    
-    // Try to get URL directly
-    cJSON *url = cJSON_GetObjectItemCaseSensitive(format, "url");
-    if (cJSON_IsString(url)) {
-        strncpy(stream->url, url->valuestring, sizeof(stream->url) - 1);
-        stream->has_cipher = false;
-    } else {
-        // Try signatureCipher
-        cJSON *cipher = cJSON_GetObjectItemCaseSensitive(format, "signatureCipher");
-        if (!cipher) {
-            cipher = cJSON_GetObjectItemCaseSensitive(format, "cipher");
-        }
-        if (cJSON_IsString(cipher)) {
-            char decoded_url[2048];
-            char sig[512];
-            if (parse_signature_cipher(cipher->valuestring, decoded_url, sizeof(decoded_url), 
-                                        sig, sizeof(sig))) {
-                strncpy(stream->url, decoded_url, sizeof(stream->url) - 1);
-                stream->has_cipher = true;
-                LOG_INFO("Parsed cipher for itag=%d, has sig=%s", stream->itag, sig[0] ? "yes" : "no");
-            }
-        }
-    }
-    
-    LOG_INFO("Parsed stream: itag=%d, url=%.50s%s, mime=%s, has_cipher=%d", 
-             stream->itag, 
-             stream->url[0] ? stream->url : "(empty)",
-             strlen(stream->url) > 50 ? "..." : "",
-             stream->mime_type[0] ? stream->mime_type : "(empty)",
-             stream->has_cipher);
-}
 
-// Parse ytInitialPlayerResponse using cJSON
-static int parse_yt_player_response(const char *json, MediaStream *streams, int max_streams) {
-    if (!json || !streams || max_streams <= 0) return 0;
-    
-    LOG_INFO("Parsing player response with cJSON (%zu bytes)", strlen(json));
-    
-    cJSON *root = cJSON_Parse(json);
-    if (!root) {
-        const char *error_ptr = cJSON_GetErrorPtr();
-        if (error_ptr) {
-            size_t error_pos = error_ptr - json;
-            LOG_ERROR("cJSON parse error at position %zu: %.50s", error_pos, error_ptr);
-            // Log context around error
-            if (error_pos > 30) {
-                LOG_ERROR("Context before error: ...%.30s", error_ptr - 30);
-            }
-            // Also log the character code at error position
-            LOG_ERROR("Character at error: 0x%02X (decimal %d)", (unsigned char)*error_ptr, (unsigned char)*error_ptr);
-        } else {
-            LOG_ERROR("cJSON parse error (unknown position)");
-        }
-        return 0;
-    }
-    
-    // Navigate to streamingData
-    cJSON *streaming_data = cJSON_GetObjectItemCaseSensitive(root, "streamingData");
-    if (!streaming_data) {
-        LOG_WARN("No streamingData found in player response");
-        cJSON_Delete(root);
-        return 0;
-    }
-    
-    int count = 0;
-    
-    // Parse formats array
-    cJSON *formats = cJSON_GetObjectItemCaseSensitive(streaming_data, "formats");
-    if (cJSON_IsArray(formats)) {
-        int format_count = cJSON_GetArraySize(formats);
-        LOG_INFO("Found %d formats", format_count);
-        
-        for (int i = 0; i < format_count && count < max_streams; i++) {
-            cJSON *format = cJSON_GetArrayItem(formats, i);
-            if (format) {
-                parse_format_object(format, &streams[count]);
-                if (streams[count].itag > 0) {
-                    count++;
-                }
-            }
-        }
-    }
-    
-    // Parse adaptiveFormats array
-    cJSON *adaptive_formats = cJSON_GetObjectItemCaseSensitive(streaming_data, "adaptiveFormats");
-    if (cJSON_IsArray(adaptive_formats)) {
-        int adaptive_count = cJSON_GetArraySize(adaptive_formats);
-        LOG_INFO("Found %d adaptive formats", adaptive_count);
-        
-        for (int i = 0; i < adaptive_count && count < max_streams; i++) {
-            cJSON *format = cJSON_GetArrayItem(adaptive_formats, i);
-            if (format) {
-                parse_format_object(format, &streams[count]);
-                if (streams[count].itag > 0) {
-                    count++;
-                }
-            }
-        }
-    }
-    
-    cJSON_Delete(root);
-    
-    LOG_INFO("Parsed %d total streams", count);
-    return count;
-}
 
 // Find the true end of a script tag, handling strings and comments
 // This prevents premature termination when </script> appears inside JS strings
@@ -1042,12 +903,12 @@ static bool extract_yt_video_id(const char *url, char *out_id, size_t out_len) {
     return false;
 }
 
-// Execute player scripts and extract player response from JS context
-// Returns malloc'd player response JSON, or NULL on failure
-static char* execute_scripts_and_get_player_response(const char *html) {
-    if (!html) return NULL;
+// Execute player scripts and get captured URLs
+// Returns number of URLs captured, fills urls array
+static int execute_scripts_and_get_urls(const char *html, char urls[][2048], int max_urls) {
+    if (!html || !urls || max_urls <= 0) return 0;
     
-    LOG_INFO("Executing player scripts to extract data...");
+    LOG_INFO("Executing player scripts to capture URLs...");
     
     // Extract all scripts in parse order
     ScriptInfo scripts[MAX_SCRIPTS];
@@ -1056,7 +917,7 @@ static char* execute_scripts_and_get_player_response(const char *html) {
     
     if (script_count == 0) {
         LOG_ERROR("No scripts found in HTML");
-        return NULL;
+        return 0;
     }
     
     LOG_INFO("Found %d scripts to execute", script_count);
@@ -1132,7 +993,7 @@ static char* execute_scripts_and_get_player_response(const char *html) {
     if (exec_count == 0) {
         LOG_ERROR("No valid scripts to execute");
         free_script_infos(scripts, script_count);
-        return NULL;
+        return 0;
     }
     
     LOG_INFO("Executing %d scripts...", exec_count);
@@ -1149,20 +1010,25 @@ static char* execute_scripts_and_get_player_response(const char *html) {
     
     if (!js_success) {
         LOG_ERROR("JavaScript execution failed");
-        return NULL;
+        return 0;
     }
     
-    LOG_INFO("JavaScript execution successful");
+    LOG_INFO("JavaScript execution successful, captured %d URLs", js_result.captured_url_count);
     
-    // Get player response from JS context
-    char *player_response = js_quickjs_get_player_response();
-    if (player_response) {
-        LOG_INFO("Got player response from JS context: %zu bytes", strlen(player_response));
-    } else {
-        LOG_WARN("No player response available in JS context");
+    // Copy captured URLs to output array
+    int count = 0;
+    for (int i = 0; i < js_result.captured_url_count && count < max_urls; i++) {
+        // Only keep googlevideo.com URLs (the actual media URLs)
+        if (strstr(js_result.captured_urls[i], "googlevideo.com")) {
+            strncpy(urls[count], js_result.captured_urls[i], 2047);
+            urls[count][2047] = '\0';
+            LOG_INFO("Captured media URL %d: %.100s...", count, urls[count]);
+            count++;
+        }
     }
     
-    return player_response;
+    LOG_INFO("Found %d googlevideo.com URLs", count);
+    return count;
 }
 
 // Main extraction function
@@ -1214,39 +1080,43 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
     
     LOG_INFO("Downloaded %zu bytes of HTML", html_buffer.size);
     
-    // Execute scripts and get player response from JS context
-    char *player_response = execute_scripts_and_get_player_response(html_buffer.data);
-    if (!player_response) {
-        LOG_ERROR("Failed to get player response from JS context");
-        http_free_buffer(&html_buffer);
+    // Execute scripts and capture URLs
+    char urls[32][2048];
+    int url_count = execute_scripts_and_get_urls(html_buffer.data, urls, 32);
+    
+    http_free_buffer(&html_buffer);
+    
+    if (url_count == 0) {
+        LOG_ERROR("No URLs captured from script execution");
         return -1;
     }
     
-    // Parse streams from player response using cJSON
-    int stream_count = parse_yt_player_response(player_response, streams, max_streams);
-    
-    if (stream_count == 0) {
-        LOG_WARN("No streams found in player response");
-    } else {
-        LOG_INFO("Found %d streams in player response", stream_count);
-    }
-    
-    // Extract title from parsed JSON
-    cJSON *root = cJSON_Parse(player_response);
-    if (root) {
-        cJSON *video_details = cJSON_GetObjectItemCaseSensitive(root, "videoDetails");
-        if (video_details) {
-            cJSON *title_obj = cJSON_GetObjectItemCaseSensitive(video_details, "title");
-            if (cJSON_IsString(title_obj)) {
-                LOG_INFO("Video title: %s", title_obj->valuestring);
-            }
+    // Fill MediaStream array from captured URLs
+    int stream_count = 0;
+    for (int i = 0; i < url_count && stream_count < max_streams; i++) {
+        memset(&streams[stream_count], 0, sizeof(MediaStream));
+        strncpy(streams[stream_count].url, urls[i], sizeof(streams[stream_count].url) - 1);
+        streams[stream_count].url[sizeof(streams[stream_count].url) - 1] = '\0';
+        
+        // Try to extract itag from URL
+        const char *itag = strstr(urls[i], "itag=");
+        if (itag) {
+            streams[stream_count].itag = atoi(itag + 5);
         }
-        cJSON_Delete(root);
+        
+        // Check if it's audio or video based on URL patterns
+        if (strstr(urls[i], "mime=audio")) {
+            strncpy(streams[stream_count].mime_type, "audio/mp4", sizeof(streams[stream_count].mime_type) - 1);
+        } else if (strstr(urls[i], "mime=video")) {
+            strncpy(streams[stream_count].mime_type, "video/mp4", sizeof(streams[stream_count].mime_type) - 1);
+        }
+        
+        LOG_INFO("Stream %d: itag=%d, url=%.50s...", 
+                 stream_count, streams[stream_count].itag, streams[stream_count].url);
+        stream_count++;
     }
     
-    free(player_response);
-    http_free_buffer(&html_buffer);
-    
+    LOG_INFO("Found %d streams from captured URLs", stream_count);
     return stream_count;
 }
 
@@ -1264,72 +1134,32 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
     // Clear output
     memset(outCandidate, 0, sizeof(HtmlMediaCandidate));
     
-    // Execute scripts and get player response from JS context
-    char *player_response = execute_scripts_and_get_player_response(html);
-    if (!player_response) {
+    // Execute scripts and capture URLs
+    char urls[32][2048];
+    int url_count = execute_scripts_and_get_urls(html, urls, 32);
+    
+    if (url_count == 0) {
+        LOG_WARN("No URLs captured from script execution");
         if (err && errLen > 0) {
-            strncpy(err, "Failed to get player response from JS context", errLen - 1);
+            strncpy(err, "No media URLs found", errLen - 1);
             err[errLen - 1] = '\0';
         }
         return false;
     }
     
-    // Parse streams from player response using cJSON
-    MediaStream streams[32];
-    int stream_count = parse_yt_player_response(player_response, streams, 32);
-    
-    if (stream_count == 0) {
-        LOG_WARN("No streams found in player response");
-        free(player_response);
-        if (err && errLen > 0) {
-            strncpy(err, "No streams found in player response", errLen - 1);
-            err[errLen - 1] = '\0';
-        }
-        return false;
-    }
-    
-    free(player_response);
-    
-    // Find the best stream (prefer video with highest quality and direct URL)
-    MediaStream *best = NULL;
-    
-    // First, try to find a stream without cipher (direct URL)
-    for (int i = 0; i < stream_count; i++) {
-        if (streams[i].url[0] && !streams[i].has_cipher) {
-            // Prefer higher resolution
-            if (!best || streams[i].height > best->height) {
-                best = &streams[i];
-            }
-        }
-    }
-    
-    // If no direct URL found, use first available with URL
-    if (!best) {
-        for (int i = 0; i < stream_count; i++) {
-            if (streams[i].url[0]) {
-                best = &streams[i];
-                break;
-            }
-        }
-    }
-    
-    if (!best) {
-        if (err && errLen > 0) {
-            strncpy(err, "No valid stream URLs found", errLen - 1);
-            err[errLen - 1] = '\0';
-        }
-        return false;
-    }
-    
-    // Use the stream URL (should already be decrypted from JS context)
-    strncpy(outCandidate->url, best->url, sizeof(outCandidate->url) - 1);
+    // Use the first captured URL
+    strncpy(outCandidate->url, urls[0], sizeof(outCandidate->url) - 1);
     outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
     
-    strncpy(outCandidate->mime, best->mime_type, sizeof(outCandidate->mime) - 1);
+    // Guess MIME type from URL
+    if (strstr(urls[0], "mime=audio")) {
+        strncpy(outCandidate->mime, "audio/mp4", sizeof(outCandidate->mime) - 1);
+    } else {
+        strncpy(outCandidate->mime, "video/mp4", sizeof(outCandidate->mime) - 1);
+    }
     outCandidate->mime[sizeof(outCandidate->mime) - 1] = '\0';
     
-    LOG_INFO("Selected best stream: itag=%d, height=%d, has_cipher=%d, url=%.50s...",
-             best->itag, best->height, best->has_cipher, outCandidate->url);
+    LOG_INFO("Selected URL: %.50s...", outCandidate->url);
     
     return true;
 }

@@ -48,12 +48,6 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
 /* Get captured URLs from global storage (for backward compatibility) */
 int js_quickjs_get_captured_urls(char urls[][JS_MAX_URL_LEN], int max_urls);
 
-/* Get ytInitialPlayerResponse JSON from JS context after script execution
- * Returns: malloc'd string containing the JSON, or NULL if not available
- * Caller must free the returned string
- */
-char* js_quickjs_get_player_response(void);
-
 #ifdef __cplusplus
 }
 #endif

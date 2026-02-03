@@ -1580,9 +1580,6 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
     return count;
 }
 
-// Forward declaration
-static void extract_player_response_from_context(JSContext *ctx);
-
 bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens, 
                              int script_count, const char *html, 
                              JsExecResult *out_result) {
@@ -2007,9 +2004,6 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         LOG_INFO("  URL %d: %.100s...", i, out_result->captured_urls[i]);
     }
     
-    // Extract ytInitialPlayerResponse from JS context
-    extract_player_response_from_context(ctx);
-    
     out_result->status = (success_count > 0) ? JS_EXEC_SUCCESS : JS_EXEC_ERROR;
     
     // Cleanup
@@ -2029,68 +2023,4 @@ int js_quickjs_get_captured_urls(char urls[][JS_MAX_URL_LEN], int max_urls) {
     }
     pthread_mutex_unlock(&g_url_mutex);
     return count;
-}
-
-// Global storage for player response JSON
-static pthread_mutex_t g_player_response_mutex = PTHREAD_MUTEX_INITIALIZER;
-static char *g_player_response_json = NULL;
-
-/* Extract ytInitialPlayerResponse from JS context as JSON string
- * This is called internally after script execution
- */
-static void extract_player_response_from_context(JSContext *ctx) {
-    pthread_mutex_lock(&g_player_response_mutex);
-    
-    // Free any previous response
-    if (g_player_response_json) {
-        free(g_player_response_json);
-        g_player_response_json = NULL;
-    }
-    
-    // Get ytInitialPlayerResponse from global object
-    JSValue global = JS_GetGlobalObject(ctx);
-    JSValue player_response = JS_GetPropertyStr(ctx, global, "ytInitialPlayerResponse");
-    JS_FreeValue(ctx, global);
-    
-    if (JS_IsUndefined(player_response) || JS_IsNull(player_response)) {
-        LOG_WARN("ytInitialPlayerResponse not found in JS context");
-        pthread_mutex_unlock(&g_player_response_mutex);
-        return;
-    }
-    
-    // Convert to JSON string
-    JSValue json_str = JS_JSONStringify(ctx, player_response, JS_UNDEFINED, JS_UNDEFINED);
-    JS_FreeValue(ctx, player_response);
-    
-    if (JS_IsException(json_str)) {
-        LOG_ERROR("Failed to stringify ytInitialPlayerResponse");
-        JSValue exception = JS_GetException(ctx);
-        JS_FreeValue(ctx, exception);
-        pthread_mutex_unlock(&g_player_response_mutex);
-        return;
-    }
-    
-    const char *str = JS_ToCString(ctx, json_str);
-    if (str) {
-        g_player_response_json = strdup(str);
-        LOG_INFO("Extracted ytInitialPlayerResponse: %zu bytes", strlen(g_player_response_json));
-        JS_FreeCString(ctx, str);
-    }
-    
-    JS_FreeValue(ctx, json_str);
-    pthread_mutex_unlock(&g_player_response_mutex);
-}
-
-/* Get ytInitialPlayerResponse JSON from JS context after script execution
- * Returns: malloc'd string containing the JSON, or NULL if not available
- * Caller must free the returned string
- */
-char* js_quickjs_get_player_response(void) {
-    pthread_mutex_lock(&g_player_response_mutex);
-    char *result = NULL;
-    if (g_player_response_json) {
-        result = strdup(g_player_response_json);
-    }
-    pthread_mutex_unlock(&g_player_response_mutex);
-    return result;
 }
