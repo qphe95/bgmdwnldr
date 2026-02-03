@@ -3,9 +3,7 @@ package com.bgmdwldr.vulkan;
 import android.app.NativeActivity;
 import android.graphics.Rect;
 import android.os.Bundle;
-import android.text.Editable;
 import android.text.InputType;
-import android.text.TextWatcher;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewTreeObserver;
@@ -60,23 +58,11 @@ public class MainActivity extends NativeActivity {
             }
         );
 
-        // Text input handling
-        input.addTextChangedListener(new TextWatcher() {
-            @Override
-            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-
-            @Override
-            public void onTextChanged(CharSequence s, int start, int before, int count) {
-                nativeOnTextChanged(s.toString());
-            }
-
-            @Override
-            public void afterTextChanged(Editable s) {}
-        });
-
+        // Only pass text on submit/focus change, not during typing
         input.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_DONE ||
                 (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                nativeOnTextChanged(input.getText().toString());
                 hideKeyboard();
                 nativeOnSubmit();
                 return true;
