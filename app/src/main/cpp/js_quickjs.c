@@ -1580,11 +1580,11 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
     return count;
 }
 
-bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *script_lens, 
-                                       int script_count, const char *player_response,
-                                       const char *html, JsExecResult *out_result) {
+bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens, 
+                             int script_count, const char *html, 
+                             JsExecResult *out_result) {
     if (!scripts || script_count <= 0 || !out_result) {
-        LOG_ERROR("Invalid arguments to js_quickjs_exec_scripts_with_data");
+        LOG_ERROR("Invalid arguments to js_quickjs_exec_scripts");
         return false;
     }
     
@@ -1678,31 +1678,9 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
     }
     JS_FreeValue(ctx, default_result);
     
-    // Inject ytInitialPlayerResponse if provided
-    if (player_response && strlen(player_response) > 0) {
-        LOG_INFO("Injecting ytInitialPlayerResponse (%zu bytes)", strlen(player_response));
-        
-        // Try to parse the JSON as-is
-        JSValue json_val = JS_ParseJSON(ctx, player_response, strlen(player_response), "<player_response>");
-        
-        if (JS_IsException(json_val)) {
-            JSValue exception = JS_GetException(ctx);
-            const char *error = JS_ToCString(ctx, exception);
-            LOG_WARN("Could not parse ytInitialPlayerResponse JSON: %s", error ? error : "unknown");
-            LOG_WARN("Continuing without player response injection - scripts may still work");
-            JS_FreeCString(ctx, error);
-            JS_FreeValue(ctx, exception);
-        } else {
-            // Set as global variable
-            JSValue global = JS_GetGlobalObject(ctx);
-            JS_SetPropertyStr(ctx, global, "ytInitialPlayerResponse", json_val);
-            JS_FreeValue(ctx, global);
-            LOG_INFO("ytInitialPlayerResponse injected successfully");
-        }
-    }
-    
-    // Note: base.js has bundled Polymer that manages its own state
-    // We cannot easily patch it since it uses local variables, not window.Polymer
+    // Note: Data payload scripts (ytInitialPlayerResponse, ytInitialData, etc.)
+    // will execute naturally as part of the scripts array, defining global
+    // variables just like in a real browser. No manual injection needed.
     
     // Pre-execution stubs - ensure critical functions exist before running scripts
     const char *pre_exec_stubs = 

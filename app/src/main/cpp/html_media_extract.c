@@ -1017,28 +1017,9 @@ static int extract_scripts_in_order(const char *html, ScriptInfo *scripts, int m
                 continue;
             }
             
-            // Skip scripts that are likely not initialization code
-            bool skip = false;
-            const char *first_nonspace = content_start;
-            while (*first_nonspace && isspace((unsigned char)*first_nonspace)) first_nonspace++;
-            if (*first_nonspace == '{' || *first_nonspace == '[') {
-                skip = true; // Might be JSON, skip
-            }
-            // Skip data payload scripts that cause parsing issues
-            if (strncmp(first_nonspace, "var ytInitialPlayerResponse", 27) == 0 ||
-                strncmp(first_nonspace, "window.ytInitialPlayerResponse", 30) == 0 ||
-                (strncmp(first_nonspace, "(function()", 11) == 0 && strstr(first_nonspace, "window.ytAtR") != NULL)) {
-                skip = true; // Data payload scripts - not needed for signature decryption
-            }
-            // Skip very large scripts (>500KB) as they're likely data, not code
-            if (content_len > 500000) {
-                skip = true;
-            }
-            
-            if (skip) {
-                p = script_end + 9;
-                continue;
-            }
+            // Note: We now execute ALL scripts including data payload scripts
+            // They will define ytInitialPlayerResponse, ytInitialData, etc. naturally
+            // This is more reliable than manual JSON extraction and injection
             
             // Extract the script content
             char *script_content = malloc(content_len + 1);
@@ -1210,16 +1191,15 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
     LOG_INFO("Executing %d scripts in parse order (%d external + %d inline)", 
              exec_count, external_exec_count, inline_exec_count);
     
-    // Extract ytInitialPlayerResponse from HTML
-    char *player_response = extract_yt_player_response(html);
-    
     // Execute all scripts in parse order
+    // Data payload scripts (ytInitialPlayerResponse, ytInitialData, etc.) will
+    // execute naturally and define the global variables, just like in a real browser
     JsExecResult js_result;
     memset(&js_result, 0, sizeof(JsExecResult));
     
-    bool js_success = js_quickjs_exec_scripts_with_data(
+    bool js_success = js_quickjs_exec_scripts(
         exec_scripts, exec_script_lens, exec_count,
-        player_response, html, &js_result
+        html, &js_result
     );
     
     // Free all script info (including fetched content)
@@ -1227,7 +1207,6 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
     
     if (!js_success) {
         LOG_ERROR("JavaScript execution failed");
-        free(player_response);
         return false;
     }
     
@@ -1250,8 +1229,6 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
             break;
         }
     }
-    
-    free(player_response);
     
     if (!found) {
         LOG_WARN("No decrypted URL found in captured URLs");
