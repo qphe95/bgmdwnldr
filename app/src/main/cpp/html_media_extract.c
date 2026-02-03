@@ -4,10 +4,278 @@
 #include <ctype.h>
 #include <pthread.h>
 #include <android/log.h>
+#include <stdint.h>
 #include "cJSON.h"
 #include "html_media_extract.h"
 #include "http_download.h"
 #include "js_quickjs.h"
+
+// HTML Entity decoding helper - converts HTML entities to actual characters
+// Handles: &lt; &gt; &amp; &quot; &apos; &#123; (decimal) &#x7B; (hex)
+static int decode_html_entity(const char *input, char *output, size_t output_len) {
+    if (!input || !output || output_len == 0) return 0;
+    
+    const char *p = input;
+    char *out = output;
+    size_t remaining = output_len - 1;  // Reserve space for null terminator
+    
+    while (*p && remaining > 0) {
+        if (*p == '&') {
+            const char *end = strchr(p, ';');
+            if (end && end - p < 20) {  // Reasonable entity length
+                size_t entity_len = end - p - 1;  // Length without '&' and ';'
+                const char *entity = p + 1;
+                char decoded = 0;
+                int valid_entity = 0;
+                
+                // Named entities
+                if (strncmp(entity, "lt", entity_len) == 0 && entity_len == 2) {
+                    decoded = '<';
+                    valid_entity = 1;
+                } else if (strncmp(entity, "gt", entity_len) == 0 && entity_len == 2) {
+                    decoded = '>';
+                    valid_entity = 1;
+                } else if (strncmp(entity, "amp", entity_len) == 0 && entity_len == 3) {
+                    decoded = '&';
+                    valid_entity = 1;
+                } else if (strncmp(entity, "quot", entity_len) == 0 && entity_len == 4) {
+                    decoded = '"';
+                    valid_entity = 1;
+                } else if (strncmp(entity, "apos", entity_len) == 0 && entity_len == 4) {
+                    decoded = '\'';
+                    valid_entity = 1;
+                } else if (strncmp(entity, "nbsp", entity_len) == 0 && entity_len == 4) {
+                    decoded = ' ';
+                    valid_entity = 1;
+                }
+                // Numeric entities: &#123; (decimal)
+                else if (*entity == '#' && entity_len > 1) {
+                    const char *num_start = entity + 1;
+                    if (*num_start == 'x' || *num_start == 'X') {
+                        // Hex entity: &#x3b; or &#x7B;
+                        long val = strtol(num_start + 1, NULL, 16);
+                        if (val > 0 && val <= 0xFF) {
+                            decoded = (char)val;
+                            valid_entity = 1;
+                        }
+                    } else {
+                        // Decimal entity: &#59;
+                        long val = strtol(num_start, NULL, 10);
+                        if (val > 0 && val <= 0xFF) {
+                            decoded = (char)val;
+                            valid_entity = 1;
+                        }
+                    }
+                }
+                
+                if (valid_entity) {
+                    *out++ = decoded;
+                    remaining--;
+                    p = end + 1;  // Skip past the entity
+                    continue;
+                }
+            }
+        }
+        
+        // Not an entity or entity too long, copy as-is
+        *out++ = *p++;
+        remaining--;
+    }
+    
+    *out = '\0';
+    return (int)(out - output);
+}
+
+// Decode hex-escaped content (\x3b -> ;)
+// Handles both \xNN format and raw hex injection cleanup
+static int decode_hex_escapes(const char *input, char *output, size_t output_len) {
+    if (!input || !output || output_len == 0) return 0;
+    
+    const char *p = input;
+    char *out = output;
+    size_t remaining = output_len - 1;
+    
+    while (*p && remaining > 0) {
+        // Check for \xNN pattern
+        if (*p == '\\' && *(p + 1) == 'x' && 
+            isxdigit((unsigned char)*(p + 2)) && 
+            isxdigit((unsigned char)*(p + 3))) {
+            // Decode hex value
+            int val1 = tolower(*(p + 2));
+            int val2 = tolower(*(p + 3));
+            int hex_val = ((val1 >= 'a' ? val1 - 'a' + 10 : val1 - '0') << 4) |
+                          (val2 >= 'a' ? val2 - 'a' + 10 : val2 - '0');
+            
+            // Only decode printable ASCII and common control chars
+            if (hex_val >= 0x20 && hex_val <= 0x7E) {
+                *out++ = (char)hex_val;
+                remaining--;
+                p += 4;  // Skip \xNN
+                continue;
+            }
+        }
+        
+        // Check for "garbage hex" injection - standalone hex bytes without \x prefix
+        // This handles the "3b38" type garbage where hex values are concatenated
+        if (isxdigit((unsigned char)*p) && isxdigit((unsigned char)*(p + 1)) &&
+            remaining >= 1) {
+            // Look ahead to see if this looks like garbage hex
+            // Pattern: two hex digits followed by more hex digits without proper delimiter
+            // Only treat as garbage if we're inside a JSON string context
+            const char *check = p + 2;
+            int hex_count = 2;
+            while (isxdigit((unsigned char)*check)) {
+                hex_count++;
+                check++;
+            }
+            
+            // If we have 4+ consecutive hex digits, it might be garbage
+            if (hex_count >= 4 && hex_count % 2 == 0) {
+                // Decode as hex pairs and skip
+                for (int i = 0; i < hex_count && remaining > 0; i += 2) {
+                    int val1 = tolower(p[i]);
+                    int val2 = tolower(p[i + 1]);
+                    int hex_val = ((val1 >= 'a' ? val1 - 'a' + 10 : val1 - '0') << 4) |
+                                  (val2 >= 'a' ? val2 - 'a' + 10 : val2 - '0');
+                    
+                    // Only decode if it results in a reasonable character
+                    if (hex_val >= 0x20 && hex_val <= 0x7E) {
+                        *out++ = (char)hex_val;
+                        remaining--;
+                    }
+                }
+                p += hex_count;
+                continue;
+            }
+        }
+        
+        *out++ = *p++;
+        remaining--;
+    }
+    
+    *out = '\0';
+    return (int)(out - output);
+}
+
+// Full HTML unescape - combines entity and hex decoding
+static char* html_unescape(const char *input, size_t input_len) {
+    if (!input || input_len == 0) return NULL;
+    
+    // Allocate output buffer (same size as input, will be smaller or equal)
+    char *output = malloc(input_len + 1);
+    if (!output) return NULL;
+    
+    // First pass: decode HTML entities
+    char *temp = malloc(input_len + 1);
+    if (!temp) {
+        free(output);
+        return NULL;
+    }
+    
+    decode_html_entity(input, temp, input_len + 1);
+    
+    // Second pass: decode hex escapes
+    decode_hex_escapes(temp, output, input_len + 1);
+    
+    free(temp);
+    return output;
+}
+
+// UTF-8 validation and repair
+// Fixes common UTF-8 encoding issues like truncated sequences or invalid bytes
+static char* repair_utf8(const char *input, size_t input_len) {
+    if (!input || input_len == 0) return NULL;
+    
+    char *output = malloc(input_len + 1);
+    if (!output) return NULL;
+    
+    const uint8_t *p = (const uint8_t *)input;
+    char *out = output;
+    size_t remaining = input_len;
+    
+    while (remaining > 0) {
+        uint8_t c = *p;
+        
+        // Single-byte ASCII (0x00-0x7F)
+        if ((c & 0x80) == 0) {
+            *out++ = c;
+            p++;
+            remaining--;
+        }
+        // Two-byte sequence (0xC2-0xDF, 0x80-0xBF)
+        else if ((c & 0xE0) == 0xC0) {
+            if (remaining >= 2 && (p[1] & 0xC0) == 0x80) {
+                // Valid 2-byte sequence
+                *out++ = c;
+                *out++ = p[1];
+                p += 2;
+                remaining -= 2;
+            } else {
+                // Truncated or invalid, skip
+                p++;
+                remaining--;
+            }
+        }
+        // Three-byte sequence (0xE0-0xEF, 0x80-0xBF, 0x80-0xBF)
+        else if ((c & 0xF0) == 0xE0) {
+            if (remaining >= 3 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+                // Valid 3-byte sequence
+                *out++ = c;
+                *out++ = p[1];
+                *out++ = p[2];
+                p += 3;
+                remaining -= 3;
+            } else {
+                // Truncated or invalid, skip
+                p++;
+                remaining--;
+            }
+        }
+        // Four-byte sequence (0xF0-0xF4, 0x80-0xBF, 0x80-0xBF, 0x80-0xBF)
+        else if ((c & 0xF8) == 0xF0) {
+            if (remaining >= 4 && (p[1] & 0xC0) == 0x80 && 
+                (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+                // Valid 4-byte sequence
+                *out++ = c;
+                *out++ = p[1];
+                *out++ = p[2];
+                *out++ = p[3];
+                p += 4;
+                remaining -= 4;
+            } else {
+                // Truncated or invalid, skip
+                p++;
+                remaining--;
+            }
+        }
+        // Invalid byte (continuation byte without start, or invalid start byte)
+        else {
+            // Skip invalid byte
+            p++;
+            remaining--;
+        }
+    }
+    
+    *out = '\0';
+    return output;
+}
+
+// Clean and decode extracted JSON content
+// Handles all three issues: HTML entities, hex escapes, and UTF-8 issues
+static char* clean_json_content(const char *input, size_t input_len) {
+    if (!input || input_len == 0) return NULL;
+    
+    // Step 1: Decode HTML entities and hex escapes
+    char *decoded = html_unescape(input, input_len);
+    if (!decoded) return NULL;
+    
+    // Step 2: Repair UTF-8 sequences
+    size_t decoded_len = strlen(decoded);
+    char *repaired = repair_utf8(decoded, decoded_len);
+    free(decoded);
+    
+    return repaired;
+}
 
 #define LOG_TAG "html_extract"
 #define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -378,13 +646,26 @@ static char* extract_yt_player_response(const char *html) {
                             LOG_ERROR("JSON too large: %zu bytes", len);
                             return NULL;
                         }
-                        char *json = malloc(len + 1);
-                        if (json) {
-                            memcpy(json, start, len);
-                            json[len] = '\0';
-                            LOG_INFO("Extracted ytInitialPlayerResponse (%zu bytes)", len);
-                            return json;
+                        
+                        // Extract raw JSON content
+                        char *raw_json = malloc(len + 1);
+                        if (!raw_json) return NULL;
+                        
+                        memcpy(raw_json, start, len);
+                        raw_json[len] = '\0';
+                        
+                        // Clean the JSON content (handle HTML entities, hex escapes, UTF-8 issues)
+                        char *cleaned = clean_json_content(raw_json, len);
+                        free(raw_json);
+                        
+                        if (cleaned) {
+                            LOG_INFO("Extracted ytInitialPlayerResponse (%zu bytes raw, %zu bytes cleaned)", 
+                                     len, strlen(cleaned));
+                        } else {
+                            LOG_ERROR("Failed to clean JSON content");
                         }
+                        
+                        return cleaned;
                     }
                 }
             }
