@@ -225,27 +225,17 @@ static void parse_format_object(cJSON *format, MediaStream *stream) {
              stream->has_cipher);
 }
 
-// Forward declaration
-static char* sanitize_json(const char *json, size_t len);
-
 // Parse ytInitialPlayerResponse using cJSON
 static int parse_yt_player_response(const char *json, MediaStream *streams, int max_streams) {
     if (!json || !streams || max_streams <= 0) return 0;
     
-    // Sanitize JSON to escape control characters for cJSON
-    char *sanitized = sanitize_json(json, strlen(json));
-    if (!sanitized) {
-        LOG_ERROR("Failed to sanitize JSON");
-        return 0;
-    }
+    LOG_INFO("Parsing player response with cJSON (%zu bytes)", strlen(json));
     
-    LOG_INFO("Parsing player response with cJSON (%zu bytes)", strlen(sanitized));
-    
-    cJSON *root = cJSON_Parse(sanitized);
+    cJSON *root = cJSON_Parse(json);
     if (!root) {
         const char *error_ptr = cJSON_GetErrorPtr();
         if (error_ptr) {
-            size_t error_pos = error_ptr - sanitized;
+            size_t error_pos = error_ptr - json;
             LOG_ERROR("cJSON parse error at position %zu: %.50s", error_pos, error_ptr);
             // Log context around error
             if (error_pos > 30) {
@@ -256,10 +246,8 @@ static int parse_yt_player_response(const char *json, MediaStream *streams, int 
         } else {
             LOG_ERROR("cJSON parse error (unknown position)");
         }
-        free(sanitized);
         return 0;
     }
-    free(sanitized);
     
     // Navigate to streamingData
     cJSON *streaming_data = cJSON_GetObjectItemCaseSensitive(root, "streamingData");
@@ -334,81 +322,6 @@ static char* extract_video_title(const char *player_response) {
 }
 
 // Extract ytInitialPlayerResponse from HTML
-// Sanitize JSON by handling control characters for cJSON compatibility
-// More lenient: preserve all valid UTF-8 and most printable characters
-static char* sanitize_json(const char *json, size_t len) {
-    // Allocate extra space just in case
-    char *sanitized = malloc(len * 2 + 1);
-    if (!sanitized) return NULL;
-    
-    size_t j = 0;
-    for (size_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)json[i];
-        
-        // Null byte - terminate here as cJSON expects null-terminated strings
-        if (c == 0x00) {
-            break;
-        }
-        // Replace control characters (0x01-0x1F) except tab, newline, carriage return with space
-        else if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
-            sanitized[j++] = ' ';
-        }
-        // Handle DEL character (0x7F) - replace with space
-        else if (c == 0x7F) {
-            sanitized[j++] = ' ';
-        }
-        // High-byte characters (0x80-0xFF) - validate UTF-8 sequences
-        else if (c >= 0x80) {
-            // Check for valid UTF-8 multi-byte sequence
-            if ((c & 0xE0) == 0xC0 && i + 1 < len) {
-                // Potential 2-byte UTF-8
-                unsigned char c2 = (unsigned char)json[i + 1];
-                if ((c2 & 0xC0) == 0x80) {
-                    sanitized[j++] = c;
-                    sanitized[j++] = c2;
-                    i++;
-                    continue;
-                }
-            } else if ((c & 0xF0) == 0xE0 && i + 2 < len) {
-                // Potential 3-byte UTF-8
-                unsigned char c2 = (unsigned char)json[i + 1];
-                unsigned char c3 = (unsigned char)json[i + 2];
-                if ((c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80) {
-                    sanitized[j++] = c;
-                    sanitized[j++] = c2;
-                    sanitized[j++] = c3;
-                    i += 2;
-                    continue;
-                }
-            } else if ((c & 0xF8) == 0xF0 && i + 3 < len) {
-                // Potential 4-byte UTF-8
-                unsigned char c2 = (unsigned char)json[i + 1];
-                unsigned char c3 = (unsigned char)json[i + 2];
-                unsigned char c4 = (unsigned char)json[i + 3];
-                if ((c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80 && (c4 & 0xC0) == 0x80) {
-                    sanitized[j++] = c;
-                    sanitized[j++] = c2;
-                    sanitized[j++] = c3;
-                    sanitized[j++] = c4;
-                    i += 3;
-                    continue;
-                }
-            }
-            // Invalid UTF-8 sequence start - try to preserve the byte anyway
-            // as it might be valid in some other encoding
-            sanitized[j++] = c;
-        }
-        else {
-            // ASCII printable and standard whitespace
-            sanitized[j++] = c;
-        }
-    }
-    sanitized[j] = '\0';
-    
-    // Realloc to actual size
-    char *result = realloc(sanitized, j + 1);
-    return result ? result : sanitized;
-}
 
 static char* extract_yt_player_response(const char *html) {
     if (!html) return NULL;

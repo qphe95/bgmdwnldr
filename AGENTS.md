@@ -65,3 +65,99 @@ APP_PID=$(adb shell pidof com.bgmdwldr.vulkan)
 # View js_quickjs logs
 adb logcat -d --pid=$APP_PID | grep -E "js_quickjs:|HtmlExtract:|Executed|Captured"
 ```
+## Current Status
+
+### Script Execution
+- **Current:** 4/11 scripts executing successfully
+- **Target:** 9+/11 for signature decryption to work
+
+### Key Blocking Errors
+
+1. **`TypeError: cannot read property 'es5Shimmed' of undefined`** (Script 10)
+   - This is the main blocker
+   - Happens because code tries to access `.es5Shimmed` on an undefined object
+   - Setting `Object.prototype.es5Shimmed` doesn't help because the base object is undefined
+   - **Need to identify:** Which object becomes undefined before this check
+
+2. **`SyntaxError: expecting ';'`** (Script 9)
+   - Likely malformed JavaScript in the source
+   - May need to skip this script or handle syntax errors gracefully
+
+3. **`TypeError: invalid 'in' operand`** (Scripts 7, 8)
+   - Code doing `'prop' in someObject` where `someObject` is not an object
+
+4. **`TypeError: cannot read property 'prototype' of undefined`** (Script 2)
+   - Some constructor/function is undefined when script tries to extend it
+
+### PROBE System
+Implemented a proxy-based logging system to detect what browser APIs scripts are checking:
+- Logs all property accesses on `window`, `document`, `navigator`
+- Logs when `es5Shimmed` is accessed (via PROBE_SHIM logs)
+- Currently NOT catching the es5Shimmed access, meaning it happens on:
+  - An object not wrapped by our proxies
+  - `undefined` itself (cannot add properties to undefined)
+  - An object created dynamically by scripts
+
+## QuickJS Integration
+
+### Browser APIs Currently Implemented
+- XMLHttpRequest, HTMLVideoElement
+- Event, CustomEvent, KeyboardEvent, MouseEvent, ErrorEvent, PromiseRejectionEvent
+- Node, Element, HTMLElement, SVGElement, Document
+- HTMLAnchorElement, HTMLScriptElement, HTMLDivElement, HTMLSpanElement
+- MutationObserver, IntersectionObserver, ResizeObserver, IntersectionObserverEntry
+- DOMParser, DOMImplementation
+- TreeWalker, NodeFilter
+- fetch (mock), matchMedia
+- URL, Location, postMessage
+- Navigator, Screen, History
+- console, performance
+- Intl, crypto
+- BroadcastChannel, MessageChannel
+- requestIdleCallback, cancelIdleCallback
+- ShadyDOM, _spf_state (YouTube specific)
+- CustomElements
+- document.createElementNS, createDocumentFragment, requestStorageAccessFor
+
+### Known Missing APIs
+- Full DOM traversal implementation
+- window.getComputedStyle
+- CSSStyleDeclaration details
+- Web Storage API (localStorage/sessionStorage with actual storage)
+- Some Element prototype methods
+
+### JSON Control Character Handling
+QuickJS natively handles control and null characters (0x00-0x1F) in JSON strings by escaping them to `\uXXXX` format (e.g., null becomes `\u0000`). The following sanitization functions have been removed as they were unnecessary:
+
+- **Removed** `sanitize_json_for_qjs()` from `js_quickjs.c` - QuickJS handles control characters during `JS_ParseJSON()` and `JSON.stringify()`
+- **Removed** `sanitize_json()` from `html_media_extract.c` - cJSON handles standard JSON escape sequences
+
+The QuickJS `JS_ToQuotedString()` function (used by `JSON.stringify()`) and `js_print_string1()` already properly escape control characters using `\uXXXX` notation, making pre-sanitization redundant.
+
+## Build System
+
+```bash
+# Full rebuild and install
+./rebuild.sh
+
+# Monitor logs during development
+adb logcat -c && adb logcat -s js_quickjs:* bgmdwldr:* *:S
+```
+
+## Next Steps for Debugging
+
+1. **Identify the undefined object causing es5Shimmed error:**
+   - Wrap more global objects in proxies (self, top, parent)
+   - Add try-catch around script execution with detailed stack traces
+   - Log all global object creations
+
+2. **Fix remaining API gaps:**
+   - Add missing Element prototype methods
+   - Implement proper document.createElementNS
+   - Add CSSStyleDeclaration
+
+3. **Alternative approaches:**
+   - Try running scripts in non-strict mode
+   - Use different QuickJS flags
+   - Extract decipher function statically instead of executing scripts
+
