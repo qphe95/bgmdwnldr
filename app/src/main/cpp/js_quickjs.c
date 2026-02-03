@@ -2097,6 +2097,18 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
     // After scripts load, dispatch DOMContentLoaded to trigger player initialization
     // The video element and ytInitialPlayerResponse were already set up before scripts loaded
     const char *init_player_js = 
+        "// Debug: Log all window properties that might be player-related\n"
+        "var playerKeys = Object.keys(window).filter(function(k) {\n"
+        "  return k.toLowerCase().indexOf('player') >= 0 || k.toLowerCase().indexOf('yt') >= 0 || k.toLowerCase().indexOf('decrypt') >= 0;\n"
+        "});\n"
+        "console.log('Player/yt related globals: ' + playerKeys.join(', '));\n"
+        "\n"
+        "// Check for specific player objects\n"
+        "console.log('window.player exists: ' + (typeof window.player));\n"
+        "console.log('window.ytPlayer exists: ' + (typeof window.ytPlayer));\n"
+        "console.log('window.yt exists: ' + (typeof window.yt));\n"
+        "console.log('window.ytcfg exists: ' + (typeof window.ytcfg));\n"
+        "\n"
         "// Dispatch DOMContentLoaded to trigger any player initialization\n"
         "if (typeof window !== 'undefined' && window.dispatchEvent) {\n"
         "  var readyEvent = { type: 'DOMContentLoaded', bubbles: true };\n"

@@ -47,6 +47,9 @@ android {
 def shadersDir = file("src/main/shaders")
 def assetsDir = file("src/main/assets")
 
+def ndkPath = System.getenv("ANDROID_SDK_ROOT") ?: System.getenv("ANDROID_HOME") ?: "/home/qphe/android-sdk"
+def glslcPath = "${ndkPath}/ndk/26.2.11394342/shader-tools/linux-x86_64/glslc"
+
 tasks.register("compileShaders") {
     inputs.files fileTree(shadersDir)
     outputs.dir assetsDir
@@ -57,10 +60,10 @@ tasks.register("compileShaders") {
         }
         assetsDir.mkdirs()
         exec {
-            commandLine "glslc", "${shadersDir}/triangle.vert", "-o", "${assetsDir}/triangle.vert.spv"
+            commandLine glslcPath, "${shadersDir}/triangle.vert", "-o", "${assetsDir}/triangle.vert.spv"
         }
         exec {
-            commandLine "glslc", "${shadersDir}/triangle.frag", "-o", "${assetsDir}/triangle.frag.spv"
+            commandLine glslcPath, "${shadersDir}/triangle.frag", "-o", "${assetsDir}/triangle.frag.spv"
         }
     }
 }
