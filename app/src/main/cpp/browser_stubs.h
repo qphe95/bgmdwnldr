@@ -806,6 +806,14 @@ static const char BROWSER_STUBS_JS[] =
      * HTTP Request Capture Hooks
      * Records all URLs accessed via XMLHttpRequest, fetch, etc.
      * ========================================================================= */
+    /* Debug logging function - must be defined early */
+    "var __loggedChains = {};"
+    "function __log(msg) {"
+    "  if (typeof __bgmdwnldr_log === 'function') {"
+    "    __bgmdwnldr_log(String(msg));"
+    "  }"
+    "}"
+    ""
     "var __capturedUrls = [];"
     "var __capturedSignatures = [];"
     "var __httpHookEnabled = true;"

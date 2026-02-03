@@ -1558,6 +1558,20 @@ static void init_browser_environment(JSContext *ctx) {
     JS_FreeCString(ctx, getinstance_type);
     JS_FreeValue(ctx, getinstance_check);
     
+    // Check window.yt existence
+    JSValue yt_check = JS_Eval(ctx, "typeof window.yt", 16, "<check>", 0);
+    const char *yt_type = JS_ToCString(ctx, yt_check);
+    LOG_INFO("After stubs: window.yt = %s", yt_type ? yt_type : "unknown");
+    JS_FreeCString(ctx, yt_type);
+    JS_FreeValue(ctx, yt_check);
+    
+    // Check window.ytcfg existence  
+    JSValue ytcfg_check = JS_Eval(ctx, "typeof window.ytcfg", 19, "<check>", 0);
+    const char *ytcfg_type = JS_ToCString(ctx, ytcfg_check);
+    LOG_INFO("After stubs: window.ytcfg = %s", ytcfg_type ? ytcfg_type : "unknown");
+    JS_FreeCString(ctx, ytcfg_type);
+    JS_FreeValue(ctx, ytcfg_check);
+    
     JS_FreeValue(ctx, global);
 }
 
@@ -2004,6 +2018,24 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         } else {
             success_count++;
             LOG_INFO("Script %d executed successfully", i);
+            
+            // After base.js (script 0) executes, check what it created
+            if (i == 0 && script_lens[i] > 1000000) {
+                const char *check_base_js = 
+                    "console.log('=== BASE.JS CHECK ===');"
+                    "console.log('window.yt type: ' + typeof window.yt);"
+                    "console.log('window.ytcfg type: ' + typeof window.ytcfg);"
+                    "console.log('window.ytplayer type: ' + typeof window.ytplayer);"
+                    "if (typeof window.yt === 'object') {"
+                    "  console.log('yt keys: ' + Object.keys(window.yt).join(', '));"
+                    "}"
+                    "if (typeof window.ytcfg === 'object') {"
+                    "  console.log('ytcfg keys: ' + Object.keys(window.ytcfg).join(', '));"
+                    "}"
+                    "console.log('=== END BASE.JS CHECK ===');";
+                JSValue check_result = JS_Eval(ctx, check_base_js, strlen(check_base_js), "<check_base>", 0);
+                JS_FreeValue(ctx, check_result);
+            }
         }
         JS_FreeValue(ctx, result);
     }

@@ -808,22 +808,25 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
     int inline_count = extract_inline_scripts(html, inline_scripts, MAX_SCRIPT_URLS);
     
     // Combine inline and external scripts
-    // Inline scripts must run FIRST to set up globals
+    // IMPORTANT: External scripts (especially base.js) must run FIRST!
+    // In a real browser, when the parser encounters <script src="base.js">,
+    // it downloads and executes that script BEFORE continuing to parse
+    // subsequent inline scripts. The inline scripts depend on base.js APIs.
     const char *all_scripts[MAX_SCRIPT_URLS * 2];
     size_t all_script_lens[MAX_SCRIPT_URLS * 2];
     int total_count = 0;
     
-    // Add inline scripts first
-    for (int i = 0; i < inline_count && total_count < MAX_SCRIPT_URLS * 2; i++) {
-        all_scripts[total_count] = inline_scripts[i];
-        all_script_lens[total_count] = strlen(inline_scripts[i]);
-        total_count++;
-    }
-    
-    // Add external scripts
+    // Add external scripts FIRST (base.js provides yt, ytcfg, etc.)
     for (int i = 0; i < loaded_count && total_count < MAX_SCRIPT_URLS * 2; i++) {
         all_scripts[total_count] = scripts[i];
         all_script_lens[total_count] = script_lens[i];
+        total_count++;
+    }
+    
+    // Add inline scripts AFTER external scripts
+    for (int i = 0; i < inline_count && total_count < MAX_SCRIPT_URLS * 2; i++) {
+        all_scripts[total_count] = inline_scripts[i];
+        all_script_lens[total_count] = strlen(inline_scripts[i]);
         total_count++;
     }
     
@@ -831,8 +834,8 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
     JsExecResult js_result;
     memset(&js_result, 0, sizeof(JsExecResult));
     
-    LOG_INFO("Executing %d total scripts (%d inline + %d external) with ytInitialPlayerResponse", 
-             total_count, inline_count, loaded_count);
+    LOG_INFO("Executing %d total scripts (%d external + %d inline) with ytInitialPlayerResponse", 
+             total_count, loaded_count, inline_count);
     
     bool js_success = js_quickjs_exec_scripts_with_data(
         all_scripts, all_script_lens, total_count,
