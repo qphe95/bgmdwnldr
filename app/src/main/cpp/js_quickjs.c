@@ -976,16 +976,8 @@ static void init_browser_environment(JSContext *ctx) {
     ;
     JS_Eval(ctx, event_target_js, strlen(event_target_js), "<event_target>", 0);
     
-    // URL capture array and global references
+    // Make window properties available globally
     const char *init_js = 
-        "var __capturedUrls = [];"
-        "function __recordUrl(url) {"
-        "  if (url && url.indexOf && __capturedUrls.indexOf(url) < 0) {"
-        "    __capturedUrls.push(url);"
-        "    if (console && console.log) console.log('Captured URL:', url.substring(0, 100));"
-        "  }"
-        "}"
-        // Make window properties available globally
         "var navigator = window.navigator || {};"
         "var localStorage = window.localStorage;"
         "var sessionStorage = window.sessionStorage;"
