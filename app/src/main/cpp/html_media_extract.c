@@ -254,7 +254,6 @@ static char* clean_json_content(const char *input, size_t input_len) {
 #define SCRIPT_URL_MAX_LEN 512
 #define MAX_SCRIPTS 64  // Total scripts (external + inline)
 #define MAX_HTML_SIZE (20 * 1024 * 1024)  // 20MB max for large YouTube pages with big JSON payloads
-#define MAX_JSON_SIZE (2 * 1024 * 1024)   // 2MB max for individual JSON payloads (ytInitialPlayerResponse)
 
 // Script types
 typedef enum {
@@ -552,28 +551,6 @@ static int parse_yt_player_response(const char *json, MediaStream *streams, int 
     return count;
 }
 
-// Extract video title from ytInitialPlayerResponse using cJSON
-static char* extract_video_title(const char *player_response) {
-    if (!player_response) return NULL;
-    
-    cJSON *root = cJSON_Parse(player_response);
-    if (!root) return NULL;
-    
-    char *title = NULL;
-    
-    // Try videoDetails.title
-    cJSON *video_details = cJSON_GetObjectItemCaseSensitive(root, "videoDetails");
-    if (video_details) {
-        cJSON *title_obj = cJSON_GetObjectItemCaseSensitive(video_details, "title");
-        if (cJSON_IsString(title_obj)) {
-            title = strdup(title_obj->valuestring);
-        }
-    }
-    
-    cJSON_Delete(root);
-    return title;
-}
-
 // Find the true end of a script tag, handling strings and comments
 // This prevents premature termination when </script> appears inside JS strings
 static const char* find_script_end(const char *content_start) {
@@ -647,88 +624,6 @@ static const char* find_script_end(const char *content_start) {
     }
     
     return NULL;  // No closing tag found
-}
-
-// Extract ytInitialPlayerResponse from HTML with support for large payloads
-static char* extract_yt_player_response(const char *html) {
-    if (!html) return NULL;
-    
-    const char *patterns[] = {
-        "var ytInitialPlayerResponse = ",
-        "ytInitialPlayerResponse = ",
-        "window.ytInitialPlayerResponse = ",
-        NULL
-    };
-    
-    for (int p = 0; patterns[p]; p++) {
-        const char *start = strstr(html, patterns[p]);
-        if (!start) continue;
-        
-        start += strlen(patterns[p]);
-        
-        // Skip whitespace
-        while (*start && isspace((unsigned char)*start)) start++;
-        
-        // Find the end - look for matching braces
-        if (*start != '{') continue;
-        
-        const char *p_json = start;
-        int brace_depth = 0;
-        bool in_string = false;
-        bool escape = false;
-        
-        while (*p_json) {
-            if (!in_string) {
-                if (*p_json == '{') brace_depth++;
-                else if (*p_json == '}') {
-                    brace_depth--;
-                    if (brace_depth == 0) {
-                        // Found complete JSON
-                        size_t len = p_json - start + 1;
-                        if (len > MAX_JSON_SIZE) {  // Sanity check: max 2MB
-                            LOG_ERROR("JSON too large: %zu bytes (max %d)", len, MAX_JSON_SIZE);
-                            return NULL;
-                        }
-                        
-                        // Extract raw JSON content
-                        char *raw_json = malloc(len + 1);
-                        if (!raw_json) {
-                            LOG_ERROR("Failed to allocate %zu bytes for JSON", len + 1);
-                            return NULL;
-                        }
-                        
-                        memcpy(raw_json, start, len);
-                        raw_json[len] = '\0';
-                        
-                        // Clean the JSON content (handle HTML entities, hex escapes, UTF-8 issues)
-                        char *cleaned = clean_json_content(raw_json, len);
-                        free(raw_json);
-                        
-                        if (cleaned) {
-                            LOG_INFO("Extracted ytInitialPlayerResponse (%zu bytes raw, %zu bytes cleaned)", 
-                                     len, strlen(cleaned));
-                        } else {
-                            LOG_ERROR("Failed to clean JSON content");
-                        }
-                        
-                        return cleaned;
-                    }
-                }
-            }
-            
-            if (escape) {
-                escape = false;
-            } else if (*p_json == '\\') {
-                escape = true;
-            } else if (*p_json == '"') {
-                in_string = !in_string;
-            }
-            
-            p_json++;
-        }
-    }
-    
-    return NULL;
 }
 
 // Extract inline scripts from HTML (scripts without src attribute)
@@ -1115,197 +1010,6 @@ static int extract_scripts_in_order(const char *html, ScriptInfo *scripts, int m
     return count;
 }
 
-// Decrypt signature using the player scripts
-static bool decrypt_signature_with_scripts(const char *html, const char *encrypted_sig,
-                                           char *out_decrypted, size_t out_len) {
-    if (!html || !encrypted_sig || !out_decrypted || out_len == 0) {
-        return false;
-    }
-    
-    LOG_INFO("Attempting signature decryption with parse-order execution");
-    
-    // Extract all scripts in parse order (both external and inline)
-    ScriptInfo scripts[MAX_SCRIPTS];
-    memset(scripts, 0, sizeof(scripts));
-    int script_count = extract_scripts_in_order(html, scripts, MAX_SCRIPTS);
-    
-    if (script_count == 0) {
-        LOG_ERROR("No scripts found in HTML");
-        return false;
-    }
-    
-    LOG_INFO("Found %d scripts in parse order", script_count);
-    
-    // Fetch external scripts
-    int fetched_count = 0;
-    for (int i = 0; i < script_count; i++) {
-        if (scripts[i].type == SCRIPT_TYPE_EXTERNAL) {
-            HttpBuffer buffer;
-            memset(&buffer, 0, sizeof(HttpBuffer));
-            
-            char error[256];
-            LOG_INFO("Fetching external script [%d]: %.80s", 
-                     scripts[i].parse_order, scripts[i].url);
-            
-            bool result = http_get_to_memory(scripts[i].url, &buffer, error, sizeof(error));
-            if (result && buffer.data && buffer.size > 0) {
-                // Validate that the response is actually JavaScript
-                const char *content = buffer.data;
-                
-                // Skip leading whitespace and BOM
-                while (*content && (isspace((unsigned char)*content) || 
-                       (unsigned char)*content == 0xEF || 
-                       (unsigned char)*content == 0xBB || 
-                       (unsigned char)*content == 0xBF)) {
-                    content++;
-                }
-                
-                // Check for HTML indicators at the START of the file
-                bool is_html = false;
-                if (strncasecmp(content, "<!doctype", 9) == 0 ||
-                    strncasecmp(content, "<html", 5) == 0 ||
-                    strncasecmp(content, "<?xml", 5) == 0) {
-                    is_html = true;
-                }
-                
-                // Also check first 500 chars for HTML structure tags
-                if (!is_html) {
-                    char first_500[501];
-                    size_t check_len = strlen(content);
-                    if (check_len > 500) check_len = 500;
-                    memcpy(first_500, content, check_len);
-                    first_500[check_len] = '\0';
-                    
-                    if (strstr(first_500, "<head") != NULL || 
-                        strstr(first_500, "<body") != NULL ||
-                        strstr(first_500, "<title>") != NULL) {
-                        is_html = true;
-                    }
-                }
-                
-                if (is_html) {
-                    LOG_WARN("Script [%d] appears to be HTML, not JavaScript - skipping", 
-                             scripts[i].parse_order);
-                    LOG_WARN("Content preview: %.100s...", content);
-                    http_free_buffer(&buffer);
-                    // Mark as invalid by clearing URL
-                    scripts[i].url[0] = '\0';
-                } else {
-                    scripts[i].content = buffer.data;
-                    scripts[i].content_len = buffer.size;
-                    fetched_count++;
-                    LOG_INFO("Loaded external script [%d]: %zu bytes", 
-                             scripts[i].parse_order, buffer.size);
-                }
-            } else {
-                LOG_WARN("Failed to fetch script [%d]: %s", scripts[i].parse_order, error);
-                if (buffer.data) http_free_buffer(&buffer);
-                // Mark as invalid
-                scripts[i].url[0] = '\0';
-            }
-        }
-    }
-    
-    LOG_INFO("Successfully fetched %d external scripts", fetched_count);
-    
-    // Build arrays for execution in parse order (only valid scripts)
-    const char *exec_scripts[MAX_SCRIPTS];
-    size_t exec_script_lens[MAX_SCRIPTS];
-    int exec_count = 0;
-    int external_exec_count = 0;
-    int inline_exec_count = 0;
-    
-    for (int i = 0; i < script_count && exec_count < MAX_SCRIPTS; i++) {
-        // Find script with parse_order == i
-        for (int j = 0; j < script_count; j++) {
-            if (scripts[j].parse_order == i) {
-                // Skip invalid external scripts (failed to fetch or HTML)
-                if (scripts[j].type == SCRIPT_TYPE_EXTERNAL && scripts[j].url[0] == '\0') {
-                    LOG_WARN("Skipping invalid external script [%d]", i);
-                    break;
-                }
-                
-                // Skip inline scripts without content
-                if (scripts[j].type == SCRIPT_TYPE_INLINE && 
-                    (!scripts[j].content || scripts[j].content_len == 0)) {
-                    LOG_WARN("Skipping empty inline script [%d]", i);
-                    break;
-                }
-                
-                exec_scripts[exec_count] = scripts[j].content;
-                exec_script_lens[exec_count] = scripts[j].content_len;
-                
-                if (scripts[j].type == SCRIPT_TYPE_EXTERNAL) {
-                    LOG_INFO("Adding external script [%d] to execution queue (%zu bytes)",
-                             i, scripts[j].content_len);
-                    external_exec_count++;
-                } else {
-                    LOG_INFO("Adding inline script [%d] to execution queue (%zu bytes)",
-                             i, scripts[j].content_len);
-                    inline_exec_count++;
-                }
-                
-                exec_count++;
-                break;
-            }
-        }
-    }
-    
-    if (exec_count == 0) {
-        LOG_ERROR("No valid scripts to execute");
-        free_script_infos(scripts, script_count);
-        return false;
-    }
-    
-    LOG_INFO("Executing %d scripts in parse order (%d external + %d inline)", 
-             exec_count, external_exec_count, inline_exec_count);
-    
-    // Execute all scripts in parse order
-    // Data payload scripts (ytInitialPlayerResponse, ytInitialData, etc.) will
-    // execute naturally and define the global variables, just like in a real browser
-    JsExecResult js_result;
-    memset(&js_result, 0, sizeof(JsExecResult));
-    
-    bool js_success = js_quickjs_exec_scripts(
-        exec_scripts, exec_script_lens, exec_count,
-        html, &js_result
-    );
-    
-    // Free all script info (including fetched content)
-    free_script_infos(scripts, script_count);
-    
-    if (!js_success) {
-        LOG_ERROR("JavaScript execution failed");
-        return false;
-    }
-    
-    LOG_INFO("JavaScript execution successful, captured %d URLs", js_result.captured_url_count);
-    
-    // Look for decrypted URLs in captured URLs
-    bool found = false;
-    for (int i = 0; i < js_result.captured_url_count; i++) {
-        LOG_INFO("Captured URL %d: %.100s...", i, js_result.captured_urls[i]);
-        
-        // Check if this is a googlevideo.com URL without signature cipher
-        if (strstr(js_result.captured_urls[i], "googlevideo.com") &&
-            !strstr(js_result.captured_urls[i], "&s=") &&
-            !strstr(js_result.captured_urls[i], "&sig=")) {
-            // This looks like a decrypted URL
-            strncpy(out_decrypted, js_result.captured_urls[i], out_len - 1);
-            out_decrypted[out_len - 1] = '\0';
-            found = true;
-            LOG_INFO("Found decrypted URL!");
-            break;
-        }
-    }
-    
-    if (!found) {
-        LOG_WARN("No decrypted URL found in captured URLs");
-    }
-    
-    return found;
-}
-
 // Extract YouTube video ID from URL
 static bool extract_yt_video_id(const char *url, char *out_id, size_t out_len) {
     if (!url || !out_id || out_len == 0) return false;
@@ -1336,6 +1040,129 @@ static bool extract_yt_video_id(const char *url, char *out_id, size_t out_len) {
     }
     
     return false;
+}
+
+// Execute player scripts and extract player response from JS context
+// Returns malloc'd player response JSON, or NULL on failure
+static char* execute_scripts_and_get_player_response(const char *html) {
+    if (!html) return NULL;
+    
+    LOG_INFO("Executing player scripts to extract data...");
+    
+    // Extract all scripts in parse order
+    ScriptInfo scripts[MAX_SCRIPTS];
+    memset(scripts, 0, sizeof(scripts));
+    int script_count = extract_scripts_in_order(html, scripts, MAX_SCRIPTS);
+    
+    if (script_count == 0) {
+        LOG_ERROR("No scripts found in HTML");
+        return NULL;
+    }
+    
+    LOG_INFO("Found %d scripts to execute", script_count);
+    
+    // Fetch external scripts
+    for (int i = 0; i < script_count; i++) {
+        if (scripts[i].type == SCRIPT_TYPE_EXTERNAL) {
+            HttpBuffer buffer;
+            memset(&buffer, 0, sizeof(HttpBuffer));
+            
+            char error[256];
+            LOG_INFO("Fetching external script [%d]: %.80s", 
+                     scripts[i].parse_order, scripts[i].url);
+            
+            bool result = http_get_to_memory(scripts[i].url, &buffer, error, sizeof(error));
+            if (result && buffer.data && buffer.size > 0) {
+                // Validate it's actually JavaScript, not HTML
+                const char *content = buffer.data;
+                while (*content && (isspace((unsigned char)*content) || 
+                       (unsigned char)*content == 0xEF || 
+                       (unsigned char)*content == 0xBB || 
+                       (unsigned char)*content == 0xBF)) {
+                    content++;
+                }
+                
+                bool is_html = (strncasecmp(content, "<!doctype", 9) == 0 ||
+                               strncasecmp(content, "<html", 5) == 0 ||
+                               strncasecmp(content, "<?xml", 5) == 0);
+                
+                if (is_html) {
+                    LOG_WARN("Script [%d] is HTML not JS, skipping", scripts[i].parse_order);
+                    http_free_buffer(&buffer);
+                    scripts[i].url[0] = '\0';  // Mark as invalid
+                } else {
+                    scripts[i].content = buffer.data;
+                    scripts[i].content_len = buffer.size;
+                    LOG_INFO("Loaded external script [%d]: %zu bytes", 
+                             scripts[i].parse_order, buffer.size);
+                }
+            } else {
+                LOG_WARN("Failed to fetch script [%d]: %s", scripts[i].parse_order, error);
+                if (buffer.data) http_free_buffer(&buffer);
+                scripts[i].url[0] = '\0';  // Mark as invalid
+            }
+        }
+    }
+    
+    // Build execution arrays
+    const char *exec_scripts[MAX_SCRIPTS];
+    size_t exec_script_lens[MAX_SCRIPTS];
+    int exec_count = 0;
+    
+    for (int i = 0; i < script_count && exec_count < MAX_SCRIPTS; i++) {
+        for (int j = 0; j < script_count; j++) {
+            if (scripts[j].parse_order == i) {
+                // Skip invalid external scripts
+                if (scripts[j].type == SCRIPT_TYPE_EXTERNAL && scripts[j].url[0] == '\0') {
+                    break;
+                }
+                // Skip empty inline scripts
+                if (scripts[j].type == SCRIPT_TYPE_INLINE && 
+                    (!scripts[j].content || scripts[j].content_len == 0)) {
+                    break;
+                }
+                exec_scripts[exec_count] = scripts[j].content;
+                exec_script_lens[exec_count] = scripts[j].content_len;
+                exec_count++;
+                break;
+            }
+        }
+    }
+    
+    if (exec_count == 0) {
+        LOG_ERROR("No valid scripts to execute");
+        free_script_infos(scripts, script_count);
+        return NULL;
+    }
+    
+    LOG_INFO("Executing %d scripts...", exec_count);
+    
+    JsExecResult js_result;
+    memset(&js_result, 0, sizeof(JsExecResult));
+    
+    bool js_success = js_quickjs_exec_scripts(
+        exec_scripts, exec_script_lens, exec_count,
+        html, &js_result
+    );
+    
+    free_script_infos(scripts, script_count);
+    
+    if (!js_success) {
+        LOG_ERROR("JavaScript execution failed");
+        return NULL;
+    }
+    
+    LOG_INFO("JavaScript execution successful");
+    
+    // Get player response from JS context
+    char *player_response = js_quickjs_get_player_response();
+    if (player_response) {
+        LOG_INFO("Got player response from JS context: %zu bytes", strlen(player_response));
+    } else {
+        LOG_WARN("No player response available in JS context");
+    }
+    
+    return player_response;
 }
 
 // Main extraction function
@@ -1387,57 +1214,34 @@ int html_extract_media_streams(const char *html_url, MediaStream *streams, int m
     
     LOG_INFO("Downloaded %zu bytes of HTML", html_buffer.size);
     
-    // Extract ytInitialPlayerResponse
-    char *player_response = extract_yt_player_response(html_buffer.data);
+    // Execute scripts and get player response from JS context
+    char *player_response = execute_scripts_and_get_player_response(html_buffer.data);
     if (!player_response) {
-        LOG_ERROR("Failed to extract ytInitialPlayerResponse");
+        LOG_ERROR("Failed to get player response from JS context");
         http_free_buffer(&html_buffer);
         return -1;
     }
     
-    LOG_INFO("Extracted player response: %zu bytes", strlen(player_response));
-    
     // Parse streams from player response using cJSON
     int stream_count = parse_yt_player_response(player_response, streams, max_streams);
     
-    // Check if any streams need signature decryption (either from cJSON or we assume they do)
-    bool needs_decryption = (stream_count == 0);  // If cJSON failed, try JS anyway
-    for (int i = 0; i < stream_count; i++) {
-        if (streams[i].has_cipher || 
-            strstr(streams[i].url, "&s=") || 
-            strstr(streams[i].url, "&sig=") ||
-            strstr(streams[i].url, "signatureCipher=")) {
-            needs_decryption = true;
-            break;
-        }
-    }
-    
-    // If decryption needed or cJSON failed, try to decrypt signatures using player scripts
-    if (needs_decryption) {
-        LOG_INFO("Attempting signature decryption with player scripts...");
-        
-        // Try to find and execute player scripts with the player response
-        char decrypted_url[2048];
-        if (decrypt_signature_with_scripts(html_buffer.data, "", decrypted_url, sizeof(decrypted_url))) {
-            LOG_INFO("Successfully executed player scripts");
-            // The JS execution captured URLs will be handled separately
-        } else {
-            LOG_WARN("Player script execution did not produce decrypted URLs");
-        }
-    }
-    
     if (stream_count == 0) {
-        LOG_WARN("No streams found in player response via cJSON (may need JS decryption)");
-        // Don't return early - we may have captured URLs from JS execution
+        LOG_WARN("No streams found in player response");
     } else {
         LOG_INFO("Found %d streams in player response", stream_count);
     }
     
-    // Extract title
-    char *title = extract_video_title(player_response);
-    if (title) {
-        LOG_INFO("Video title: %s", title);
-        free(title);
+    // Extract title from parsed JSON
+    cJSON *root = cJSON_Parse(player_response);
+    if (root) {
+        cJSON *video_details = cJSON_GetObjectItemCaseSensitive(root, "videoDetails");
+        if (video_details) {
+            cJSON *title_obj = cJSON_GetObjectItemCaseSensitive(video_details, "title");
+            if (cJSON_IsString(title_obj)) {
+                LOG_INFO("Video title: %s", title_obj->valuestring);
+            }
+        }
+        cJSON_Delete(root);
     }
     
     free(player_response);
@@ -1460,11 +1264,11 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
     // Clear output
     memset(outCandidate, 0, sizeof(HtmlMediaCandidate));
     
-    // Try to extract ytInitialPlayerResponse directly from the HTML
-    char *player_response = extract_yt_player_response(html);
+    // Execute scripts and get player response from JS context
+    char *player_response = execute_scripts_and_get_player_response(html);
     if (!player_response) {
         if (err && errLen > 0) {
-            strncpy(err, "No player response found in HTML", errLen - 1);
+            strncpy(err, "Failed to get player response from JS context", errLen - 1);
             err[errLen - 1] = '\0';
         }
         return false;
@@ -1474,20 +1278,8 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
     MediaStream streams[32];
     int stream_count = parse_yt_player_response(player_response, streams, 32);
     
-    // If cJSON parsing failed or returned no streams, try JS execution
     if (stream_count == 0) {
-        LOG_WARN("cJSON parsing returned 0 streams, trying JS execution...");
-        
-        // Try to decrypt signatures using player scripts
-        char decrypted_url[2048];
-        if (decrypt_signature_with_scripts(html, "", decrypted_url, sizeof(decrypted_url))) {
-            LOG_INFO("JS execution succeeded, checking captured URLs...");
-            // Check if we captured any URLs from JS execution
-            // The captured URLs would be in the JsExecResult
-        }
-        
-        // For now, still return error since we haven't captured URLs properly
-        // TODO: Check captured URLs from JS execution and return success if found
+        LOG_WARN("No streams found in player response");
         free(player_response);
         if (err && errLen > 0) {
             strncpy(err, "No streams found in player response", errLen - 1);
@@ -1495,6 +1287,7 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
         }
         return false;
     }
+    
     free(player_response);
     
     // Find the best stream (prefer video with highest quality and direct URL)
@@ -1528,24 +1321,9 @@ bool html_extract_media_url(const char *html, HtmlMediaCandidate *outCandidate,
         return false;
     }
     
-    // If stream has cipher, try to decrypt signature
-    if (best->has_cipher) {
-        LOG_INFO("Stream has cipher, attempting signature decryption...");
-        char decrypted_url[2048];
-        if (decrypt_signature_with_scripts(html, best->url, decrypted_url, sizeof(decrypted_url))) {
-            LOG_INFO("Successfully decrypted signature");
-            strncpy(outCandidate->url, decrypted_url, sizeof(outCandidate->url) - 1);
-            outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
-        } else {
-            LOG_WARN("Could not decrypt signature, using original URL (may fail with 403)");
-            strncpy(outCandidate->url, best->url, sizeof(outCandidate->url) - 1);
-            outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
-        }
-    } else {
-        // No cipher, use URL directly
-        strncpy(outCandidate->url, best->url, sizeof(outCandidate->url) - 1);
-        outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
-    }
+    // Use the stream URL (should already be decrypted from JS context)
+    strncpy(outCandidate->url, best->url, sizeof(outCandidate->url) - 1);
+    outCandidate->url[sizeof(outCandidate->url) - 1] = '\0';
     
     strncpy(outCandidate->mime, best->mime_type, sizeof(outCandidate->mime) - 1);
     outCandidate->mime[sizeof(outCandidate->mime) - 1] = '\0';
