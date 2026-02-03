@@ -290,7 +290,7 @@ static JSValue js_video_set_src(JSContext *ctx, JSValueConst this_val, JSValueCo
     if (src) {
         LOG_INFO("HTMLVideoElement: video.src SET to: %.100s%s (element id=%s)",
                  src, strlen(src) > 100 ? "..." : "",
-                 vid->id ? vid->id : "(none)");
+                 vid->id[0] != '\0' ? vid->id : "(none)");
         strncpy(vid->src, src, sizeof(vid->src) - 1);
         vid->src[sizeof(vid->src) - 1] = '\0';
         record_captured_url(src);
