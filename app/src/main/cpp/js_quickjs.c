@@ -1736,9 +1736,6 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         "if (!goog.module) goog.module = function() {};"
         "if (!goog.define) goog.define = function(name, val) { return val; };"
         "if (!goog.global) goog.global = window;"
-        // Ensure ytsignals exists (used for app loading)
-        "if (typeof window.ytsignals === 'undefined') window.ytsignals = {};"
-        "if (!window.ytsignals.getInstance) window.ytsignals.getInstance = function() { return { whenReady: function() { return Promise.resolve(); }, get: function() { return null; }, set: function() {} }; };"
     ;
     JSValue pre_exec_result = JS_Eval(ctx, pre_exec_stubs, strlen(pre_exec_stubs), "<pre_exec_stubs>", 0);
     if (JS_IsException(pre_exec_result)) {
@@ -1940,6 +1937,7 @@ bool js_quickjs_exec_scripts_with_data(const char **scripts, const size_t *scrip
         "console.log('window.ytPlayer exists: ' + (typeof window.ytPlayer));\n"
         "console.log('window.yt exists: ' + (typeof window.yt));\n"
         "console.log('window.ytcfg exists: ' + (typeof window.ytcfg));\n"
+        "console.log('window.ytsignals exists: ' + (typeof window.ytsignals));\n"
         "\n"
         "// Dispatch DOMContentLoaded to trigger any player initialization\n"
         "if (typeof window !== 'undefined' && window.dispatchEvent) {\n"
