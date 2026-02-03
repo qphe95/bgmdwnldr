@@ -16,7 +16,23 @@
 
 #define MAX_SCRIPT_URLS 32
 #define SCRIPT_URL_MAX_LEN 512
+#define MAX_SCRIPTS 64  // Total scripts (external + inline)
 #define MAX_HTML_SIZE (10 * 1024 * 1024)  // 10MB max for large YouTube pages
+
+// Script types
+typedef enum {
+    SCRIPT_TYPE_EXTERNAL,
+    SCRIPT_TYPE_INLINE
+} ScriptType;
+
+// Script info with parse order tracking
+typedef struct {
+    int parse_order;           // Order in which script appears in HTML (0 = first)
+    ScriptType type;           // External or inline
+    char url[SCRIPT_URL_MAX_LEN];  // For external scripts: URL to fetch
+    char *content;             // For inline scripts: content; for external: fetched content
+    size_t content_len;        // Length of content
+} ScriptInfo;
 
 // Media stream structure
 typedef struct MediaStream {
@@ -388,72 +404,10 @@ static char* extract_yt_player_response(const char *html) {
     return NULL;
 }
 
-// Extract all script URLs from HTML
-static int extract_all_script_urls(const char *html, char out_urls[][SCRIPT_URL_MAX_LEN], int max_urls) {
-    if (!html || !out_urls || max_urls <= 0) return 0;
-    
-    int count = 0;
-    const char *p = html;
-    
-    while ((p = strstr(p, "<script")) != NULL && count < max_urls) {
-        // Find src attribute
-        const char *src = strstr(p, "src=");
-        if (!src) {
-            p++;
-            continue;
-        }
-        
-        src += 4;
-        while (*src && isspace((unsigned char)*src)) src++;
-        
-        char quote = *src;
-        if (quote != '"' && quote != '\'') {
-            p++;
-            continue;
-        }
-        
-        src++;
-        const char *end = strchr(src, quote);
-        if (!end) {
-            p++;
-            continue;
-        }
-        
-        size_t len = end - src;
-        if (len > 0 && len < SCRIPT_URL_MAX_LEN - 1) {
-            strncpy(out_urls[count], src, len);
-            out_urls[count][len] = '\0';
-            
-            // Convert relative to absolute
-            if (strncmp(out_urls[count], "//", 2) == 0) {
-                char temp[SCRIPT_URL_MAX_LEN];
-                snprintf(temp, sizeof(temp), "https:%s", out_urls[count]);
-                strcpy(out_urls[count], temp);
-            } else if (out_urls[count][0] == '/') {
-                char temp[SCRIPT_URL_MAX_LEN];
-                snprintf(temp, sizeof(temp), "https://www.youtube.com%s", out_urls[count]);
-                strcpy(out_urls[count], temp);
-            } else if (strncmp(out_urls[count], "http", 4) != 0) {
-                // Skip non-HTTP URLs
-                p++;
-                continue;
-            }
-            
-            LOG_INFO("Found script URL: %.80s...", out_urls[count]);
-            count++;
-        } else {
-            LOG_WARN("Skipping script with invalid URL format");
-        }
-        
-        p = end;
-    }
-    
-    LOG_INFO("Extracted %d script URLs", count);
-    return count;
-}
-
 // Extract inline scripts from HTML (scripts without src attribute)
 // These contain initialization code like ytcfg, ytInitialData, etc.
+// NOTE: This function is kept for backward compatibility but not used by the new parse-order system.
+// Use extract_scripts_in_order() instead for proper script execution order.
 static int extract_inline_scripts(const char *html, char **out_scripts, int max_scripts) {
     if (!html || !out_scripts || max_scripts <= 0) return 0;
     
@@ -633,58 +587,233 @@ static int extract_inline_scripts(const char *html, char **out_scripts, int max_
     return count;
 }
 
-// Free inline scripts
-static void free_inline_scripts(char **scripts, int count) {
+// Free script info array
+static void free_script_infos(ScriptInfo *scripts, int count) {
     for (int i = 0; i < count; i++) {
-        if (scripts[i]) {
-            free(scripts[i]);
-            scripts[i] = NULL;
+        if (scripts[i].content) {
+            free(scripts[i].content);
+            scripts[i].content = NULL;
         }
     }
 }
 
-// Find and extract the base.js player script (most important for signature decryption)
-static bool find_base_js_url(const char *html, char *out_url, size_t out_len) {
-    if (!html || !out_url || out_len == 0) return false;
+// Comparison function for qsort - sort by parse_order
+static int compare_script_info(const void *a, const void *b) {
+    const ScriptInfo *sa = (const ScriptInfo *)a;
+    const ScriptInfo *sb = (const ScriptInfo *)b;
+    return sa->parse_order - sb->parse_order;
+}
+
+// Extract all scripts (both external and inline) in parse order
+// Returns number of scripts found, fills the scripts array
+static int extract_scripts_in_order(const char *html, ScriptInfo *scripts, int max_scripts) {
+    if (!html || !scripts || max_scripts <= 0) return 0;
     
-    // Try to find the player base script
-    // Look for patterns like /s/player/.../player_ias.vflset/.../base.js
+    int count = 0;
+    int parse_order = 0;
     const char *p = html;
-    while ((p = strstr(p, "base.js")) != NULL) {
-        // Find the start of the URL
-        const char *start = p;
-        while (start > html && start[-1] != '"' && start[-1] != '\'') start--;
+    
+    while ((p = strstr(p, "<script")) != NULL && count < max_scripts) {
+        const char *tag_start = p;
+        const char *tag_end = tag_start + 7; // Skip "<script"
         
-        if (start > html) {
-            const char *end = p + 7; // len("base.js")
-            if (*end == '"' || *end == '\'') {
-                size_t len = end - start;
-                if (len < out_len) {
-                    strncpy(out_url, start, len);
-                    out_url[len] = '\0';
-                    
-                    // Make absolute
-                    if (strncmp(out_url, "//", 2) == 0) {
-                        char temp[512];
-                        snprintf(temp, sizeof(temp), "https:%s", out_url);
-                        strncpy(out_url, temp, out_len - 1);
-                        out_url[out_len - 1] = '\0';
-                    } else if (out_url[0] == '/') {
-                        char temp[512];
-                        snprintf(temp, sizeof(temp), "https://www.youtube.com%s", out_url);
-                        strncpy(out_url, temp, out_len - 1);
-                        out_url[out_len - 1] = '\0';
-                    }
-                    
-                    LOG_INFO("Found base.js: %s", out_url);
-                    return true;
+        // Find end of opening tag properly (handling quotes)
+        bool in_quote = false;
+        char quote_char = 0;
+        while (*tag_end) {
+            if (!in_quote) {
+                if (*tag_end == '"' || *tag_end == '\'') {
+                    in_quote = true;
+                    quote_char = *tag_end;
+                } else if (*tag_end == '>') {
+                    break;
+                }
+            } else {
+                if (*tag_end == quote_char) {
+                    in_quote = false;
                 }
             }
+            tag_end++;
         }
-        p++;
+        
+        if (*tag_end != '>') break; // No closing bracket found
+        
+        // Check for type attribute - must be JavaScript or module
+        bool is_js = true;
+        bool has_src = false;
+        const char *src_start = NULL;
+        size_t src_len = 0;
+        
+        // Parse attributes within the tag
+        const char *attr = tag_start + 7;  // After "<script"
+        while (attr < tag_end) {
+            // Skip whitespace
+            while (attr < tag_end && isspace((unsigned char)*attr)) attr++;
+            if (attr >= tag_end) break;
+            
+            // Check for src attribute
+            if (strncasecmp(attr, "src=", 4) == 0) {
+                has_src = true;
+                attr += 4;
+                while (attr < tag_end && isspace((unsigned char)*attr)) attr++;
+                if (attr < tag_end) {
+                    char quote = *attr;
+                    if (quote == '"' || quote == '\'') {
+                        attr++;  // Skip quote
+                        src_start = attr;
+                        const char *end = strchr(attr, quote);
+                        if (end && end < tag_end) {
+                            src_len = end - attr;
+                            attr = end + 1;
+                        }
+                    } else {
+                        // Unquoted src
+                        src_start = attr;
+                        while (attr < tag_end && !isspace((unsigned char)*attr)) attr++;
+                        src_len = attr - src_start;
+                    }
+                }
+                continue;
+            }
+            
+            // Check for type attribute
+            if (strncasecmp(attr, "type=", 5) == 0) {
+                attr += 5;
+                while (attr < tag_end && isspace((unsigned char)*attr)) attr++;
+                if (attr < tag_end) {
+                    char quote = *attr;
+                    if (quote == '"' || quote == '\'') {
+                        attr++;
+                        const char *type_val = attr;
+                        const char *end = strchr(attr, quote);
+                        if (end && end < tag_end) {
+                            size_t type_len = end - type_val;
+                            // Check if it's a valid JS type
+                            if (type_len > 0 &&
+                                strncasecmp(type_val, "text/javascript", 15) != 0 &&
+                                strncasecmp(type_val, "application/javascript", 22) != 0 &&
+                                strncasecmp(type_val, "module", 6) != 0) {
+                                is_js = false;
+                            }
+                            attr = end + 1;
+                        }
+                    }
+                }
+                continue;
+            }
+            
+            // Skip to next attribute
+            attr++;
+        }
+        
+        if (!is_js) {
+            p = tag_end + 1;
+            continue;
+        }
+        
+        if (has_src && src_start && src_len > 0 && src_len < SCRIPT_URL_MAX_LEN) {
+            // External script
+            strncpy(scripts[count].url, src_start, src_len);
+            scripts[count].url[src_len] = '\0';
+            
+            // Convert relative to absolute URL
+            if (strncmp(scripts[count].url, "//", 2) == 0) {
+                char temp[SCRIPT_URL_MAX_LEN];
+                snprintf(temp, sizeof(temp), "https:%s", scripts[count].url);
+                strcpy(scripts[count].url, temp);
+            } else if (scripts[count].url[0] == '/') {
+                char temp[SCRIPT_URL_MAX_LEN];
+                snprintf(temp, sizeof(temp), "https://www.youtube.com%s", scripts[count].url);
+                strcpy(scripts[count].url, temp);
+            } else if (strncmp(scripts[count].url, "http", 4) != 0) {
+                // Skip non-HTTP URLs
+                p = tag_end + 1;
+                continue;
+            }
+            
+            scripts[count].parse_order = parse_order++;
+            scripts[count].type = SCRIPT_TYPE_EXTERNAL;
+            scripts[count].content = NULL;
+            scripts[count].content_len = 0;
+            
+            LOG_INFO("Found external script [%d]: %.80s...", 
+                     scripts[count].parse_order, scripts[count].url);
+            count++;
+            p = tag_end + 1;
+            
+        } else {
+            // Inline script - find the closing </script> tag
+            const char *content_start = tag_end + 1;
+            const char *script_end = NULL;
+            const char *search = content_start;
+            
+            while ((search = strstr(search, "<")) != NULL) {
+                if (strncasecmp(search, "</script>", 9) == 0) {
+                    script_end = search;
+                    break;
+                }
+                search++;
+            }
+            
+            if (!script_end) {
+                LOG_WARN("No closing </script> tag found");
+                break;
+            }
+            
+            size_t content_len = script_end - content_start;
+            
+            // Skip empty scripts or very short ones
+            if (content_len < 50) {
+                p = script_end + 9;
+                continue;
+            }
+            
+            // Skip scripts that are likely not initialization code
+            bool skip = false;
+            const char *first_nonspace = content_start;
+            while (*first_nonspace && isspace((unsigned char)*first_nonspace)) first_nonspace++;
+            if (*first_nonspace == '{' || *first_nonspace == '[') {
+                skip = true; // Might be JSON, skip
+            }
+            // Skip data payload scripts that cause parsing issues
+            if (strncmp(first_nonspace, "var ytInitialPlayerResponse", 27) == 0 ||
+                strncmp(first_nonspace, "window.ytInitialPlayerResponse", 30) == 0 ||
+                (strncmp(first_nonspace, "(function()", 11) == 0 && strstr(first_nonspace, "window.ytAtR") != NULL)) {
+                skip = true; // Data payload scripts - not needed for signature decryption
+            }
+            // Skip very large scripts (>500KB) as they're likely data, not code
+            if (content_len > 500000) {
+                skip = true;
+            }
+            
+            if (skip) {
+                p = script_end + 9;
+                continue;
+            }
+            
+            // Extract the script content
+            char *script_content = malloc(content_len + 1);
+            if (script_content) {
+                memcpy(script_content, content_start, content_len);
+                script_content[content_len] = '\0';
+                
+                scripts[count].url[0] = '\0';
+                scripts[count].parse_order = parse_order++;
+                scripts[count].type = SCRIPT_TYPE_INLINE;
+                scripts[count].content = script_content;
+                scripts[count].content_len = content_len;
+                
+                LOG_INFO("Found inline script [%d]: %zu bytes", 
+                         scripts[count].parse_order, content_len);
+                count++;
+            }
+            
+            p = script_end + 9;
+        }
     }
     
-    return false;
+    LOG_INFO("Extracted %d scripts in parse order", count);
+    return count;
 }
 
 // Decrypt signature using the player scripts
@@ -694,163 +823,158 @@ static bool decrypt_signature_with_scripts(const char *html, const char *encrypt
         return false;
     }
     
-    LOG_INFO("Attempting signature decryption");
+    LOG_INFO("Attempting signature decryption with parse-order execution");
     
-    // Extract all script URLs
-    char script_urls[MAX_SCRIPT_URLS][SCRIPT_URL_MAX_LEN];
-    int script_count = extract_all_script_urls(html, script_urls, MAX_SCRIPT_URLS);
+    // Extract all scripts in parse order (both external and inline)
+    ScriptInfo scripts[MAX_SCRIPTS];
+    memset(scripts, 0, sizeof(scripts));
+    int script_count = extract_scripts_in_order(html, scripts, MAX_SCRIPTS);
     
     if (script_count == 0) {
-        LOG_ERROR("No script URLs found in HTML");
+        LOG_ERROR("No scripts found in HTML");
         return false;
     }
     
-    // Prioritize base.js (main player script)
-    char base_js[SCRIPT_URL_MAX_LEN] = {0};
-    if (find_base_js_url(html, base_js, sizeof(base_js))) {
-        // Move base.js to front of list
-        for (int i = 0; i < script_count; i++) {
-            if (strstr(script_urls[i], "base.js")) {
-                char temp[SCRIPT_URL_MAX_LEN];
-                strcpy(temp, script_urls[0]);
-                strcpy(script_urls[0], script_urls[i]);
-                strcpy(script_urls[i], temp);
-                LOG_INFO("Prioritized base.js to position 0");
+    LOG_INFO("Found %d scripts in parse order", script_count);
+    
+    // Fetch external scripts
+    int fetched_count = 0;
+    for (int i = 0; i < script_count; i++) {
+        if (scripts[i].type == SCRIPT_TYPE_EXTERNAL) {
+            HttpBuffer buffer;
+            memset(&buffer, 0, sizeof(HttpBuffer));
+            
+            char error[256];
+            LOG_INFO("Fetching external script [%d]: %.80s", 
+                     scripts[i].parse_order, scripts[i].url);
+            
+            bool result = http_get_to_memory(scripts[i].url, &buffer, error, sizeof(error));
+            if (result && buffer.data && buffer.size > 0) {
+                // Validate that the response is actually JavaScript
+                const char *content = buffer.data;
+                
+                // Skip leading whitespace and BOM
+                while (*content && (isspace((unsigned char)*content) || 
+                       (unsigned char)*content == 0xEF || 
+                       (unsigned char)*content == 0xBB || 
+                       (unsigned char)*content == 0xBF)) {
+                    content++;
+                }
+                
+                // Check for HTML indicators at the START of the file
+                bool is_html = false;
+                if (strncasecmp(content, "<!doctype", 9) == 0 ||
+                    strncasecmp(content, "<html", 5) == 0 ||
+                    strncasecmp(content, "<?xml", 5) == 0) {
+                    is_html = true;
+                }
+                
+                // Also check first 500 chars for HTML structure tags
+                if (!is_html) {
+                    char first_500[501];
+                    size_t check_len = strlen(content);
+                    if (check_len > 500) check_len = 500;
+                    memcpy(first_500, content, check_len);
+                    first_500[check_len] = '\0';
+                    
+                    if (strstr(first_500, "<head") != NULL || 
+                        strstr(first_500, "<body") != NULL ||
+                        strstr(first_500, "<title>") != NULL) {
+                        is_html = true;
+                    }
+                }
+                
+                if (is_html) {
+                    LOG_WARN("Script [%d] appears to be HTML, not JavaScript - skipping", 
+                             scripts[i].parse_order);
+                    LOG_WARN("Content preview: %.100s...", content);
+                    http_free_buffer(&buffer);
+                    // Mark as invalid by clearing URL
+                    scripts[i].url[0] = '\0';
+                } else {
+                    scripts[i].content = buffer.data;
+                    scripts[i].content_len = buffer.size;
+                    fetched_count++;
+                    LOG_INFO("Loaded external script [%d]: %zu bytes", 
+                             scripts[i].parse_order, buffer.size);
+                }
+            } else {
+                LOG_WARN("Failed to fetch script [%d]: %s", scripts[i].parse_order, error);
+                if (buffer.data) http_free_buffer(&buffer);
+                // Mark as invalid
+                scripts[i].url[0] = '\0';
+            }
+        }
+    }
+    
+    LOG_INFO("Successfully fetched %d external scripts", fetched_count);
+    
+    // Build arrays for execution in parse order (only valid scripts)
+    const char *exec_scripts[MAX_SCRIPTS];
+    size_t exec_script_lens[MAX_SCRIPTS];
+    int exec_count = 0;
+    int external_exec_count = 0;
+    int inline_exec_count = 0;
+    
+    for (int i = 0; i < script_count && exec_count < MAX_SCRIPTS; i++) {
+        // Find script with parse_order == i
+        for (int j = 0; j < script_count; j++) {
+            if (scripts[j].parse_order == i) {
+                // Skip invalid external scripts (failed to fetch or HTML)
+                if (scripts[j].type == SCRIPT_TYPE_EXTERNAL && scripts[j].url[0] == '\0') {
+                    LOG_WARN("Skipping invalid external script [%d]", i);
+                    break;
+                }
+                
+                // Skip inline scripts without content
+                if (scripts[j].type == SCRIPT_TYPE_INLINE && 
+                    (!scripts[j].content || scripts[j].content_len == 0)) {
+                    LOG_WARN("Skipping empty inline script [%d]", i);
+                    break;
+                }
+                
+                exec_scripts[exec_count] = scripts[j].content;
+                exec_script_lens[exec_count] = scripts[j].content_len;
+                
+                if (scripts[j].type == SCRIPT_TYPE_EXTERNAL) {
+                    LOG_INFO("Adding external script [%d] to execution queue (%zu bytes)",
+                             i, scripts[j].content_len);
+                    external_exec_count++;
+                } else {
+                    LOG_INFO("Adding inline script [%d] to execution queue (%zu bytes)",
+                             i, scripts[j].content_len);
+                    inline_exec_count++;
+                }
+                
+                exec_count++;
                 break;
             }
         }
     }
     
-    // Fetch all scripts using http_get_to_memory
-    const char *scripts[MAX_SCRIPT_URLS];
-    size_t script_lens[MAX_SCRIPT_URLS];
-    int loaded_count = 0;
-    
-    for (int i = 0; i < script_count && loaded_count < MAX_SCRIPT_URLS; i++) {
-        scripts[loaded_count] = NULL;
-        script_lens[loaded_count] = 0;
-        
-        HttpBuffer buffer;
-        memset(&buffer, 0, sizeof(HttpBuffer));
-        
-        char error[256];
-        LOG_INFO("Fetching script %d/%d: %.80s", i + 1, script_count, script_urls[i]);
-        
-        bool result = http_get_to_memory(script_urls[i], &buffer, error, sizeof(error));
-        if (result && buffer.data && buffer.size > 0) {
-            /* Validate that the response is actually JavaScript, not HTML (e.g., a login page) */
-            const char *content = buffer.data;
-            
-            /* Skip leading whitespace and BOM */
-            while (*content && (isspace((unsigned char)*content) || 
-                   (unsigned char)*content == 0xEF || 
-                   (unsigned char)*content == 0xBB || 
-                   (unsigned char)*content == 0xBF)) {
-                content++;
-            }
-            
-            /* Check for HTML indicators at the START of the file only
-             * (JS files might contain <head>/<body> as string literals later in the code) */
-            bool is_html = false;
-            if (strncasecmp(content, "<!doctype", 9) == 0 ||
-                strncasecmp(content, "<html", 5) == 0 ||
-                strncasecmp(content, "<?xml", 5) == 0) {
-                is_html = true;
-            }
-            
-            /* Also check first 500 chars for HTML structure tags appearing at the beginning */
-            if (!is_html) {
-                char first_500[501];
-                size_t check_len = strlen(content);
-                if (check_len > 500) check_len = 500;
-                memcpy(first_500, content, check_len);
-                first_500[check_len] = '\0';
-                
-                /* Only flag as HTML if these tags appear very early in the document */
-                if (strstr(first_500, "<head") != NULL || 
-                    strstr(first_500, "<body") != NULL ||
-                    strstr(first_500, "<title>") != NULL) {
-                    is_html = true;
-                }
-            }
-            
-            if (is_html) {
-                LOG_WARN("Script %d appears to be HTML, not JavaScript - skipping", i);
-                LOG_WARN("Content preview: %.100s...", content);
-                http_free_buffer(&buffer);
-            } else {
-                scripts[loaded_count] = buffer.data;
-                script_lens[loaded_count] = buffer.size;
-                loaded_count++;
-                LOG_INFO("Loaded script %d: %zu bytes", i, buffer.size);
-            }
-        } else {
-            LOG_WARN("Failed to fetch script %d: %s", i, error);
-            if (buffer.data) http_free_buffer(&buffer);
-        }
-    }
-    
-    if (loaded_count == 0) {
-        LOG_ERROR("Failed to fetch any scripts");
+    if (exec_count == 0) {
+        LOG_ERROR("No valid scripts to execute");
+        free_script_infos(scripts, script_count);
         return false;
     }
     
-    LOG_INFO("Successfully loaded %d external scripts", loaded_count);
-    
-    // Note: QuickJS has been modified to handle all characters properly
-    // No sanitization needed for external scripts
+    LOG_INFO("Executing %d scripts in parse order (%d external + %d inline)", 
+             exec_count, external_exec_count, inline_exec_count);
     
     // Extract ytInitialPlayerResponse from HTML
     char *player_response = extract_yt_player_response(html);
     
-    // Extract inline scripts (initialization code like ytcfg, ytInitialData)
-    char *inline_scripts[MAX_SCRIPT_URLS];
-    int inline_count = extract_inline_scripts(html, inline_scripts, MAX_SCRIPT_URLS);
-    
-    // Combine inline and external scripts
-    // IMPORTANT: External scripts (especially base.js) must run FIRST!
-    // In a real browser, when the parser encounters <script src="base.js">,
-    // it downloads and executes that script BEFORE continuing to parse
-    // subsequent inline scripts. The inline scripts depend on base.js APIs.
-    const char *all_scripts[MAX_SCRIPT_URLS * 2];
-    size_t all_script_lens[MAX_SCRIPT_URLS * 2];
-    int total_count = 0;
-    
-    // Add external scripts FIRST (base.js provides yt, ytcfg, etc.)
-    for (int i = 0; i < loaded_count && total_count < MAX_SCRIPT_URLS * 2; i++) {
-        all_scripts[total_count] = scripts[i];
-        all_script_lens[total_count] = script_lens[i];
-        total_count++;
-    }
-    
-    // Add inline scripts AFTER external scripts
-    for (int i = 0; i < inline_count && total_count < MAX_SCRIPT_URLS * 2; i++) {
-        all_scripts[total_count] = inline_scripts[i];
-        all_script_lens[total_count] = strlen(inline_scripts[i]);
-        total_count++;
-    }
-    
-    // Execute all scripts with the player response injected
+    // Execute all scripts in parse order
     JsExecResult js_result;
     memset(&js_result, 0, sizeof(JsExecResult));
     
-    LOG_INFO("Executing %d total scripts (%d external + %d inline) with ytInitialPlayerResponse", 
-             total_count, loaded_count, inline_count);
-    
     bool js_success = js_quickjs_exec_scripts_with_data(
-        all_scripts, all_script_lens, total_count,
+        exec_scripts, exec_script_lens, exec_count,
         player_response, html, &js_result
     );
     
-    // Free inline scripts
-    free_inline_scripts(inline_scripts, inline_count);
-    
-    // Free external scripts (now sanitized, allocated with malloc)
-    for (int i = 0; i < loaded_count; i++) {
-        if (scripts[i]) {
-            free((void*)scripts[i]);
-        }
-    }
+    // Free all script info (including fetched content)
+    free_script_infos(scripts, script_count);
     
     if (!js_success) {
         LOG_ERROR("JavaScript execution failed");
