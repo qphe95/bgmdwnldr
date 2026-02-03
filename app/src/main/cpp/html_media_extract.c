@@ -87,7 +87,7 @@ static int decode_html_entity(const char *input, char *output, size_t output_len
 }
 
 // Decode hex-escaped content (\x3b -> ;)
-// Handles both \xNN format and raw hex injection cleanup
+// Handles \xNN format escape sequences commonly found in YouTube's JSON
 static int decode_hex_escapes(const char *input, char *output, size_t output_len) {
     if (!input || !output || output_len == 0) return 0;
     
@@ -96,59 +96,27 @@ static int decode_hex_escapes(const char *input, char *output, size_t output_len
     size_t remaining = output_len - 1;
     
     while (*p && remaining > 0) {
-        // Check for \xNN pattern
+        // Check for \xNN pattern (hex escape sequence)
         if (*p == '\\' && *(p + 1) == 'x' && 
             isxdigit((unsigned char)*(p + 2)) && 
             isxdigit((unsigned char)*(p + 3))) {
             // Decode hex value
-            int val1 = tolower(*(p + 2));
-            int val2 = tolower(*(p + 3));
+            int val1 = tolower((unsigned char)*(p + 2));
+            int val2 = tolower((unsigned char)*(p + 3));
             int hex_val = ((val1 >= 'a' ? val1 - 'a' + 10 : val1 - '0') << 4) |
                           (val2 >= 'a' ? val2 - 'a' + 10 : val2 - '0');
             
-            // Only decode printable ASCII and common control chars
-            if (hex_val >= 0x20 && hex_val <= 0x7E) {
+            // Accept any valid byte value (0x00-0xFF) that's not null
+            // This includes all printable ASCII, common symbols like = ; & %, etc.
+            if (hex_val != 0) {
                 *out++ = (char)hex_val;
                 remaining--;
-                p += 4;  // Skip \xNN
+                p += 4;  // Skip entire \xNN sequence
                 continue;
             }
         }
         
-        // Check for "garbage hex" injection - standalone hex bytes without \x prefix
-        // This handles the "3b38" type garbage where hex values are concatenated
-        if (isxdigit((unsigned char)*p) && isxdigit((unsigned char)*(p + 1)) &&
-            remaining >= 1) {
-            // Look ahead to see if this looks like garbage hex
-            // Pattern: two hex digits followed by more hex digits without proper delimiter
-            // Only treat as garbage if we're inside a JSON string context
-            const char *check = p + 2;
-            int hex_count = 2;
-            while (isxdigit((unsigned char)*check)) {
-                hex_count++;
-                check++;
-            }
-            
-            // If we have 4+ consecutive hex digits, it might be garbage
-            if (hex_count >= 4 && hex_count % 2 == 0) {
-                // Decode as hex pairs and skip
-                for (int i = 0; i < hex_count && remaining > 0; i += 2) {
-                    int val1 = tolower(p[i]);
-                    int val2 = tolower(p[i + 1]);
-                    int hex_val = ((val1 >= 'a' ? val1 - 'a' + 10 : val1 - '0') << 4) |
-                                  (val2 >= 'a' ? val2 - 'a' + 10 : val2 - '0');
-                    
-                    // Only decode if it results in a reasonable character
-                    if (hex_val >= 0x20 && hex_val <= 0x7E) {
-                        *out++ = (char)hex_val;
-                        remaining--;
-                    }
-                }
-                p += hex_count;
-                continue;
-            }
-        }
-        
+        // Regular character copy
         *out++ = *p++;
         remaining--;
     }
