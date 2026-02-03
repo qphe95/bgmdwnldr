@@ -563,8 +563,7 @@ static void init_browser_environment(JSContext *ctx) {
     JS_SetPropertyStr(ctx, document, "getElementById", JS_NewCFunction(ctx, js_document_get_element_by_id, "getElementById", 1));
     JS_SetPropertyStr(ctx, document, "querySelector", JS_NewCFunction(ctx, js_document_query_selector, "querySelector", 1));
     JS_SetPropertyStr(ctx, document, "querySelectorAll", JS_NewCFunction(ctx, js_document_query_selector_all, "querySelectorAll", 1));
-    JS_SetPropertyStr(ctx, document, "addEventListener", JS_NewCFunction(ctx, js_dummy_function, "addEventListener", 2));
-    JS_SetPropertyStr(ctx, document, "removeEventListener", JS_NewCFunction(ctx, js_dummy_function, "removeEventListener", 2));
+    // Note: addEventListener/removeEventListener are inherited from EventTarget prototype via browser stubs
     JS_SetPropertyStr(ctx, document, "head", js_document_get_head(ctx, document));
     JS_SetPropertyStr(ctx, document, "body", js_document_get_body(ctx, document));
     JS_SetPropertyStr(ctx, document, "documentElement", js_document_get_document_element(ctx, document));
@@ -596,8 +595,7 @@ static void init_browser_environment(JSContext *ctx) {
     if (JS_IsUndefined(window)) {
         window = JS_NewObject(ctx);
     }
-    JS_SetPropertyStr(ctx, window, "addEventListener", JS_NewCFunction(ctx, js_dummy_function, "addEventListener", 2));
-    JS_SetPropertyStr(ctx, window, "removeEventListener", JS_NewCFunction(ctx, js_dummy_function, "removeEventListener", 2));
+    // Note: addEventListener/removeEventListener are inherited from EventTarget prototype via browser stubs
     JS_SetPropertyStr(ctx, window, "setTimeout", JS_NewCFunction(ctx, js_dummy_function, "setTimeout", 2));
     JS_SetPropertyStr(ctx, window, "setInterval", JS_NewCFunction(ctx, js_dummy_function, "setInterval", 2));
     JS_SetPropertyStr(ctx, window, "clearTimeout", JS_NewCFunction(ctx, js_dummy_function, "clearTimeout", 1));
