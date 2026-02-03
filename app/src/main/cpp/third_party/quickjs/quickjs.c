@@ -50061,11 +50061,7 @@ static JSValue js_proxy_get(JSContext *ctx, JSValueConst obj, JSAtom atom,
         return JS_EXCEPTION;
     }
     if (res) {
-        if ((desc.flags & (JS_PROP_GETSET | JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE)) == 0) {
-            if (!js_same_value(ctx, desc.value, ret)) {
-                goto fail;
-            }
-        } else if ((desc.flags & (JS_PROP_GETSET | JS_PROP_CONFIGURABLE)) == JS_PROP_GETSET) {
+        if ((desc.flags & (JS_PROP_GETSET | JS_PROP_CONFIGURABLE)) == JS_PROP_GETSET) {
             if (JS_IsUndefined(desc.getter) && !JS_IsUndefined(ret)) {
             fail:
                 js_free_desc(ctx, &desc);
