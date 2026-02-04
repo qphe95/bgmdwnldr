@@ -60,7 +60,7 @@ typedef struct {
     char method[16];
     int ready_state;
     int status;
-    char response_text[8192];
+    char response_text[2097152];  // 256KB for large JSON responses
     char response_headers[2048];
     JSValue onload;
     JSValue onerror;
@@ -1681,49 +1681,6 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     // Note: Data payload scripts (ytInitialPlayerResponse, ytInitialData, etc.)
     // will execute naturally as part of the scripts array, defining global
     // variables just like in a real browser. No manual injection needed.
-    
-    // Pre-execution stubs - ensure critical functions exist before running scripts
-    const char *pre_exec_stubs = 
-        // Ensure scheduleAppLoad and related functions exist
-        "if (typeof yt === 'undefined') window.yt = {};"
-        "if (!yt.scheduler) yt.scheduler = {};"
-        "if (!yt.scheduler.scheduleAppLoad) yt.scheduler.scheduleAppLoad = function() {};"
-        "if (!yt.scheduler.cancelAppLoad) yt.scheduler.cancelAppLoad = function() {};"
-        "if (!yt.app) yt.app = {};"
-        "if (!yt.app.application) yt.app.application = {};"
-        "if (!yt.app.application.createComponent) yt.app.application.createComponent = function() {};"
-        // Ensure spf exists
-        "if (typeof spf === 'undefined') window.spf = {};"
-        "if (!spf.init) spf.init = function() {};"
-        "if (!spf.navigate) spf.navigate = function() {};"
-        "if (!spf.load) spf.load = function() {};"
-        "if (!spf.process) spf.process = function() {};"
-        // Ensure Polymer methods exist
-        "if (typeof Polymer === 'undefined') window.Polymer = function() {};"
-        "if (!Polymer.RenderStatus) Polymer.RenderStatus = {};"
-        "if (!Polymer.RenderStatus.afterNextRender) Polymer.RenderStatus.afterNextRender = function() {};"
-        "if (!Polymer.dom) Polymer.dom = function() { return { querySelector: function() { return null; } }; };"
-        // Ensure Closure library functions exist
-        "if (typeof goog === 'undefined') window.goog = {};"
-        "if (!goog.exportSymbol) goog.exportSymbol = function() {};"
-        "if (!goog.exportProperty) goog.exportProperty = function() {};"
-        "if (!goog.inherits) goog.inherits = function() {};"
-        "if (!goog.base) goog.base = function() {};"
-        "if (!goog.require) goog.require = function() {};"
-        "if (!goog.provide) goog.provide = function() {};"
-        "if (!goog.module) goog.module = function() {};"
-        "if (!goog.define) goog.define = function(name, val) { return val; };"
-        "if (!goog.global) goog.global = window;"
-    ;
-    JSValue pre_exec_result = JS_Eval(ctx, pre_exec_stubs, strlen(pre_exec_stubs), "<pre_exec_stubs>", 0);
-    if (JS_IsException(pre_exec_result)) {
-        JSValue ex = JS_GetException(ctx);
-        const char *ex_str = JS_ToCString(ctx, ex);
-        LOG_WARN("Pre-exec stubs error: %s", ex_str ? ex_str : "unknown");
-        JS_FreeCString(ctx, ex_str);
-        JS_FreeValue(ctx, ex);
-    }
-    JS_FreeValue(ctx, pre_exec_result);
     
     // Execute all scripts
     int success_count = 0;
