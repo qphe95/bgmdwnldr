@@ -846,58 +846,8 @@ static void init_browser_environment(JSContext *ctx) {
     ;
     JS_Eval(ctx, constructors_js, strlen(constructors_js), "<constructors>", 0);
     
-    // Wrap window with Proxy to detect undefined property accesses
-    const char *proxy_js = 
-        "if (typeof Proxy !== 'undefined') {"
-        "  var __loggedChains = {};"
-        "  function __createTracker(chain) {"
-        "    return new Proxy(function(){}, {"
-        "      get: function(t, p) {"
-        "        if (p === 'prototype' || p === '__proto__') return {};"
-        "        var newChain = chain + '.' + p;"
-        "        if (!__loggedChains[newChain]) {"
-        "          __loggedChains[newChain] = true;"
-        "          __log('UNDEFINED: ' + newChain);"
-        "        }"
-        "        return __createTracker(newChain);"
-        "      },"
-        "      apply: function(t, that, args) { return undefined; },"
-        "      construct: function(t, args) { return {}; }"
-        "    });"
-        "  }"
-        "  var __origWindow = window;"
-        "  window = new Proxy(__origWindow, {"
-        "    get: function(target, prop) {"
-        "      if (prop === Symbol.unscopables) return undefined;"
-        "      var val = target[prop];"
-        "      if (val === undefined && typeof prop === 'string') {"
-        "        var chain = 'window.' + prop;"
-        "        if (!__loggedChains[chain]) {"
-        "          __loggedChains[chain] = true;"
-        "          __log('UNDEFINED: ' + chain);"
-        "        }"
-        "        return __createTracker(chain);"
-        "      }"
-        "      return val;"
-        "    }"
-        "  });"
-        "  __log('Proxy installed');"
-        "}"
-    ;
-    JS_Eval(ctx, proxy_js, strlen(proxy_js), "<proxy>", 0);
-    
-    // Wrap Object.defineProperty to catch prototype assignments on undefined
-    const char *proto_trap_js = 
-        "var __origODP = Object.defineProperty;"
-        "Object.defineProperty = function(obj, prop, desc) {"
-        "  if (obj === undefined || obj === null) {"
-        "    __log('DEFINE_PROP_ERROR: obj=' + obj + ', prop=' + prop);"
-        "    return obj;"
-        "  }"
-        "  return __origODP.apply(this, arguments);"
-        "};"
-    ;
-    JS_Eval(ctx, proto_trap_js, strlen(proto_trap_js), "<proto_trap>", 0);
+    // Proxy removed - was causing more issues than it solved
+
     
     // Event and CustomEvent constructors
     const char *event_js = 
