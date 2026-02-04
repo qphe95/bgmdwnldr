@@ -612,19 +612,6 @@ static int extract_inline_scripts(const char *html, char **out_scripts, int max_
             continue;
         }
         
-        // Skip scripts that are likely not initialization code
-        bool skip = false;
-        const char *first_nonspace = content_start;
-        while (*first_nonspace && isspace((unsigned char)*first_nonspace)) first_nonspace++;
-        if (*first_nonspace == '{' || *first_nonspace == '[') {
-            skip = true; // Might be JSON, skip
-        }
-        
-        if (skip) {
-            p = script_end + 9;
-            continue;
-        }
-        
         // Extract the script content with proper handling for large scripts
         char *script = malloc(content_len + 1);
         if (script) {
