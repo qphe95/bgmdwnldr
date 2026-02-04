@@ -400,9 +400,80 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
     }
     size_t header_len = (size_t)(header_end - outBuffer->data) + delimiter_len;
     size_t body_len = outBuffer->size - header_len;
-    memmove(outBuffer->data, outBuffer->data + header_len, body_len);
-    outBuffer->data[body_len] = '\0';
-    outBuffer->size = body_len;
+    
+    /* Check for Transfer-Encoding: chunked */
+    char *te_header = strstr(outBuffer->data, "Transfer-Encoding:");
+    bool is_chunked = false;
+    if (te_header && te_header < header_end + delimiter_len) {
+        te_header += 18; /* Skip "Transfer-Encoding:" */
+        while (*te_header == ' ') te_header++;
+        if (strncasecmp(te_header, "chunked", 7) == 0) {
+            is_chunked = true;
+            LOGI("Detected chunked transfer encoding");
+        }
+    }
+    
+    if (is_chunked) {
+        /* Decode chunked transfer encoding */
+        char *src = outBuffer->data + header_len;
+        char *dst = outBuffer->data;  /* Decode in-place */
+        size_t decoded_len = 0;
+        
+        while (true) {
+            /* Find chunk size (hex number followed by \r\n or just \n) */
+            char *chunk_start = src;
+            char *line_end = strstr(chunk_start, "\r\n");
+            if (!line_end) line_end = strchr(chunk_start, '\n');
+            if (!line_end) break;  /* Invalid chunked data */
+            
+            /* Parse chunk size in hex */
+            size_t chunk_size = 0;
+            for (char *p = chunk_start; p < line_end && *p != ';' && *p != '\r' && *p != '\n'; p++) {
+                if (*p >= '0' && *p <= '9') {
+                    chunk_size = chunk_size * 16 + (*p - '0');
+                } else if (*p >= 'a' && *p <= 'f') {
+                    chunk_size = chunk_size * 16 + (*p - 'a' + 10);
+                } else if (*p >= 'A' && *p <= 'F') {
+                    chunk_size = chunk_size * 16 + (*p - 'A' + 10);
+                } else {
+                    break;  /* Invalid hex character */
+                }
+            }
+            
+            /* Move past chunk size line */
+            src = line_end;
+            if (*src == '\r') src++;
+            if (*src == '\n') src++;
+            
+            /* Check for end of chunks (size 0) */
+            if (chunk_size == 0) {
+                break;
+            }
+            
+            /* Copy chunk data */
+            if (decoded_len + chunk_size > outBuffer->size - header_len) {
+                /* Safety check - chunk would overflow */
+                LOGE("Chunk size %zu would overflow buffer", chunk_size);
+                break;
+            }
+            memcpy(dst + decoded_len, src, chunk_size);
+            decoded_len += chunk_size;
+            src += chunk_size;
+            
+            /* Skip trailing \r\n after chunk data */
+            if (*src == '\r') src++;
+            if (*src == '\n') src++;
+        }
+        
+        dst[decoded_len] = '\0';
+        outBuffer->size = decoded_len;
+        LOGI("Decoded chunked response: %zu bytes -> %zu bytes", body_len, decoded_len);
+    } else {
+        /* Not chunked, just move body to start */
+        memmove(outBuffer->data, outBuffer->data + header_len, body_len);
+        outBuffer->data[body_len] = '\0';
+        outBuffer->size = body_len;
+    }
     
     return true;
 }
