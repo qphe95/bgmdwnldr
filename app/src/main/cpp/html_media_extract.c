@@ -985,6 +985,35 @@ static int execute_scripts_and_get_urls(const char *html, char urls[][2048], int
     
     LOG_INFO("Executing %d scripts...", exec_count);
     
+    // Check for ytcfg usage patterns in each script
+    for (int i = 0; i < exec_count; i++) {
+        if (exec_scripts[i] && exec_script_lens[i] > 0) {
+            if (strstr(exec_scripts[i], "ytcfg.set") || strstr(exec_scripts[i], "ytcfg.get")) {
+                LOG_INFO("Script %d uses ytcfg (len=%zu)", i, exec_script_lens[i]);
+            }
+            if (strstr(exec_scripts[i], "var ytcfg=") || strstr(exec_scripts[i], "window.ytcfg=")) {
+                LOG_INFO("Script %d DEFINES ytcfg (len=%zu)", i, exec_script_lens[i]);
+                // Log the full ytcfg definition script for debugging
+                LOG_INFO("Script %d FULL CONTENT:\n%.*s", i, (int)exec_script_lens[i], exec_scripts[i]);
+            }
+        }
+    }
+    
+    // Log first 100 chars of each script for debugging
+    for (int i = 0; i < exec_count; i++) {
+        if (exec_scripts[i] && exec_script_lens[i] > 0) {
+            char preview[101];
+            size_t len = exec_script_lens[i] < 100 ? exec_script_lens[i] : 100;
+            memcpy(preview, exec_scripts[i], len);
+            preview[len] = '\0';
+            // Replace newlines with spaces
+            for (size_t j = 0; j < len; j++) {
+                if (preview[j] == '\n' || preview[j] == '\r') preview[j] = ' ';
+            }
+            LOG_INFO("Script %d preview: %.100s%s", i, preview, exec_script_lens[i] > 100 ? "..." : "");
+        }
+    }
+    
     JsExecResult js_result;
     memset(&js_result, 0, sizeof(JsExecResult));
     
