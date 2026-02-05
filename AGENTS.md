@@ -9,6 +9,12 @@
 
 # Agent Instructions for bgmdwnldr
 
+## Browser Stubs
+
+The browser stubs are located at `app/src/main/assets/browser_stubs.js`. This file is loaded at runtime by the C++ code via `app/src/main/cpp/browser_stubs.h`.
+
+When modifying the browser stubs, simply edit `browser_stubs.js` - no build step required. The app loads the file directly from assets.
+
 ## Testing Procedures
 
 ### Prerequisites
