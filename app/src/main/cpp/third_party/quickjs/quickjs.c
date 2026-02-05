@@ -18208,6 +18208,18 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                         }
                         ret = JS_SetPropertyInternal(ctx, ctx->global_obj, cv->var_name, sp[-1],
                                                      ctx->global_obj, JS_PROP_THROW_STRICT);
+                        if (ret >= 0) {
+                            /* Also set on window object to match browser behavior */
+                            JSValue window_obj = JS_GetPropertyStr(ctx, ctx->global_obj, "window");
+                            if (!JS_IsUndefined(window_obj) && !JS_IsNull(window_obj)) {
+                                JS_SetPropertyInternal(ctx, window_obj, cv->var_name, 
+                                                       JS_DupValue(ctx, sp[-1]),
+                                                       window_obj, 0);
+                                JS_FreeValue(ctx, window_obj);
+                            } else {
+                                JS_FreeValue(ctx, window_obj);
+                            }
+                        }
                         sp--;
                         if (ret < 0)
                             goto exception;
