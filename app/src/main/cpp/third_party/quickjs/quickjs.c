@@ -32804,6 +32804,17 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
             var_idx = find_var(ctx, fd, var_name);
             if (var_idx >= 0)
                 break;
+            /* Check for global 'var' declarations that need to be captured */
+            if (fd->is_global_var && fd->global_var_count > 0) {
+                JSGlobalVar *hf = find_global_var(fd, var_name);
+                if (hf) {
+                    /* Create a closure variable for this global var */
+                    idx = get_closure_var(ctx, s, fd, JS_CLOSURE_GLOBAL_DECL, 0,
+                                          var_name, FALSE, FALSE, JS_VAR_NORMAL);
+                    if (idx >= 0)
+                        goto has_idx;
+                }
+            }
         }
         if (is_pseudo_var) {
             var_idx = resolve_pseudo_var(ctx, fd, var_name);
