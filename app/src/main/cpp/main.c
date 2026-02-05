@@ -21,6 +21,7 @@
 
 #include "http_download.h"
 #include "url_analyzer.h"
+#include "js_quickjs.h"
 
 #define LOG_TAG "minimalvulkan"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -1938,7 +1939,7 @@ static void handle_cmd(struct android_app *app, int32_t cmd) {
     switch (cmd) {
         case APP_CMD_INIT_WINDOW:
             vk->window = app->window;
-            if (vk->window && !vk->ready) {
+            if (vk->window) {
                 update_density_scale(app, vk);
                 init_vulkan(vk);
             }
@@ -1970,6 +1971,9 @@ void android_main(struct android_app *app) {
     g_app = &vk;
     vk.assetManager = app->activity->assetManager;
     vk.androidApp = app;
+    
+    // Set the asset manager for QuickJS to load browser stubs
+    js_quickjs_set_asset_manager(vk.assetManager);
     vk.javaVm = app->activity->vm;
     pthread_mutex_init(&vk.uiMutex, NULL);
     vk.urlInput[0] = '\0';

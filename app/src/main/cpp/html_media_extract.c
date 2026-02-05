@@ -1019,7 +1019,7 @@ static int execute_scripts_and_get_urls(const char *html, char urls[][2048], int
     
     bool js_success = js_quickjs_exec_scripts(
         exec_scripts, exec_script_lens, exec_count,
-        html, &js_result
+        html, NULL, &js_result
     );
     
     free_script_infos(scripts, script_count);

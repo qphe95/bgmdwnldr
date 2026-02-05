@@ -15,6 +15,14 @@
 #define LOG_WARN(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
 #define MAX_CAPTURED_URLS 64
+
+// Global asset manager for loading browser stubs
+static AAssetManager *g_asset_mgr = NULL;
+
+// Set the global asset manager (call from main.c during startup)
+void js_quickjs_set_asset_manager(AAssetManager *mgr) {
+    g_asset_mgr = mgr;
+}
 #define URL_MAX_LEN 2048
 
 // Forward declarations
@@ -509,7 +517,7 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val, int argc, J
 }
 
 // Initialize browser environment
-static void init_browser_environment(JSContext *ctx) {
+static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
     JSValue global = JS_GetGlobalObject(ctx);
     
     // Register native logging function FIRST so it's available for all debugging
@@ -766,7 +774,23 @@ static void init_browser_environment(JSContext *ctx) {
     
     // === THEN LOAD BROWSER_STUBS_JS ===
     LOG_INFO("Setting up basic browser environment...");
-    JSValue stubs_result = JS_Eval(ctx, BROWSER_STUBS_JS, strlen(BROWSER_STUBS_JS), "<browser_stubs>", 0);
+    
+    // Try to load from assets file first, fallback to minimal stubs
+    char *stubs_js = NULL;
+    size_t stubs_len = 0;
+    if (asset_mgr) {
+        stubs_js = load_browser_stubs_from_assets(asset_mgr, &stubs_len);
+    }
+    
+    if (!stubs_js) {
+        LOG_ERROR("Failed to load browser stubs from assets");
+        return;
+    }
+    
+    LOG_INFO("Loaded browser stubs from assets: %zu bytes", stubs_len);
+    JSValue stubs_result = JS_Eval(ctx, stubs_js, stubs_len, "<browser_stubs>", 0);
+    free(stubs_js);
+    
     if (JS_IsException(stubs_result)) {
         JSValue exc = JS_GetException(ctx);
         const char *exc_str = JS_ToCString(ctx, exc);
@@ -1532,6 +1556,7 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
 
 bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens, 
                              int script_count, const char *html, 
+                             AAssetManager *asset_mgr,
                              JsExecResult *out_result) {
     if (!scripts || script_count <= 0 || !out_result) {
         LOG_ERROR("Invalid arguments to js_quickjs_exec_scripts");
@@ -1571,7 +1596,7 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     JS_NewClass(JS_GetRuntime(ctx), js_video_class_id, &video_def);
     
     // Initialize browser environment
-    init_browser_environment(ctx);
+    init_browser_environment(ctx, asset_mgr ? asset_mgr : g_asset_mgr);
     
     // Create basic browser environment
     const char *setup_js = 

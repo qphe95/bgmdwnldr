@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* Forward declaration for Android AssetManager */
+struct AAssetManager;
+typedef struct AAssetManager AAssetManager;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,6 +32,9 @@ typedef struct JsExecResult {
 /* Initialize QuickJS runtime */
 bool js_quickjs_init(void);
 
+/* Set the Android asset manager for loading browser stubs */
+void js_quickjs_set_asset_manager(AAssetManager *mgr);
+
 /* Cleanup QuickJS runtime */
 void js_quickjs_cleanup(void);
 
@@ -39,10 +46,12 @@ void js_quickjs_cleanup(void);
  * script_lens: array of script lengths  
  * script_count: number of scripts
  * html: original HTML content for parsing video elements (can be NULL)
+ * asset_mgr: Android asset manager for loading browser stubs (can be NULL)
  * out_result: output structure for captured URLs
  */
 bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens, 
                              int script_count, const char *html, 
+                             AAssetManager *asset_mgr,
                              JsExecResult *out_result);
 
 /* Get captured URLs from global storage (for backward compatibility) */
