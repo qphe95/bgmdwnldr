@@ -120,6 +120,48 @@ Intl.PluralRules.supportedLocalesOf = function(l, o) {
 /* ============================================================================
  * CSS SELECTOR ENGINE FOR Element.prototype.matches()
  * ============================================================================ */
+
+// Ensure base constructors exist for browser emulation
+// These are defined in C code but may not be available when this file loads
+if (typeof EventTarget === 'undefined') {
+  function EventTarget() { this._listeners = {}; }
+  EventTarget.prototype.addEventListener = function(t, f, o) {
+    if (!this._listeners[t]) this._listeners[t] = [];
+    this._listeners[t].push(f);
+  };
+  EventTarget.prototype.removeEventListener = function(t, f) {
+    if (!this._listeners[t]) return;
+    var i = this._listeners[t].indexOf(f);
+    if (i >= 0) this._listeners[t].splice(i, 1);
+  };
+  EventTarget.prototype.dispatchEvent = function(e) {
+    e.target = this; e.currentTarget = this;
+    var ls = this._listeners[e.type] || [];
+    for (var i = 0; i < ls.length; i++) {
+      try { ls[i].call(this, e); } catch(x) {}
+    }
+    return !e.defaultPrevented;
+  };
+  window.EventTarget = EventTarget;
+}
+
+if (typeof Element === 'undefined') {
+  function Element() {
+    EventTarget.call(this);
+    this.tagName = '';
+    this.nodeName = '';
+    this.nodeType = 1;
+    this.attributes = {};
+  }
+  Element.prototype = Object.create(EventTarget.prototype);
+  Element.prototype.constructor = Element;
+  Element.prototype.getAttribute = function(n) { return this.attributes[n] || null; };
+  Element.prototype.setAttribute = function(n, v) { this.attributes[n] = String(v); };
+  Element.prototype.removeAttribute = function(n) { delete this.attributes[n]; };
+  Element.prototype.hasAttribute = function(n) { return n in this.attributes; };
+  window.Element = Element;
+}
+
 var __SelectorEngine = {
   tokenize: function(selector) {
     var tokens = [];
