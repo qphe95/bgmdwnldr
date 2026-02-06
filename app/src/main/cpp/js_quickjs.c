@@ -526,7 +526,17 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue window_obj = JS_GetPropertyStr(ctx, global, "window");
     
-    if (JS_IsUndefined(window_obj) || JS_IsNull(window_obj)) {
+    // Skip if window doesn't exist or isn't an object
+    if (JS_IsUndefined(window_obj) || JS_IsNull(window_obj) || !JS_IsObject(window_obj)) {
+        JS_FreeValue(ctx, window_obj);
+        JS_FreeValue(ctx, global);
+        return;
+    }
+    
+    // Skip if window === global (no need to sync to itself)
+    // We check this by comparing using JS_StrictEq which returns 1 if equal
+    int is_equal = JS_StrictEq(ctx, window_obj, global);
+    if (is_equal == 1) {
         JS_FreeValue(ctx, window_obj);
         JS_FreeValue(ctx, global);
         return;
@@ -559,14 +569,19 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     // Check if property already exists on window
     int has_prop = JS_HasProperty(ctx, window_obj, var_name);
     
-    // If not on window, copy it from global
+    // If not on window, copy it from global (add another reference)
     if (!has_prop) {
         JSValue val = JS_GetProperty(ctx, global, var_name);
         if (!JS_IsException(val)) {
-            if (JS_SetProperty(ctx, window_obj, var_name, val) < 0) {
-                JS_FreeValue(ctx, val);
+            // Dup the value because:
+            // - global already has a reference (from the var definition)
+            // - we want window to have its own reference too
+            JSValue val_dup = JS_DupValue(ctx, val);
+            JS_FreeValue(ctx, val);
+            if (JS_SetProperty(ctx, window_obj, var_name, val_dup) < 0) {
+                JS_FreeValue(ctx, val_dup);
             }
-            // val is freed by JS_SetProperty on success
+            // val_dup reference is now owned by window_obj
         }
     }
     
