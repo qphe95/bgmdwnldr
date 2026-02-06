@@ -1605,19 +1605,83 @@ Node.prototype.getRootNode = function() {
 }
 ;
 
-/* HTMLScriptElement */
+/* HTMLScriptElement - Full implementation for browser emulation */
 function HTMLScriptElement() {
+   var self = this;
    HTMLElement.call(this, 'SCRIPT');
-   this.src = '';
-   this.type = '';
+   this._src = '';
+   this._type = '';
    this.async = false;
    this.defer = false;
    this.crossOrigin = null;
-   this.text = '';
-   
+   this._text = '';
+   this._loaded = false;
+   this._error = false;
+   // Event handlers as own properties
+   this.onload = null;
+   this.onerror = null;
+   this.onloadstart = null;
+   this.onprogress = null;
 }
 HTMLScriptElement.prototype = Object.create(HTMLElement.prototype);
 HTMLScriptElement.prototype.constructor = HTMLScriptElement;
+
+// Add src property with getter/setter
+Object.defineProperty(HTMLScriptElement.prototype, 'src', {
+  get: function() { return this._src; },
+  set: function(value) {
+    var self = this;
+    this._src = String(value || '');
+    this.setAttribute('src', this._src);
+    // Trigger async load behavior when src is set
+    if (this._src && typeof setTimeout === 'function') {
+      setTimeout(function() {
+        self._loaded = true;
+        // Call onload handler if set
+        if (typeof self.onload === 'function') {
+          try { 
+            self.onload({type:'load', target:self, currentTarget:self}); 
+          } catch(e) {}
+        }
+        // Dispatch event via EventTarget
+        try {
+          self.dispatchEvent({type:'load', target:self, currentTarget:self, bubbles:false, cancelable:false});
+        } catch(e) {}
+      }, 1);
+    }
+  },
+  configurable: true,
+  enumerable: true
+});
+
+// Add type property
+Object.defineProperty(HTMLScriptElement.prototype, 'type', {
+  get: function() { return this._type; },
+  set: function(value) { this._type = String(value || ''); },
+  configurable: true,
+  enumerable: true
+});
+
+// Add text property
+Object.defineProperty(HTMLScriptElement.prototype, 'text', {
+  get: function() { return this._text || this.textContent || ''; },
+  set: function(value) { 
+    this._text = String(value || ''); 
+    this.textContent = this._text;
+  },
+  configurable: true,
+  enumerable: true
+});
+
+// Add textContent override to sync with text
+var originalAppendChild = HTMLScriptElement.prototype.appendChild;
+HTMLScriptElement.prototype.appendChild = function(child) {
+  var result = originalAppendChild.call(this, child);
+  if (child && child.nodeType === 3) { // Text node
+    this._text = child.textContent || '';
+  }
+  return result;
+};
 
 /* HTMLAnchorElement */
 function HTMLAnchorElement() {
