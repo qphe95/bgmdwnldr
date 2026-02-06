@@ -16922,6 +16922,12 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
     }
     pr->u.var_ref = var_ref;
     var_ref->header.ref_count++;
+    
+    /* bgmdwnldr: sync global var to window object */
+    /* forward declaration - function defined in js_quickjs.c */
+    extern void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name);
+    js_quickjs_on_global_var_defined(ctx, cv->var_name);
+    
     return var_ref;
 }
 

@@ -518,6 +518,63 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val, int argc, J
     return JS_UNDEFINED;
 }
 
+// Called from quickjs.c when a global var is defined
+// This immediately syncs the var to window object
+// Note: This function is called directly from quickjs.c via forward declaration
+void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
+{
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue window_obj = JS_GetPropertyStr(ctx, global, "window");
+    
+    if (JS_IsUndefined(window_obj) || JS_IsNull(window_obj)) {
+        JS_FreeValue(ctx, window_obj);
+        JS_FreeValue(ctx, global);
+        return;
+    }
+    
+    // Skip internal properties
+    const char *prop_name = JS_AtomToCString(ctx, var_name);
+    if (!prop_name) {
+        JS_FreeValue(ctx, window_obj);
+        JS_FreeValue(ctx, global);
+        return;
+    }
+    
+    // Skip properties that shouldn't be synced
+    if (prop_name[0] == '_' || 
+        strcmp(prop_name, "window") == 0 ||
+        strcmp(prop_name, "globalThis") == 0 ||
+        strcmp(prop_name, "self") == 0 ||
+        strcmp(prop_name, "top") == 0 ||
+        strcmp(prop_name, "parent") == 0 ||
+        strcmp(prop_name, "location") == 0 ||
+        strcmp(prop_name, "document") == 0 ||
+        strcmp(prop_name, "console") == 0) {
+        JS_FreeCString(ctx, prop_name);
+        JS_FreeValue(ctx, window_obj);
+        JS_FreeValue(ctx, global);
+        return;
+    }
+    
+    // Check if property already exists on window
+    int has_prop = JS_HasProperty(ctx, window_obj, var_name);
+    
+    // If not on window, copy it from global
+    if (!has_prop) {
+        JSValue val = JS_GetProperty(ctx, global, var_name);
+        if (!JS_IsException(val)) {
+            if (JS_SetProperty(ctx, window_obj, var_name, val) < 0) {
+                JS_FreeValue(ctx, val);
+            }
+            // val is freed by JS_SetProperty on success
+        }
+    }
+    
+    JS_FreeCString(ctx, prop_name);
+    JS_FreeValue(ctx, window_obj);
+    JS_FreeValue(ctx, global);
+}
+
 // Initialize browser environment
 static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
     JSValue global = JS_GetGlobalObject(ctx);
@@ -530,6 +587,7 @@ static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
     init_browser_stubs(ctx, global);
     
     JS_FreeValue(ctx, global);
+    
     LOG_INFO("Browser environment initialized");
 }
 
