@@ -569,19 +569,29 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     // Check if property already exists on window
     int has_prop = JS_HasProperty(ctx, window_obj, var_name);
     
-    // If not on window, copy it from global (add another reference)
+    // If not on window, copy it from global
     if (!has_prop) {
         JSValue val = JS_GetProperty(ctx, global, var_name);
         if (!JS_IsException(val)) {
-            // Dup the value because:
-            // - global already has a reference (from the var definition)
-            // - we want window to have its own reference too
-            JSValue val_dup = JS_DupValue(ctx, val);
-            JS_FreeValue(ctx, val);
-            if (JS_SetProperty(ctx, window_obj, var_name, val_dup) < 0) {
-                JS_FreeValue(ctx, val_dup);
+            // Skip undefined values - the callback may be called during closure
+            // creation before the variable is actually initialized
+            if (JS_IsUndefined(val)) {
+                JS_FreeValue(ctx, val);
+            } else {
+                // Reference counting:
+                // 1. global object holds a reference to the value
+                // 2. val from JS_GetProperty is another reference (caller-owned)
+                // 3. We dup val to create val_dup (third reference)
+                // 4. We free val (back to global's reference + val_dup)
+                // 5. JS_SetProperty consumes val_dup (back to global's reference)
+                JSValue val_dup = JS_DupValue(ctx, val);
+                JS_FreeValue(ctx, val);
+                if (JS_SetProperty(ctx, window_obj, var_name, val_dup) < 0) {
+                    // SetProperty failed, free our duped reference to avoid leak
+                    JS_FreeValue(ctx, val_dup);
+                }
+                // If successful, val_dup reference is now owned by window_obj
             }
-            // val_dup reference is now owned by window_obj
         }
     }
     
