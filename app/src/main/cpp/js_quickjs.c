@@ -523,6 +523,64 @@ static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
     // Register native logging function FIRST so it's available for all debugging
     JS_SetPropertyStr(ctx, global, "__bgmdwnldr_log", JS_NewCFunction(ctx, js_bgmdwnldr_log, "__bgmdwnldr_log", 1));
     
+    // === MINIMAL DOM BASE - must exist before browser_stubs.js loads ===
+    const char *minimal_dom_js = 
+        // EventTarget
+        "function EventTarget() { this._listeners = {}; }"
+        "EventTarget.prototype.addEventListener = function(t,f,o){"
+        "  if(!this._listeners)this._listeners={};"
+        "  if(!this._listeners[t])this._listeners[t]=[];"
+        "  this._listeners[t].push(f);"
+        "};"
+        "EventTarget.prototype.removeEventListener = function(t,f,o){"
+        "  if(!this._listeners||!this._listeners[t])return;"
+        "  var i=this._listeners[t].indexOf(f);"
+        "  if(i>=0)this._listeners[t].splice(i,1);"
+        "};"
+        "EventTarget.prototype.dispatchEvent = function(e){"
+        "  if(!this._listeners)this._listeners={};"
+        "  e.target=this;e.currentTarget=this;"
+        "  var ls=this._listeners[e.type]||[];"
+        "  for(var i=0;i<ls.length;i++){try{ls[i].call(this,e);}catch(x){}}"
+        "  return!e.defaultPrevented;"
+        "};"
+        "window.EventTarget=EventTarget;"
+        // Node
+        "function Node(){EventTarget.call(this);this.childNodes=[];this.parentNode=null;this.nodeType=1;}"
+        "Node.prototype=Object.create(EventTarget.prototype);"
+        "Node.prototype.constructor=Node;"
+        "Node.prototype.appendChild=function(c){this.childNodes.push(c);c.parentNode=this;return c;};"
+        "Node.prototype.removeChild=function(c){var i=this.childNodes.indexOf(c);if(i>=0){this.childNodes.splice(i,1);c.parentNode=null;}return c;};"
+        "Node.ELEMENT_NODE=1;Node.TEXT_NODE=3;Node.COMMENT_NODE=8;Node.DOCUMENT_NODE=9;"
+        "window.Node=Node;"
+        // Element
+        "function Element(t){Node.call(this);this.tagName=t||'';this.nodeName=t||'';this.attributes={};this.className='';this.id='';}"
+        "Element.prototype=Object.create(Node.prototype);"
+        "Element.prototype.constructor=Element;"
+        "Element.prototype.getAttribute=function(n){return this.attributes[n]||null;};"
+        "Element.prototype.setAttribute=function(n,v){this.attributes[n]=String(v);};"
+        "Element.prototype.removeAttribute=function(n){delete this.attributes[n];};"
+        "Element.prototype.hasAttribute=function(n){return n in this.attributes;};"
+        "Element.prototype.querySelector=function(){return null;};"
+        "Element.prototype.querySelectorAll=function(){return[];};"
+        "Element.prototype.getElementsByTagName=function(){return[];};"
+        "Element.prototype.getElementsByClassName=function(){return[];};"
+        "Element.prototype.matches=function(){return false;};"
+        "Element.prototype.closest=function(){return null;};"
+        "window.Element=Element;"
+        // HTMLElement
+        "function HTMLElement(t){Element.call(this,t);this._style=null;}"
+        "HTMLElement.prototype=Object.create(Element.prototype);"
+        "HTMLElement.prototype.constructor=HTMLElement;"
+        "window.HTMLElement=HTMLElement;"
+        // SVGElement
+        "function SVGElement(){Element.call(this);}"
+        "SVGElement.prototype=Object.create(Element.prototype);"
+        "SVGElement.prototype.constructor=SVGElement;"
+        "window.SVGElement=SVGElement;"
+    ;
+    JS_Eval(ctx, minimal_dom_js, strlen(minimal_dom_js), "<minimal_dom>", 0);
+    
     // === NATIVE SETUP (moved here to be available before BROWSER_STUBS_JS) ===
     // Create XMLHttpRequest class
     JSValue xhr_proto = JS_NewObject(ctx);

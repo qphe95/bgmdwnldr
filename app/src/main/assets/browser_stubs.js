@@ -1,3 +1,97 @@
+/* ============================================================================
+ * MINIMAL DOM BASE - Ensure core constructors exist before stubs load
+ * ============================================================================ */
+(function() {
+  var g = typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : typeof self !== 'undefined' ? self : this;
+  
+  // EventTarget base class
+  if (typeof EventTarget === 'undefined') {
+    g.EventTarget = function() { this._listeners = {}; };
+    g.EventTarget.prototype.addEventListener = function(t, f, o) {
+      if (!this._listeners) this._listeners = {};
+      if (!this._listeners[t]) this._listeners[t] = [];
+      this._listeners[t].push(f);
+    };
+    g.EventTarget.prototype.removeEventListener = function(t, f, o) {
+      if (!this._listeners || !this._listeners[t]) return;
+      var i = this._listeners[t].indexOf(f);
+      if (i >= 0) this._listeners[t].splice(i, 1);
+    };
+    g.EventTarget.prototype.dispatchEvent = function(e) {
+      if (!this._listeners) this._listeners = {};
+      e.target = this; e.currentTarget = this;
+      var ls = this._listeners[e.type] || [];
+      for (var i = 0; i < ls.length; i++) {
+        try { ls[i].call(this, e); } catch(x) {}
+      }
+      return !e.defaultPrevented;
+    };
+  }
+  
+  // Node extends EventTarget
+  if (typeof Node === 'undefined') {
+    g.Node = function() { 
+      EventTarget.call(this);
+      this.childNodes = []; 
+      this.parentNode = null; 
+      this.nodeType = 1;
+    };
+    g.Node.prototype = Object.create(EventTarget.prototype);
+    g.Node.prototype.constructor = g.Node;
+    g.Node.prototype.appendChild = function(c) { 
+      this.childNodes.push(c); 
+      c.parentNode = this; 
+      return c; 
+    };
+    g.Node.prototype.removeChild = function(c) {
+      var i = this.childNodes.indexOf(c);
+      if (i >= 0) { this.childNodes.splice(i, 1); c.parentNode = null; }
+      return c;
+    };
+    g.Node.ELEMENT_NODE = 1; g.Node.TEXT_NODE = 3; g.Node.COMMENT_NODE = 8; g.Node.DOCUMENT_NODE = 9;
+  }
+  
+  // Element extends Node
+  if (typeof Element === 'undefined') {
+    g.Element = function(tag) { 
+      Node.call(this); 
+      this.tagName = tag || ''; 
+      this.nodeName = tag || '';
+      this.attributes = {}; 
+      this.className = ''; 
+      this.id = ''; 
+    };
+    g.Element.prototype = Object.create(Node.prototype);
+    g.Element.prototype.constructor = g.Element;
+    g.Element.prototype.getAttribute = function(n) { return this.attributes[n] || null; };
+    g.Element.prototype.setAttribute = function(n, v) { this.attributes[n] = String(v); };
+    g.Element.prototype.removeAttribute = function(n) { delete this.attributes[n]; };
+    g.Element.prototype.hasAttribute = function(n) { return n in this.attributes; };
+    g.Element.prototype.querySelector = function() { return null; };
+    g.Element.prototype.querySelectorAll = function() { return []; };
+    g.Element.prototype.getElementsByTagName = function() { return []; };
+    g.Element.prototype.getElementsByClassName = function() { return []; };
+    g.Element.prototype.matches = function() { return false; };
+    g.Element.prototype.closest = function() { return null; };
+  }
+  
+  // HTMLElement extends Element
+  if (typeof HTMLElement === 'undefined') {
+    g.HTMLElement = function(tag) { 
+      Element.call(this, tag); 
+      this._style = null;
+    };
+    g.HTMLElement.prototype = Object.create(Element.prototype);
+    g.HTMLElement.prototype.constructor = g.HTMLElement;
+  }
+  
+  // Ensure window references exist
+  g.window = g;
+})();
+
+/* ============================================================================
+ * INTL API STUBS
+ * ============================================================================ */
 var Intl = {}
 ;
 Intl.NumberFormat = function(l, o) {
