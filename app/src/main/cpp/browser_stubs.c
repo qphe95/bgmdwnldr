@@ -242,13 +242,16 @@ static JSValue js_stub_console_log(JSContext *ctx, JSValueConst this_val, int ar
 // ===== Main Initialization Function =====
 void init_browser_stubs(JSContext *ctx, JSValue global) {
     // ===== 1. EventTarget =====
+    JSValue eventtarget_ctor = JS_NewCFunction2(ctx, js_eventtarget_constructor, "EventTarget", 0, JS_CFUNC_constructor, 0);
     JSValue eventtarget_proto = JS_NewObject(ctx);
     STUB_DEF_FUNC(ctx, eventtarget_proto, "addEventListener", js_eventtarget_addEventListener, 2);
     STUB_DEF_FUNC(ctx, eventtarget_proto, "removeEventListener", js_eventtarget_removeEventListener, 2);
     STUB_DEF_FUNC(ctx, eventtarget_proto, "dispatchEvent", js_eventtarget_dispatchEvent, 1);
-    JS_SetPropertyStr(ctx, global, "EventTarget", JS_NewCFunction2(ctx, js_eventtarget_constructor, "EventTarget", 0, JS_CFUNC_constructor, 0));
+    JS_SetConstructor(ctx, eventtarget_ctor, eventtarget_proto);
+    JS_SetPropertyStr(ctx, global, "EventTarget", eventtarget_ctor);
     
     // ===== 2. Node =====
+    JSValue node_ctor = JS_NewCFunction2(ctx, js_node_constructor, "Node", 0, JS_CFUNC_constructor, 0);
     JSValue node_proto = JS_NewObject(ctx);
     JS_SetPrototype(ctx, node_proto, eventtarget_proto);
     STUB_DEF_PROP_INT(ctx, node_proto, "ELEMENT_NODE", 1);
@@ -257,9 +260,11 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     STUB_DEF_PROP_INT(ctx, node_proto, "DOCUMENT_NODE", 9);
     STUB_DEF_FUNC(ctx, node_proto, "appendChild", js_node_appendChild, 1);
     STUB_DEF_FUNC(ctx, node_proto, "removeChild", js_node_removeChild, 1);
-    JS_SetPropertyStr(ctx, global, "Node", JS_NewCFunction2(ctx, js_node_constructor, "Node", 0, JS_CFUNC_constructor, 0));
+    JS_SetConstructor(ctx, node_ctor, node_proto);
+    JS_SetPropertyStr(ctx, global, "Node", node_ctor);
     
     // ===== 3. Element =====
+    JSValue element_ctor = JS_NewCFunction2(ctx, js_element_constructor, "Element", 1, JS_CFUNC_constructor, 0);
     JSValue element_proto = JS_NewObject(ctx);
     JS_SetPrototype(ctx, element_proto, node_proto);
     STUB_DEF_FUNC(ctx, element_proto, "getAttribute", js_stub_return_null, 1);
@@ -272,17 +277,22 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     STUB_DEF_FUNC(ctx, element_proto, "getElementsByClassName", js_stub_return_empty_array, 1);
     STUB_DEF_FUNC(ctx, element_proto, "matches", js_stub_return_false, 1);
     STUB_DEF_FUNC(ctx, element_proto, "closest", js_stub_return_null, 1);
-    JS_SetPropertyStr(ctx, global, "Element", JS_NewCFunction2(ctx, js_element_constructor, "Element", 1, JS_CFUNC_constructor, 0));
+    JS_SetConstructor(ctx, element_ctor, element_proto);
+    JS_SetPropertyStr(ctx, global, "Element", element_ctor);
     
     // ===== 4. HTMLElement =====
+    JSValue htmlelement_ctor = JS_NewCFunction2(ctx, js_htmlelement_constructor, "HTMLElement", 1, JS_CFUNC_constructor, 0);
     JSValue htmlelement_proto = JS_NewObject(ctx);
     JS_SetPrototype(ctx, htmlelement_proto, element_proto);
-    JS_SetPropertyStr(ctx, global, "HTMLElement", JS_NewCFunction2(ctx, js_htmlelement_constructor, "HTMLElement", 1, JS_CFUNC_constructor, 0));
+    JS_SetConstructor(ctx, htmlelement_ctor, htmlelement_proto);
+    JS_SetPropertyStr(ctx, global, "HTMLElement", htmlelement_ctor);
     
     // ===== 5. HTMLScriptElement =====
+    JSValue script_ctor = JS_NewCFunction2(ctx, js_htmlscriptelement_constructor, "HTMLScriptElement", 0, JS_CFUNC_constructor, 0);
     JSValue script_proto = JS_NewObject(ctx);
     JS_SetPrototype(ctx, script_proto, htmlelement_proto);
-    JS_SetPropertyStr(ctx, global, "HTMLScriptElement", JS_NewCFunction2(ctx, js_htmlscriptelement_constructor, "HTMLScriptElement", 0, JS_CFUNC_constructor, 0));
+    JS_SetConstructor(ctx, script_ctor, script_proto);
+    JS_SetPropertyStr(ctx, global, "HTMLScriptElement", script_ctor);
     
     // ===== 6. Document =====
     JSValue document = JS_NewObject(ctx);
