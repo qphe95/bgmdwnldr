@@ -27,6 +27,7 @@ LOCAL_SRC_FILES := \
     tls_client.c \
     url_analyzer.c \
     js_quickjs.c \
+    browser_stubs.c \
     third_party/quickjs/quickjs.c \
     third_party/quickjs/libregexp.c \
     third_party/quickjs/libunicode.c \
