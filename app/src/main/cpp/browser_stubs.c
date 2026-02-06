@@ -216,10 +216,11 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     // ===== XMLHttpRequest =====
     JSValue xhr_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, xhr_proto, js_xhr_proto_funcs, js_xhr_proto_funcs_count);
-    JS_SetClassProto(ctx, js_xhr_class_id, xhr_proto);
     JSValue xhr_ctor = JS_NewCFunction2(ctx, js_xhr_constructor, "XMLHttpRequest", 
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, xhr_ctor, xhr_proto);
+    JS_SetClassProto(ctx, js_xhr_class_id, xhr_proto);  // Note: JS_SetClassProto stores proto without dups
+    // Do NOT free xhr_proto here - it's now owned by the class
     JS_SetPropertyStr(ctx, global, "XMLHttpRequest", xhr_ctor);
     JS_SetPropertyStr(ctx, xhr_ctor, "UNSENT", JS_NewInt32(ctx, 0));
     JS_SetPropertyStr(ctx, xhr_ctor, "OPENED", JS_NewInt32(ctx, 1));
@@ -227,15 +228,15 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, xhr_ctor, "LOADING", JS_NewInt32(ctx, 3));
     JS_SetPropertyStr(ctx, xhr_ctor, "DONE", JS_NewInt32(ctx, 4));
     JS_SetPropertyStr(ctx, window, "XMLHttpRequest", JS_DupValue(ctx, xhr_ctor));
-    JS_FreeValue(ctx, xhr_proto);
     
     // ===== HTMLVideoElement =====
     JSValue video_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, video_proto, js_video_proto_funcs, js_video_proto_funcs_count);
-    JS_SetClassProto(ctx, js_video_class_id, video_proto);
     JSValue video_ctor = JS_NewCFunction2(ctx, js_video_constructor, "HTMLVideoElement",
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, video_ctor, video_proto);
+    JS_SetClassProto(ctx, js_video_class_id, video_proto);  // Note: JS_SetClassProto stores proto without dups
+    // Do NOT free video_proto here - it's now owned by the class
     JS_SetPropertyStr(ctx, global, "HTMLVideoElement", video_ctor);
     JS_SetPropertyStr(ctx, video_ctor, "HAVE_NOTHING", JS_NewInt32(ctx, 0));
     JS_SetPropertyStr(ctx, video_ctor, "HAVE_METADATA", JS_NewInt32(ctx, 1));
@@ -247,7 +248,6 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, video_ctor, "NETWORK_LOADING", JS_NewInt32(ctx, 2));
     JS_SetPropertyStr(ctx, video_ctor, "NETWORK_NO_SOURCE", JS_NewInt32(ctx, 3));
     JS_SetPropertyStr(ctx, window, "HTMLVideoElement", JS_DupValue(ctx, video_ctor));
-    JS_FreeValue(ctx, video_proto);
     
     // ===== fetch API =====
     JS_SetPropertyStr(ctx, global, "fetch", JS_NewCFunction(ctx, js_fetch, "fetch", 2));
