@@ -88,6 +88,160 @@ static JSValue js_dummy_function(JSContext *ctx, JSValueConst this_val, int argc
 // ES6+ Polyfills (C implementations)
 // ============================================================================
 
+// Object.getPrototypeOf polyfill
+static JSValue js_object_get_prototype_of(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_EXCEPTION;
+    
+    JSValue obj = argv[0];
+    if (JS_IsNull(obj) || JS_IsUndefined(obj)) {
+        return JS_ThrowTypeError(ctx, "Object.getPrototypeOf called on null or undefined");
+    }
+    
+    // Get __proto__ property
+    JSValue proto = JS_GetPropertyStr(ctx, obj, "__proto__");
+    return proto;
+}
+
+// Object.create polyfill
+static JSValue js_object_create(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_EXCEPTION;
+    
+    JSValue proto = argv[0];
+    
+    // Create new object with given prototype
+    JSValue obj = JS_NewObject(ctx);
+    if (!JS_IsNull(proto)) {
+        JSValue proto_key = JS_NewString(ctx, "__proto__");
+        JS_SetProperty(ctx, obj, JS_ValueToAtom(ctx, proto_key), JS_DupValue(ctx, proto));
+        JS_FreeValue(ctx, proto_key);
+    }
+    
+    // Handle propertiesObject (second argument) if provided
+    if (argc > 1 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        // Copy enumerable properties from propertiesObject to new object
+        JSValue props = argv[1];
+        
+        // Get Object.keys to enumerate properties
+        JSValue object_ctor = JS_GetPropertyStr(ctx, JS_GetGlobalObject(ctx), "Object");
+        JSValue keys_func = JS_GetPropertyStr(ctx, object_ctor, "keys");
+        JSValue keys = JS_Call(ctx, keys_func, JS_UNDEFINED, 1, &props);
+        JS_FreeValue(ctx, keys_func);
+        JS_FreeValue(ctx, object_ctor);
+        
+        if (!JS_IsException(keys)) {
+            JSValue len_val = JS_GetPropertyStr(ctx, keys, "length");
+            uint32_t key_count = 0;
+            JS_ToUint32(ctx, &key_count, len_val);
+            JS_FreeValue(ctx, len_val);
+            
+            for (uint32_t i = 0; i < key_count; i++) {
+                JSValue key_val = JS_GetPropertyUint32(ctx, keys, i);
+                const char *key = JS_ToCString(ctx, key_val);
+                if (key) {
+                    JSValue desc = JS_GetProperty(ctx, props, JS_ValueToAtom(ctx, key_val));
+                    if (!JS_IsUndefined(desc) && !JS_IsNull(desc)) {
+                        // Simple property copy - set value directly
+                        JSValue val = JS_GetPropertyStr(ctx, desc, "value");
+                        if (!JS_IsUndefined(val)) {
+                            JS_SetPropertyStr(ctx, obj, key, val);
+                        } else {
+                            JS_FreeValue(ctx, val);
+                        }
+                    }
+                    JS_FreeValue(ctx, desc);
+                    JS_FreeCString(ctx, key);
+                }
+                JS_FreeValue(ctx, key_val);
+            }
+        }
+        JS_FreeValue(ctx, keys);
+    }
+    
+    return obj;
+}
+
+// Object.defineProperties polyfill
+static JSValue js_object_define_properties(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_EXCEPTION;
+    
+    JSValue obj = argv[0];
+    JSValue props = argv[1];
+    
+    if (JS_IsNull(obj) || JS_IsUndefined(obj)) {
+        return JS_ThrowTypeError(ctx, "Object.defineProperties called on null or undefined");
+    }
+    
+    // Get Object.keys to enumerate properties
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue object_ctor = JS_GetPropertyStr(ctx, global, "Object");
+    JSValue keys_func = JS_GetPropertyStr(ctx, object_ctor, "keys");
+    JSValue keys = JS_Call(ctx, keys_func, JS_UNDEFINED, 1, &props);
+    JS_FreeValue(ctx, keys_func);
+    JS_FreeValue(ctx, object_ctor);
+    JS_FreeValue(ctx, global);
+    
+    if (!JS_IsException(keys)) {
+        JSValue len_val = JS_GetPropertyStr(ctx, keys, "length");
+        uint32_t key_count = 0;
+        JS_ToUint32(ctx, &key_count, len_val);
+        JS_FreeValue(ctx, len_val);
+        
+        for (uint32_t i = 0; i < key_count; i++) {
+            JSValue key_val = JS_GetPropertyUint32(ctx, keys, i);
+            const char *key = JS_ToCString(ctx, key_val);
+            if (key) {
+                JSValue desc = JS_GetProperty(ctx, props, JS_ValueToAtom(ctx, key_val));
+                if (!JS_IsUndefined(desc) && !JS_IsNull(desc)) {
+                    // Copy property descriptor values
+                    JSValue val = JS_GetPropertyStr(ctx, desc, "value");
+                    if (!JS_IsUndefined(val)) {
+                        JS_SetPropertyStr(ctx, obj, key, val);
+                    } else {
+                        JS_FreeValue(ctx, val);
+                    }
+                }
+                JS_FreeValue(ctx, desc);
+                JS_FreeCString(ctx, key);
+            }
+            JS_FreeValue(ctx, key_val);
+        }
+        JS_FreeValue(ctx, keys);
+    }
+    
+    return JS_DupValue(ctx, obj);
+}
+
+// Object.getOwnPropertyDescriptor polyfill
+static JSValue js_object_get_own_property_descriptor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_UNDEFINED;
+    
+    JSValue obj = argv[0];
+    const char *prop = JS_ToCString(ctx, argv[1]);
+    if (!prop) return JS_UNDEFINED;
+    
+    // Check if property exists
+    int has_prop = JS_HasProperty(ctx, obj, JS_NewAtom(ctx, prop));
+    if (!has_prop) {
+        JS_FreeCString(ctx, prop);
+        return JS_UNDEFINED;
+    }
+    
+    // Create descriptor object
+    JSValue desc = JS_NewObject(ctx);
+    JSValue val = JS_GetPropertyStr(ctx, obj, prop);
+    JS_SetPropertyStr(ctx, desc, "value", val);
+    JS_SetPropertyStr(ctx, desc, "writable", JS_TRUE);
+    JS_SetPropertyStr(ctx, desc, "enumerable", JS_TRUE);
+    JS_SetPropertyStr(ctx, desc, "configurable", JS_TRUE);
+    
+    JS_FreeCString(ctx, prop);
+    return desc;
+}
+
 // Object.setPrototypeOf polyfill
 static JSValue js_object_set_prototype_of(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     if (argc < 2) return JS_EXCEPTION;
@@ -125,19 +279,33 @@ static JSValue js_object_assign(JSContext *ctx, JSValueConst this_val, int argc,
         JSValue source = argv[i];
         if (JS_IsNull(source) || JS_IsUndefined(source)) continue;
         
-        // Enumerate properties using for-in equivalent
-        JSValue prop_names = JS_GetPropertyStr(ctx, source, "__proto__");
-        // Simple approach: use JavaScript to get keys
-        char assign_js[256];
-        snprintf(assign_js, sizeof(assign_js), 
-            "(function(t, s) { for (var k in s) { if (s.hasOwnProperty(k)) t[k] = s[k]; } })({}, {});");
-        JSValue assign_func = JS_Eval(ctx, assign_js, strlen(assign_js), "<assign>", 0);
-        if (!JS_IsException(assign_func) && JS_IsFunction(ctx, assign_func)) {
-            JSValue args[2] = { target, source };
-            JS_FreeValue(ctx, JS_Call(ctx, assign_func, JS_UNDEFINED, 2, args));
+        // Use Object.keys to get enumerable properties
+        JSValue global = JS_GetGlobalObject(ctx);
+        JSValue object_ctor = JS_GetPropertyStr(ctx, global, "Object");
+        JSValue keys_func = JS_GetPropertyStr(ctx, object_ctor, "keys");
+        JSValue keys = JS_Call(ctx, keys_func, JS_UNDEFINED, 1, &source);
+        JS_FreeValue(ctx, keys_func);
+        JS_FreeValue(ctx, object_ctor);
+        JS_FreeValue(ctx, global);
+        
+        if (!JS_IsException(keys)) {
+            JSValue len_val = JS_GetPropertyStr(ctx, keys, "length");
+            uint32_t key_count = 0;
+            JS_ToUint32(ctx, &key_count, len_val);
+            JS_FreeValue(ctx, len_val);
+            
+            for (uint32_t j = 0; j < key_count; j++) {
+                JSValue key_val = JS_GetPropertyUint32(ctx, keys, j);
+                const char *key = JS_ToCString(ctx, key_val);
+                if (key) {
+                    JSValue val = JS_GetPropertyStr(ctx, source, key);
+                    JS_SetPropertyStr(ctx, target, key, val);
+                    JS_FreeCString(ctx, key);
+                }
+                JS_FreeValue(ctx, key_val);
+            }
+            JS_FreeValue(ctx, keys);
         }
-        JS_FreeValue(ctx, assign_func);
-        JS_FreeValue(ctx, prop_names);
     }
     
     return target;
@@ -2149,10 +2317,34 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     // Get Object constructor
     JSValue object_ctor = JS_GetPropertyStr(ctx, global, "Object");
     
+    // Object.getPrototypeOf
+    if (!JS_IsException(object_ctor)) {
+        JS_SetPropertyStr(ctx, object_ctor, "getPrototypeOf",
+            JS_NewCFunction(ctx, js_object_get_prototype_of, "getPrototypeOf", 1));
+    }
+    
     // Object.setPrototypeOf
     if (!JS_IsException(object_ctor)) {
         JS_SetPropertyStr(ctx, object_ctor, "setPrototypeOf",
             JS_NewCFunction(ctx, js_object_set_prototype_of, "setPrototypeOf", 2));
+    }
+    
+    // Object.create
+    if (!JS_IsException(object_ctor)) {
+        JS_SetPropertyStr(ctx, object_ctor, "create",
+            JS_NewCFunction(ctx, js_object_create, "create", 2));
+    }
+    
+    // Object.defineProperties
+    if (!JS_IsException(object_ctor)) {
+        JS_SetPropertyStr(ctx, object_ctor, "defineProperties",
+            JS_NewCFunction(ctx, js_object_define_properties, "defineProperties", 2));
+    }
+    
+    // Object.getOwnPropertyDescriptor
+    if (!JS_IsException(object_ctor)) {
+        JS_SetPropertyStr(ctx, object_ctor, "getOwnPropertyDescriptor",
+            JS_NewCFunction(ctx, js_object_get_own_property_descriptor, "getOwnPropertyDescriptor", 2));
     }
     
     // Object.getOwnPropertySymbols
@@ -2188,6 +2380,17 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetClassProto(ctx, js_map_class_id, map_proto);
     JS_SetPropertyStr(ctx, global, "Map", map_ctor);
     JS_SetPropertyStr(ctx, global, "Map", JS_DupValue(ctx, map_ctor));
+    
+    // Set Map prototype[Symbol.toStringTag]
+    JSValue symbol_ctor = JS_GetPropertyStr(ctx, global, "Symbol");
+    if (!JS_IsException(symbol_ctor)) {
+        JSValue toStringTag = JS_GetPropertyStr(ctx, symbol_ctor, "toStringTag");
+        if (!JS_IsException(toStringTag)) {
+            JS_SetProperty(ctx, map_proto, JS_ValueToAtom(ctx, toStringTag), JS_NewString(ctx, "Map"));
+            JS_FreeValue(ctx, toStringTag);
+        }
+        JS_FreeValue(ctx, symbol_ctor);
+    }
     
     // Promise.prototype.finally
     JSValue promise_ctor = JS_GetPropertyStr(ctx, global, "Promise");
@@ -2232,50 +2435,49 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     // window IS the global object - this ensures 'this' at global level refers to window
     JSValue window = global;  // Use global object as window (no new object created)
     
-    // ===== Create DOM Constructors via JavaScript evaluation for proper prototype chain =====
-    // This ensures the prototype chain is set up correctly like in a real browser
-    // We assign to 'this' which refers to the global object (window/globalThis)
-    const char *dom_setup_js = 
-        "(function(g) {"
-        "  function EventTarget() {}"
-        "  function Node() {}"
-        "  Node.prototype = Object.create(EventTarget.prototype);"
-        "  Node.prototype.constructor = Node;"
-        "  function Element() {}"
-        "  Element.prototype = Object.create(Node.prototype);"
-        "  Element.prototype.constructor = Element;"
-        "  function HTMLElement() {}"
-        "  HTMLElement.prototype = Object.create(Element.prototype);"
-        "  HTMLElement.prototype.constructor = HTMLElement;"
-        "  function DocumentFragment() {}"
-        "  DocumentFragment.prototype = Object.create(Node.prototype);"
-        "  DocumentFragment.prototype.constructor = DocumentFragment;"
-        "  g.EventTarget = EventTarget;"
-        "  g.Node = Node;"
-        "  g.Element = Element;"
-        "  g.HTMLElement = HTMLElement;"
-        "  g.DocumentFragment = DocumentFragment;"
-        "})(this);"
-    ;
-    JSValue dom_setup_result = JS_Eval(ctx, dom_setup_js, strlen(dom_setup_js), "<dom_setup>", 0);
-    if (JS_IsException(dom_setup_result)) {
-        JSValue exception = JS_GetException(ctx);
-        const char *error = JS_ToCString(ctx, exception);
-        LOG_ERROR("DOM setup error: %s", error ? error : "unknown");
-        JS_FreeCString(ctx, error);
-        JS_FreeValue(ctx, exception);
-    }
-    JS_FreeValue(ctx, dom_setup_result);
+    // ===== Create DOM Constructors with proper prototype chain in C =====
+    // EventTarget constructor
+    JSValue event_target_ctor = JS_NewCFunction2(ctx, js_dummy_function, "EventTarget", 0, JS_CFUNC_constructor, 0);
+    JSValue event_target_proto = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, event_target_proto, "constructor", JS_DupValue(ctx, event_target_ctor));
+    JS_SetPropertyStr(ctx, event_target_ctor, "prototype", JS_DupValue(ctx, event_target_proto));
+    JS_SetPropertyStr(ctx, global, "EventTarget", event_target_ctor);
     
-    // Get references to constructors and prototypes for adding methods
-    JSValue event_target_ctor = JS_GetPropertyStr(ctx, global, "EventTarget");
-    JSValue event_target_proto = JS_GetPropertyStr(ctx, event_target_ctor, "prototype");
-    JSValue node_ctor = JS_GetPropertyStr(ctx, global, "Node");
-    JSValue node_proto = JS_GetPropertyStr(ctx, node_ctor, "prototype");
-    JSValue element_ctor = JS_GetPropertyStr(ctx, global, "Element");
-    JSValue element_proto = JS_GetPropertyStr(ctx, element_ctor, "prototype");
-    JSValue html_element_ctor = JS_GetPropertyStr(ctx, global, "HTMLElement");
-    JSValue html_element_proto = JS_GetPropertyStr(ctx, html_element_ctor, "prototype");
+    // Node constructor
+    JSValue node_ctor = JS_NewCFunction2(ctx, js_dummy_function, "Node", 0, JS_CFUNC_constructor, 0);
+    JSValue node_proto = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, node_proto, "constructor", JS_DupValue(ctx, node_ctor));
+    // Set Node.prototype.__proto__ = EventTarget.prototype
+    JS_SetPropertyStr(ctx, node_proto, "__proto__", JS_DupValue(ctx, event_target_proto));
+    JS_SetPropertyStr(ctx, node_ctor, "prototype", JS_DupValue(ctx, node_proto));
+    JS_SetPropertyStr(ctx, global, "Node", node_ctor);
+    
+    // Element constructor
+    JSValue element_ctor = JS_NewCFunction2(ctx, js_dummy_function, "Element", 0, JS_CFUNC_constructor, 0);
+    JSValue element_proto = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, element_proto, "constructor", JS_DupValue(ctx, element_ctor));
+    // Set Element.prototype.__proto__ = Node.prototype
+    JS_SetPropertyStr(ctx, element_proto, "__proto__", JS_DupValue(ctx, node_proto));
+    JS_SetPropertyStr(ctx, element_ctor, "prototype", JS_DupValue(ctx, element_proto));
+    JS_SetPropertyStr(ctx, global, "Element", element_ctor);
+    
+    // HTMLElement constructor
+    JSValue html_element_ctor = JS_NewCFunction2(ctx, js_dummy_function, "HTMLElement", 0, JS_CFUNC_constructor, 0);
+    JSValue html_element_proto = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, html_element_proto, "constructor", JS_DupValue(ctx, html_element_ctor));
+    // Set HTMLElement.prototype.__proto__ = Element.prototype
+    JS_SetPropertyStr(ctx, html_element_proto, "__proto__", JS_DupValue(ctx, element_proto));
+    JS_SetPropertyStr(ctx, html_element_ctor, "prototype", JS_DupValue(ctx, html_element_proto));
+    JS_SetPropertyStr(ctx, global, "HTMLElement", html_element_ctor);
+    
+    // DocumentFragment constructor
+    JSValue doc_fragment_ctor = JS_NewCFunction2(ctx, js_dummy_function, "DocumentFragment", 0, JS_CFUNC_constructor, 0);
+    JSValue doc_fragment_proto = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, doc_fragment_proto, "constructor", JS_DupValue(ctx, doc_fragment_ctor));
+    // Set DocumentFragment.prototype.__proto__ = Node.prototype
+    JS_SetPropertyStr(ctx, doc_fragment_proto, "__proto__", JS_DupValue(ctx, node_proto));
+    JS_SetPropertyStr(ctx, doc_fragment_ctor, "prototype", JS_DupValue(ctx, doc_fragment_proto));
+    JS_SetPropertyStr(ctx, global, "DocumentFragment", doc_fragment_ctor);
     
     // ===== EventTarget prototype methods =====
     JS_SetPropertyStr(ctx, event_target_proto, "addEventListener",
@@ -2654,10 +2856,20 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         ffs->loaded_fonts = JS_NewArray(ctx);
         JS_SetOpaque(font_face_set, ffs);
     }
-    // Add Symbol.iterator via JavaScript evaluation (QuickJS doesn't expose JS_ATOM_Symbol_iterator directly)
-    const char *iterator_js = "FontFaceSet.prototype[Symbol.iterator] = FontFaceSet.prototype.values;";
-    JSValue iterator_result = JS_Eval(ctx, iterator_js, strlen(iterator_js), "<iterator_setup>", 0);
-    JS_FreeValue(ctx, iterator_result);
+    // Add Symbol.iterator to FontFaceSet.prototype using C
+    JSValue symbol_ctor2 = JS_GetPropertyStr(ctx, global, "Symbol");
+    if (!JS_IsException(symbol_ctor2)) {
+        JSValue iterator_symbol = JS_GetPropertyStr(ctx, symbol_ctor2, "iterator");
+        if (!JS_IsException(iterator_symbol)) {
+            JSValue values_func = JS_GetPropertyStr(ctx, font_face_set_proto, "values");
+            if (!JS_IsException(values_func)) {
+                JS_SetProperty(ctx, font_face_set_proto, JS_ValueToAtom(ctx, iterator_symbol), values_func);
+            }
+            JS_FreeValue(ctx, values_func);
+        }
+        JS_FreeValue(ctx, iterator_symbol);
+        JS_FreeValue(ctx, symbol_ctor2);
+    }
     
     JS_SetPropertyStr(ctx, document, "fonts", font_face_set);
     
