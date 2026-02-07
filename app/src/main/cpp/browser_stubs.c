@@ -77,34 +77,10 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val, int argc, J
 
 // Main initialization
 void init_browser_stubs(JSContext *ctx, JSValue global) {
-    // ===== Document =====
-    JSValue document = JS_NewObject(ctx);
-    DEF_PROP_INT(ctx, document, "nodeType", 9);
-    DEF_PROP_STR(ctx, document, "readyState", "complete");
-    DEF_PROP_STR(ctx, document, "characterSet", "UTF-8");
-    DEF_PROP_STR(ctx, document, "charset", "UTF-8");
-    DEF_PROP_STR(ctx, document, "contentType", "text/html");
-    DEF_PROP_STR(ctx, document, "referrer", "https://www.youtube.com/");
-    DEF_PROP_STR(ctx, document, "cookie", "");
-    DEF_PROP_STR(ctx, document, "domain", "www.youtube.com");
-    DEF_FUNC(ctx, document, "createElement", js_document_create_element, 1);
-    DEF_FUNC(ctx, document, "createElementNS", js_document_create_element, 2);
-    DEF_FUNC(ctx, document, "createTextNode", js_empty_string, 1);
-    DEF_FUNC(ctx, document, "createComment", js_empty_string, 1);
-    DEF_FUNC(ctx, document, "createDocumentFragment", js_null, 0);
-    DEF_FUNC(ctx, document, "getElementById", js_null, 1);
-    DEF_FUNC(ctx, document, "querySelector", js_null, 1);
-    DEF_FUNC(ctx, document, "querySelectorAll", js_empty_array, 1);
-    DEF_FUNC(ctx, document, "getElementsByTagName", js_empty_array, 1);
-    DEF_FUNC(ctx, document, "getElementsByClassName", js_empty_array, 1);
-    DEF_FUNC(ctx, document, "getElementsByName", js_empty_array, 1);
-    DEF_FUNC(ctx, document, "addEventListener", js_undefined, 2);
-    DEF_FUNC(ctx, document, "removeEventListener", js_undefined, 2);
-    DEF_FUNC(ctx, document, "dispatchEvent", js_true, 1);
-    JS_SetPropertyStr(ctx, global, "document", document);
+    // ===== Window (global object itself) =====
+    // window IS the global object - this ensures 'this' at global level refers to window
+    JSValue window = global;  // Use global object as window (no new object created)
     
-    // ===== Window =====
-    JSValue window = JS_NewObject(ctx);
     DEF_PROP_INT(ctx, window, "innerWidth", 1920);
     DEF_PROP_INT(ctx, window, "innerHeight", 1080);
     DEF_PROP_INT(ctx, window, "outerWidth", 1920);
@@ -131,11 +107,40 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     DEF_FUNC(ctx, window, "addEventListener", js_undefined, 2);
     DEF_FUNC(ctx, window, "removeEventListener", js_undefined, 2);
     DEF_FUNC(ctx, window, "dispatchEvent", js_true, 1);
-    JS_SetPropertyStr(ctx, global, "window", window);
+    
+    // Set up window to reference itself (global object)
     JS_SetPropertyStr(ctx, window, "window", JS_DupValue(ctx, window));
     JS_SetPropertyStr(ctx, window, "self", JS_DupValue(ctx, window));
     JS_SetPropertyStr(ctx, window, "top", JS_DupValue(ctx, window));
     JS_SetPropertyStr(ctx, window, "parent", JS_DupValue(ctx, window));
+    // globalThis also points to the same object (global = window)
+    JS_SetPropertyStr(ctx, window, "globalThis", JS_DupValue(ctx, window));
+    
+    // ===== Document =====
+    JSValue document = JS_NewObject(ctx);
+    DEF_PROP_INT(ctx, document, "nodeType", 9);
+    DEF_PROP_STR(ctx, document, "readyState", "complete");
+    DEF_PROP_STR(ctx, document, "characterSet", "UTF-8");
+    DEF_PROP_STR(ctx, document, "charset", "UTF-8");
+    DEF_PROP_STR(ctx, document, "contentType", "text/html");
+    DEF_PROP_STR(ctx, document, "referrer", "https://www.youtube.com/");
+    DEF_PROP_STR(ctx, document, "cookie", "");
+    DEF_PROP_STR(ctx, document, "domain", "www.youtube.com");
+    DEF_FUNC(ctx, document, "createElement", js_document_create_element, 1);
+    DEF_FUNC(ctx, document, "createElementNS", js_document_create_element, 2);
+    DEF_FUNC(ctx, document, "createTextNode", js_empty_string, 1);
+    DEF_FUNC(ctx, document, "createComment", js_empty_string, 1);
+    DEF_FUNC(ctx, document, "createDocumentFragment", js_null, 0);
+    DEF_FUNC(ctx, document, "getElementById", js_null, 1);
+    DEF_FUNC(ctx, document, "querySelector", js_null, 1);
+    DEF_FUNC(ctx, document, "querySelectorAll", js_empty_array, 1);
+    DEF_FUNC(ctx, document, "getElementsByTagName", js_empty_array, 1);
+    DEF_FUNC(ctx, document, "getElementsByClassName", js_empty_array, 1);
+    DEF_FUNC(ctx, document, "getElementsByName", js_empty_array, 1);
+    DEF_FUNC(ctx, document, "addEventListener", js_undefined, 2);
+    DEF_FUNC(ctx, document, "removeEventListener", js_undefined, 2);
+    DEF_FUNC(ctx, document, "dispatchEvent", js_true, 1);
+    JS_SetPropertyStr(ctx, global, "document", document);
     JS_SetPropertyStr(ctx, document, "defaultView", JS_DupValue(ctx, window));
     
     // ===== Location =====
@@ -250,8 +255,8 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, window, "HTMLVideoElement", JS_DupValue(ctx, video_ctor));
     
     // ===== fetch API =====
+    // fetch is set on global (which is window) - no need to duplicate
     JS_SetPropertyStr(ctx, global, "fetch", JS_NewCFunction(ctx, js_fetch, "fetch", 2));
-    JS_SetPropertyStr(ctx, window, "fetch", JS_NewCFunction(ctx, js_fetch, "fetch", 2));
     
     // ===== DOM Constructors (stubs) =====
     JS_SetPropertyStr(ctx, global, "EventTarget", JS_NewCFunction2(ctx, NULL, "EventTarget", 0, JS_CFUNC_constructor, 0));
