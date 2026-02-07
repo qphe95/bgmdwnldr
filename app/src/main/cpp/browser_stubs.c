@@ -278,6 +278,16 @@ static JSValue js_element_querySelectorAll(JSContext *ctx, JSValueConst this_val
     return JS_NewArray(ctx);
 }
 
+// Element.prototype.getAttribute
+static JSValue js_element_get_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return JS_NULL;
+}
+
+// Element.prototype.setAttribute
+static JSValue js_element_set_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return JS_UNDEFINED;
+}
+
 // ============================================================================
 // EventTarget Implementation
 // ============================================================================
@@ -1769,12 +1779,17 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_FreeValue(ctx, event_target_ctor);
     
     // ===== Window Properties =====
+    DEF_PROP_INT(ctx, window, "innerWidth", 1920);
     DEF_PROP_INT(ctx, window, "innerHeight", 1080);
     DEF_PROP_INT(ctx, window, "outerWidth", 1920);
     DEF_PROP_INT(ctx, window, "outerHeight", 1080);
     DEF_PROP_INT(ctx, window, "screenX", 0);
     DEF_PROP_INT(ctx, window, "screenY", 0);
+    DEF_PROP_INT(ctx, window, "screenLeft", 0);
+    DEF_PROP_INT(ctx, window, "screenTop", 0);
     DEF_PROP_FLOAT(ctx, window, "devicePixelRatio", 1.0);
+    DEF_PROP_INT(ctx, window, "length", 0);
+    DEF_PROP_BOOL(ctx, window, "closed", 0);
     DEF_FUNC(ctx, window, "setTimeout", js_zero, 2);
     DEF_FUNC(ctx, window, "setInterval", js_zero, 2);
     DEF_FUNC(ctx, window, "clearTimeout", js_undefined, 1);
@@ -1848,6 +1863,41 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     DEF_FUNC(ctx, document, "addEventListener", js_undefined, 2);
     DEF_FUNC(ctx, document, "removeEventListener", js_undefined, 2);
     DEF_FUNC(ctx, document, "dispatchEvent", js_true, 1);
+    
+    // Create documentElement as an actual Element instance with proper prototype
+    // This must be done AFTER Element is defined in the dom_setup_js above
+    JSValue doc_element = JS_CallConstructor(ctx, element_ctor, 0, NULL);
+    if (!JS_IsException(doc_element)) {
+        // Add Element methods to documentElement
+        JS_SetPropertyStr(ctx, doc_element, "querySelector",
+            JS_NewCFunction(ctx, js_element_querySelector, "querySelector", 1));
+        JS_SetPropertyStr(ctx, doc_element, "querySelectorAll",
+            JS_NewCFunction(ctx, js_element_querySelectorAll, "querySelectorAll", 1));
+        JS_SetPropertyStr(ctx, doc_element, "animate",
+            JS_NewCFunction(ctx, js_element_animate, "animate", 2));
+        JS_SetPropertyStr(ctx, doc_element, "getAttribute",
+            JS_NewCFunction(ctx, js_element_get_attribute, "getAttribute", 1));
+        JS_SetPropertyStr(ctx, doc_element, "setAttribute",
+            JS_NewCFunction(ctx, js_element_set_attribute, "setAttribute", 2));
+        JS_SetPropertyStr(ctx, doc_element, "appendChild",
+            JS_NewCFunction(ctx, js_node_appendChild, "appendChild", 1));
+    } else {
+        // Fallback to plain object if constructor fails
+        JS_FreeValue(ctx, doc_element);
+        doc_element = JS_NewObject(ctx);
+    }
+    JS_SetPropertyStr(ctx, document, "documentElement", doc_element);
+    
+    // Create document body
+    JSValue body_element = JS_CallConstructor(ctx, html_element_ctor, 0, NULL);
+    if (JS_IsException(body_element)) {
+        JS_FreeValue(ctx, body_element);
+        body_element = JS_NewObject(ctx);
+    }
+    JS_SetPropertyStr(ctx, body_element, "appendChild",
+        JS_NewCFunction(ctx, js_node_appendChild, "appendChild", 1));
+    JS_SetPropertyStr(ctx, document, "body", body_element);
+    
     JS_SetPropertyStr(ctx, global, "document", document);
     JS_SetPropertyStr(ctx, document, "defaultView", JS_DupValue(ctx, window));
     

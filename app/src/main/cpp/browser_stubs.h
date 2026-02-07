@@ -15,6 +15,7 @@ extern JSClassID js_font_face_set_class_id;
 extern JSClassID js_custom_element_registry_class_id;
 extern JSClassID js_mutation_observer_class_id;
 extern JSClassID js_resize_observer_class_id;
+extern JSClassID js_performance_timing_class_id;
 extern JSClassID js_intersection_observer_class_id;
 extern JSClassID js_performance_class_id;
 extern JSClassID js_performance_entry_class_id;
