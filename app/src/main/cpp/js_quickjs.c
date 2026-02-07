@@ -928,8 +928,9 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         // Wrap scripts that tend to fail in try-catch so they don't crash the whole execution
         // The signature decryption function might still be set up even if some parts fail
         JSValue result;
-        // Wrap large scripts and base.js (contains signature decryption)
-        if (script_lens[i] > 5000000 || strstr(scripts[i], "_yt_player") != NULL || strstr(scripts[i], "player") != NULL) {
+        // Wrap large scripts and base.js (contains signature decryption) OR web-animations polyfill
+        if (script_lens[i] > 5000000 || strstr(scripts[i], "_yt_player") != NULL || strstr(scripts[i], "player") != NULL ||
+            strstr(scripts[i], "web-animations") != NULL || script_lens[i] > 50000) {
             // Wrap large scripts and known problematic scripts in try-catch
             size_t wrapped_size = script_lens[i] + 100;
             char *wrapped = malloc(wrapped_size);

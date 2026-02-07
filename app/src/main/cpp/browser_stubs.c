@@ -85,6 +85,127 @@ static JSValue js_dummy_function(JSContext *ctx, JSValueConst this_val, int argc
 }
 
 // ============================================================================
+// DOMException Implementation (needed for Web Animations API)
+// ============================================================================
+
+#define DOM_EXCEPTION_INDEX_SIZE_ERR 1
+#define DOM_EXCEPTION_HIERARCHY_REQUEST_ERR 3
+#define DOM_EXCEPTION_WRONG_DOCUMENT_ERR 4
+#define DOM_EXCEPTION_INVALID_CHARACTER_ERR 5
+#define DOM_EXCEPTION_NO_MODIFICATION_ALLOWED_ERR 7
+#define DOM_EXCEPTION_NOT_FOUND_ERR 8
+#define DOM_EXCEPTION_NOT_SUPPORTED_ERR 9
+#define DOM_EXCEPTION_INVALID_STATE_ERR 11
+#define DOM_EXCEPTION_SYNTAX_ERR 12
+#define DOM_EXCEPTION_INVALID_MODIFICATION_ERR 13
+#define DOM_EXCEPTION_NAMESPACE_ERR 14
+#define DOM_EXCEPTION_INVALID_ACCESS_ERR 15
+#define DOM_EXCEPTION_TYPE_MISMATCH_ERR 17
+#define DOM_EXCEPTION_SECURITY_ERR 18
+#define DOM_EXCEPTION_NETWORK_ERR 19
+#define DOM_EXCEPTION_ABORT_ERR 20
+#define DOM_EXCEPTION_URL_MISMATCH_ERR 21
+#define DOM_EXCEPTION_QUOTA_EXCEEDED_ERR 22
+#define DOM_EXCEPTION_TIMEOUT_ERR 23
+#define DOM_EXCEPTION_INVALID_NODE_TYPE_ERR 24
+#define DOM_EXCEPTION_DATA_CLONE_ERR 25
+
+typedef struct {
+    char name[64];
+    char message[256];
+    int code;
+} DOMExceptionData;
+
+static JSClassID js_dom_exception_class_id = 0;
+
+static void js_dom_exception_finalizer(JSRuntime *rt, JSValue val) {
+    DOMExceptionData *de = JS_GetOpaque(val, js_dom_exception_class_id);
+    if (de) free(de);
+}
+
+static JSClassDef js_dom_exception_class_def = {
+    "DOMException",
+    .finalizer = js_dom_exception_finalizer,
+};
+
+static JSValue js_dom_exception_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    DOMExceptionData *de = calloc(1, sizeof(DOMExceptionData));
+    if (!de) return JS_EXCEPTION;
+    
+    strcpy(de->name, "Error");
+    de->code = 0;
+    
+    if (argc > 0) {
+        const char *msg = JS_ToCString(ctx, argv[0]);
+        if (msg) {
+            strncpy(de->message, msg, sizeof(de->message) - 1);
+            JS_FreeCString(ctx, msg);
+        }
+    }
+    
+    if (argc > 1) {
+        const char *name = JS_ToCString(ctx, argv[1]);
+        if (name) {
+            strncpy(de->name, name, sizeof(de->name) - 1);
+            if (strcmp(name, "IndexSizeError") == 0) de->code = DOM_EXCEPTION_INDEX_SIZE_ERR;
+            else if (strcmp(name, "HierarchyRequestError") == 0) de->code = DOM_EXCEPTION_HIERARCHY_REQUEST_ERR;
+            else if (strcmp(name, "WrongDocumentError") == 0) de->code = DOM_EXCEPTION_WRONG_DOCUMENT_ERR;
+            else if (strcmp(name, "InvalidCharacterError") == 0) de->code = DOM_EXCEPTION_INVALID_CHARACTER_ERR;
+            else if (strcmp(name, "NoModificationAllowedError") == 0) de->code = DOM_EXCEPTION_NO_MODIFICATION_ALLOWED_ERR;
+            else if (strcmp(name, "NotFoundError") == 0) de->code = DOM_EXCEPTION_NOT_FOUND_ERR;
+            else if (strcmp(name, "NotSupportedError") == 0) de->code = DOM_EXCEPTION_NOT_SUPPORTED_ERR;
+            else if (strcmp(name, "InvalidStateError") == 0) de->code = DOM_EXCEPTION_INVALID_STATE_ERR;
+            else if (strcmp(name, "SyntaxError") == 0) de->code = DOM_EXCEPTION_SYNTAX_ERR;
+            else if (strcmp(name, "InvalidModificationError") == 0) de->code = DOM_EXCEPTION_INVALID_MODIFICATION_ERR;
+            else if (strcmp(name, "NamespaceError") == 0) de->code = DOM_EXCEPTION_NAMESPACE_ERR;
+            else if (strcmp(name, "InvalidAccessError") == 0) de->code = DOM_EXCEPTION_INVALID_ACCESS_ERR;
+            else if (strcmp(name, "TypeMismatchError") == 0) de->code = DOM_EXCEPTION_TYPE_MISMATCH_ERR;
+            else if (strcmp(name, "SecurityError") == 0) de->code = DOM_EXCEPTION_SECURITY_ERR;
+            else if (strcmp(name, "NetworkError") == 0) de->code = DOM_EXCEPTION_NETWORK_ERR;
+            else if (strcmp(name, "AbortError") == 0) de->code = DOM_EXCEPTION_ABORT_ERR;
+            else if (strcmp(name, "URLMismatchError") == 0) de->code = DOM_EXCEPTION_URL_MISMATCH_ERR;
+            else if (strcmp(name, "QuotaExceededError") == 0) de->code = DOM_EXCEPTION_QUOTA_EXCEEDED_ERR;
+            else if (strcmp(name, "TimeoutError") == 0) de->code = DOM_EXCEPTION_TIMEOUT_ERR;
+            else if (strcmp(name, "InvalidNodeTypeError") == 0) de->code = DOM_EXCEPTION_INVALID_NODE_TYPE_ERR;
+            else if (strcmp(name, "DataCloneError") == 0) de->code = DOM_EXCEPTION_DATA_CLONE_ERR;
+            JS_FreeCString(ctx, name);
+        }
+    }
+    
+    JSValue obj = JS_NewObjectClass(ctx, js_dom_exception_class_id);
+    if (JS_IsException(obj)) {
+        free(de);
+        return obj;
+    }
+    JS_SetOpaque(obj, de);
+    return obj;
+}
+
+static JSValue js_dom_exception_get_name(JSContext *ctx, JSValueConst this_val) {
+    DOMExceptionData *de = JS_GetOpaque2(ctx, this_val, js_dom_exception_class_id);
+    if (!de) return JS_EXCEPTION;
+    return JS_NewString(ctx, de->name);
+}
+
+static JSValue js_dom_exception_get_message(JSContext *ctx, JSValueConst this_val) {
+    DOMExceptionData *de = JS_GetOpaque2(ctx, this_val, js_dom_exception_class_id);
+    if (!de) return JS_EXCEPTION;
+    return JS_NewString(ctx, de->message);
+}
+
+static JSValue js_dom_exception_get_code(JSContext *ctx, JSValueConst this_val) {
+    DOMExceptionData *de = JS_GetOpaque2(ctx, this_val, js_dom_exception_class_id);
+    if (!de) return JS_EXCEPTION;
+    return JS_NewInt32(ctx, de->code);
+}
+
+static const JSCFunctionListEntry js_dom_exception_proto_funcs[] = {
+    JS_CGETSET_DEF("name", js_dom_exception_get_name, NULL),
+    JS_CGETSET_DEF("message", js_dom_exception_get_message, NULL),
+    JS_CGETSET_DEF("code", js_dom_exception_get_code, NULL),
+};
+
+// ============================================================================
 // ES6+ Polyfills (C implementations)
 // ============================================================================
 
@@ -2293,6 +2414,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_NewClassID(&js_dom_rect_read_only_class_id);
     JS_NewClassID(&js_performance_timing_class_id);
     JS_NewClassID(&js_map_class_id);
+    JS_NewClassID(&js_dom_exception_class_id);
     
     // Register classes with the runtime
     JSRuntime *rt = JS_GetRuntime(ctx);
@@ -2312,6 +2434,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_NewClass(rt, js_dom_rect_read_only_class_id, &js_dom_rect_read_only_class_def);
     JS_NewClass(rt, js_map_class_id, &js_map_class_def);
     JS_NewClass(rt, js_performance_timing_class_id, &js_performance_timing_class_def);
+    JS_NewClass(rt, js_dom_exception_class_id, &js_dom_exception_class_def);
     
     // ===== ES6+ Polyfills Registration =====
     // Get Object constructor
@@ -2370,6 +2493,39 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, reflect_obj, "has",
         JS_NewCFunction(ctx, js_reflect_has, "has", 2));
     JS_SetPropertyStr(ctx, global, "Reflect", reflect_obj);
+    
+    // DOMException constructor
+    JSValue dom_exception_proto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, dom_exception_proto, js_dom_exception_proto_funcs,
+        sizeof(js_dom_exception_proto_funcs) / sizeof(js_dom_exception_proto_funcs[0]));
+    JS_SetClassProto(ctx, js_dom_exception_class_id, dom_exception_proto);
+    JSValue dom_exception_ctor = JS_NewCFunction2(ctx, js_dom_exception_constructor, "DOMException", 2, JS_CFUNC_constructor, 0);
+    JS_SetConstructor(ctx, dom_exception_ctor, dom_exception_proto);
+    
+    // Add static error code constants
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "INDEX_SIZE_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_INDEX_SIZE_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "HIERARCHY_REQUEST_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_HIERARCHY_REQUEST_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "WRONG_DOCUMENT_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_WRONG_DOCUMENT_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "INVALID_CHARACTER_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_INVALID_CHARACTER_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "NO_MODIFICATION_ALLOWED_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_NO_MODIFICATION_ALLOWED_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "NOT_FOUND_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_NOT_FOUND_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "NOT_SUPPORTED_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_NOT_SUPPORTED_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "INVALID_STATE_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_INVALID_STATE_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "SYNTAX_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_SYNTAX_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "INVALID_MODIFICATION_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_INVALID_MODIFICATION_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "NAMESPACE_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_NAMESPACE_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "INVALID_ACCESS_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_INVALID_ACCESS_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "TYPE_MISMATCH_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_TYPE_MISMATCH_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "SECURITY_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_SECURITY_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "NETWORK_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_NETWORK_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "ABORT_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_ABORT_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "URL_MISMATCH_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_URL_MISMATCH_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "QUOTA_EXCEEDED_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_QUOTA_EXCEEDED_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "TIMEOUT_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_TIMEOUT_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "INVALID_NODE_TYPE_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_INVALID_NODE_TYPE_ERR));
+    JS_SetPropertyStr(ctx, dom_exception_ctor, "DATA_CLONE_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_DATA_CLONE_ERR));
+    
+    JS_SetPropertyStr(ctx, global, "DOMException", dom_exception_ctor);
     
     // Map constructor
     JSValue map_proto = JS_NewObject(ctx);
