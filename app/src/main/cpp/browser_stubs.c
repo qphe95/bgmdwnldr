@@ -1,13 +1,14 @@
 /*
  * Browser Stubs - C implementation of DOM/Browser APIs for QuickJS
  */
-/*
- * Browser Stubs - C implementation of DOM/Browser APIs for QuickJS
- */
 #include <string.h>
 #include <stdlib.h>
+#include <android/log.h>
 #include <quickjs.h>
 #include "browser_stubs.h"
+
+#define LOG_TAG "browser_stubs"
+#define LOG_ERROR(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // External symbols from js_quickjs.c
 extern JSValue js_document_create_element(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
@@ -90,6 +91,7 @@ JSClassID js_intersection_observer_class_id = 0;
 JSClassID js_performance_class_id = 0;
 JSClassID js_performance_entry_class_id = 0;
 JSClassID js_performance_observer_class_id = 0;
+JSClassID js_performance_timing_class_id = 0;
 JSClassID js_dom_rect_class_id = 0;
 JSClassID js_dom_rect_read_only_class_id = 0;
 
@@ -1183,9 +1185,127 @@ static JSValue js_performance_clear_measures(JSContext *ctx, JSValueConst this_v
     return JS_UNDEFINED;
 }
 
+// PerformanceTiming properties - all return 0 as stubs
+typedef struct {
+    double navigationStart;
+    double unloadEventStart;
+    double unloadEventEnd;
+    double redirectStart;
+    double redirectEnd;
+    double fetchStart;
+    double domainLookupStart;
+    double domainLookupEnd;
+    double connectStart;
+    double connectEnd;
+    double secureConnectionStart;
+    double requestStart;
+    double responseStart;
+    double responseEnd;
+    double domLoading;
+    double domInteractive;
+    double domContentLoadedEventStart;
+    double domContentLoadedEventEnd;
+    double domComplete;
+    double loadEventStart;
+    double loadEventEnd;
+} PerformanceTimingData;
+
+static void js_performance_timing_finalizer(JSRuntime *rt, JSValue val) {
+    PerformanceTimingData *timing = JS_GetOpaque(val, js_performance_timing_class_id);
+    if (timing) {
+        free(timing);
+    }
+}
+
+static JSClassDef js_performance_timing_class_def = {
+    "PerformanceTiming",
+    .finalizer = js_performance_timing_finalizer,
+};
+
+#define DEF_TIMING_GETTER(field) \
+static JSValue js_performance_timing_get_##field(JSContext *ctx, JSValueConst this_val) { \
+    PerformanceTimingData *timing = JS_GetOpaque2(ctx, this_val, js_performance_timing_class_id); \
+    if (!timing) return JS_EXCEPTION; \
+    return JS_NewFloat64(ctx, timing->field); \
+}
+
+DEF_TIMING_GETTER(navigationStart)
+DEF_TIMING_GETTER(unloadEventStart)
+DEF_TIMING_GETTER(unloadEventEnd)
+DEF_TIMING_GETTER(redirectStart)
+DEF_TIMING_GETTER(redirectEnd)
+DEF_TIMING_GETTER(fetchStart)
+DEF_TIMING_GETTER(domainLookupStart)
+DEF_TIMING_GETTER(domainLookupEnd)
+DEF_TIMING_GETTER(connectStart)
+DEF_TIMING_GETTER(connectEnd)
+DEF_TIMING_GETTER(secureConnectionStart)
+DEF_TIMING_GETTER(requestStart)
+DEF_TIMING_GETTER(responseStart)
+DEF_TIMING_GETTER(responseEnd)
+DEF_TIMING_GETTER(domLoading)
+DEF_TIMING_GETTER(domInteractive)
+DEF_TIMING_GETTER(domContentLoadedEventStart)
+DEF_TIMING_GETTER(domContentLoadedEventEnd)
+DEF_TIMING_GETTER(domComplete)
+DEF_TIMING_GETTER(loadEventStart)
+DEF_TIMING_GETTER(loadEventEnd)
+
+#undef DEF_TIMING_GETTER
+
+static const JSCFunctionListEntry js_performance_timing_proto_funcs[] = {
+    JS_CGETSET_DEF("navigationStart", js_performance_timing_get_navigationStart, NULL),
+    JS_CGETSET_DEF("unloadEventStart", js_performance_timing_get_unloadEventStart, NULL),
+    JS_CGETSET_DEF("unloadEventEnd", js_performance_timing_get_unloadEventEnd, NULL),
+    JS_CGETSET_DEF("redirectStart", js_performance_timing_get_redirectStart, NULL),
+    JS_CGETSET_DEF("redirectEnd", js_performance_timing_get_redirectEnd, NULL),
+    JS_CGETSET_DEF("fetchStart", js_performance_timing_get_fetchStart, NULL),
+    JS_CGETSET_DEF("domainLookupStart", js_performance_timing_get_domainLookupStart, NULL),
+    JS_CGETSET_DEF("domainLookupEnd", js_performance_timing_get_domainLookupEnd, NULL),
+    JS_CGETSET_DEF("connectStart", js_performance_timing_get_connectStart, NULL),
+    JS_CGETSET_DEF("connectEnd", js_performance_timing_get_connectEnd, NULL),
+    JS_CGETSET_DEF("secureConnectionStart", js_performance_timing_get_secureConnectionStart, NULL),
+    JS_CGETSET_DEF("requestStart", js_performance_timing_get_requestStart, NULL),
+    JS_CGETSET_DEF("responseStart", js_performance_timing_get_responseStart, NULL),
+    JS_CGETSET_DEF("responseEnd", js_performance_timing_get_responseEnd, NULL),
+    JS_CGETSET_DEF("domLoading", js_performance_timing_get_domLoading, NULL),
+    JS_CGETSET_DEF("domInteractive", js_performance_timing_get_domInteractive, NULL),
+    JS_CGETSET_DEF("domContentLoadedEventStart", js_performance_timing_get_domContentLoadedEventStart, NULL),
+    JS_CGETSET_DEF("domContentLoadedEventEnd", js_performance_timing_get_domContentLoadedEventEnd, NULL),
+    JS_CGETSET_DEF("domComplete", js_performance_timing_get_domComplete, NULL),
+    JS_CGETSET_DEF("loadEventStart", js_performance_timing_get_loadEventStart, NULL),
+    JS_CGETSET_DEF("loadEventEnd", js_performance_timing_get_loadEventEnd, NULL),
+    JS_CGETSET_DEF("toJSON", js_performance_timing_get_navigationStart, NULL), // stub
+};
+
+// Performance.timing getter
+static JSValue js_performance_get_timing(JSContext *ctx, JSValueConst this_val) {
+    // Get the timing object from the Performance instance's opaque data
+    // For simplicity, we store the timing object as a property on the performance instance
+    JSValue timing_prop = JS_GetPropertyStr(ctx, this_val, "__timing");
+    if (!JS_IsUndefined(timing_prop) && !JS_IsNull(timing_prop)) {
+        return timing_prop;
+    }
+    JS_FreeValue(ctx, timing_prop);
+    
+    // Create timing object
+    PerformanceTimingData *timing_data = calloc(1, sizeof(PerformanceTimingData));
+    if (!timing_data) return JS_EXCEPTION;
+    
+    // All timing values default to 0
+    JSValue timing_obj = JS_NewObjectClass(ctx, js_performance_timing_class_id);
+    JS_SetOpaque(timing_obj, timing_data);
+    
+    // Store on the performance instance
+    JS_SetPropertyStr(ctx, (JSValue)this_val, "__timing", JS_DupValue(ctx, timing_obj));
+    
+    return timing_obj;
+}
+
 static const JSCFunctionListEntry js_performance_proto_funcs[] = {
     JS_CFUNC_DEF("now", 0, js_performance_now),
     JS_CGETSET_DEF("timeOrigin", js_performance_get_time_origin, NULL),
+    JS_CGETSET_DEF("timing", js_performance_get_timing, NULL),
     JS_CFUNC_DEF("getEntries", 0, js_performance_get_entries),
     JS_CFUNC_DEF("getEntriesByType", 1, js_performance_get_entries_by_type),
     JS_CFUNC_DEF("getEntriesByName", 1, js_performance_get_entries_by_name),
@@ -1532,6 +1652,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_NewClassID(&js_performance_observer_class_id);
     JS_NewClassID(&js_dom_rect_class_id);
     JS_NewClassID(&js_dom_rect_read_only_class_id);
+    JS_NewClassID(&js_performance_timing_class_id);
     
     // Register classes with the runtime
     JSRuntime *rt = JS_GetRuntime(ctx);
@@ -1549,12 +1670,105 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_NewClass(rt, js_performance_observer_class_id, &js_performance_observer_class_def);
     JS_NewClass(rt, js_dom_rect_class_id, &js_dom_rect_class_def);
     JS_NewClass(rt, js_dom_rect_read_only_class_id, &js_dom_rect_read_only_class_def);
+    JS_NewClass(rt, js_performance_timing_class_id, &js_performance_timing_class_def);
     
     // ===== Window (global object itself) =====
     // window IS the global object - this ensures 'this' at global level refers to window
     JSValue window = global;  // Use global object as window (no new object created)
     
-    DEF_PROP_INT(ctx, window, "innerWidth", 1920);
+    // ===== Create DOM Constructors via JavaScript evaluation for proper prototype chain =====
+    // This ensures the prototype chain is set up correctly like in a real browser
+    // We assign to 'this' which refers to the global object (window/globalThis)
+    const char *dom_setup_js = 
+        "(function(g) {"
+        "  function EventTarget() {}"
+        "  function Node() {}"
+        "  Node.prototype = Object.create(EventTarget.prototype);"
+        "  Node.prototype.constructor = Node;"
+        "  function Element() {}"
+        "  Element.prototype = Object.create(Node.prototype);"
+        "  Element.prototype.constructor = Element;"
+        "  function HTMLElement() {}"
+        "  HTMLElement.prototype = Object.create(Element.prototype);"
+        "  HTMLElement.prototype.constructor = HTMLElement;"
+        "  function DocumentFragment() {}"
+        "  DocumentFragment.prototype = Object.create(Node.prototype);"
+        "  DocumentFragment.prototype.constructor = DocumentFragment;"
+        "  g.EventTarget = EventTarget;"
+        "  g.Node = Node;"
+        "  g.Element = Element;"
+        "  g.HTMLElement = HTMLElement;"
+        "  g.DocumentFragment = DocumentFragment;"
+        "})(this);"
+    ;
+    JSValue dom_setup_result = JS_Eval(ctx, dom_setup_js, strlen(dom_setup_js), "<dom_setup>", 0);
+    if (JS_IsException(dom_setup_result)) {
+        JSValue exception = JS_GetException(ctx);
+        const char *error = JS_ToCString(ctx, exception);
+        LOG_ERROR("DOM setup error: %s", error ? error : "unknown");
+        JS_FreeCString(ctx, error);
+        JS_FreeValue(ctx, exception);
+    }
+    JS_FreeValue(ctx, dom_setup_result);
+    
+    // Get references to constructors and prototypes for adding methods
+    JSValue event_target_ctor = JS_GetPropertyStr(ctx, global, "EventTarget");
+    JSValue event_target_proto = JS_GetPropertyStr(ctx, event_target_ctor, "prototype");
+    JSValue node_ctor = JS_GetPropertyStr(ctx, global, "Node");
+    JSValue node_proto = JS_GetPropertyStr(ctx, node_ctor, "prototype");
+    JSValue element_ctor = JS_GetPropertyStr(ctx, global, "Element");
+    JSValue element_proto = JS_GetPropertyStr(ctx, element_ctor, "prototype");
+    JSValue html_element_ctor = JS_GetPropertyStr(ctx, global, "HTMLElement");
+    JSValue html_element_proto = JS_GetPropertyStr(ctx, html_element_ctor, "prototype");
+    
+    // ===== EventTarget prototype methods =====
+    JS_SetPropertyStr(ctx, event_target_proto, "addEventListener",
+        JS_NewCFunction(ctx, js_event_target_addEventListener, "addEventListener", 2));
+    JS_SetPropertyStr(ctx, event_target_proto, "removeEventListener",
+        JS_NewCFunction(ctx, js_event_target_removeEventListener, "removeEventListener", 2));
+    JS_SetPropertyStr(ctx, event_target_proto, "dispatchEvent",
+        JS_NewCFunction(ctx, js_event_target_dispatchEvent, "dispatchEvent", 1));
+    
+    // ===== Node prototype methods =====
+    JS_SetPropertyStr(ctx, node_proto, "appendChild",
+        JS_NewCFunction(ctx, js_node_appendChild, "appendChild", 1));
+    JS_SetPropertyStr(ctx, node_proto, "insertBefore",
+        JS_NewCFunction(ctx, js_node_insertBefore, "insertBefore", 2));
+    JS_SetPropertyStr(ctx, node_proto, "removeChild",
+        JS_NewCFunction(ctx, js_node_removeChild, "removeChild", 1));
+    JS_SetPropertyStr(ctx, node_proto, "cloneNode",
+        JS_NewCFunction(ctx, js_node_cloneNode, "cloneNode", 1));
+    JS_SetPropertyStr(ctx, node_proto, "contains",
+        JS_NewCFunction(ctx, js_node_contains, "contains", 1));
+    
+    // ===== Element prototype methods =====
+    // attachShadow method
+    JS_SetPropertyStr(ctx, element_proto, "attachShadow",
+        JS_NewCFunction(ctx, js_element_attach_shadow, "attachShadow", 1));
+    // shadowRoot getter
+    JSValue getter = JS_NewCFunction(ctx, js_element_get_shadow_root, "get shadowRoot", 0);
+    JS_DefinePropertyGetSet(ctx, element_proto, JS_NewAtom(ctx, "shadowRoot"),
+        getter, JS_UNDEFINED, JS_PROP_ENUMERABLE);
+    // querySelector and querySelectorAll
+    JS_SetPropertyStr(ctx, element_proto, "querySelector",
+        JS_NewCFunction(ctx, js_element_querySelector, "querySelector", 1));
+    JS_SetPropertyStr(ctx, element_proto, "querySelectorAll",
+        JS_NewCFunction(ctx, js_element_querySelectorAll, "querySelectorAll", 1));
+    // animate method
+    JS_SetPropertyStr(ctx, element_proto, "animate",
+        JS_NewCFunction(ctx, js_element_animate, "animate", 2));
+    
+    // Free prototype references
+    JS_FreeValue(ctx, html_element_proto);
+    JS_FreeValue(ctx, html_element_ctor);
+    JS_FreeValue(ctx, element_proto);
+    JS_FreeValue(ctx, element_ctor);
+    JS_FreeValue(ctx, node_proto);
+    JS_FreeValue(ctx, node_ctor);
+    JS_FreeValue(ctx, event_target_proto);
+    JS_FreeValue(ctx, event_target_ctor);
+    
+    // ===== Window Properties =====
     DEF_PROP_INT(ctx, window, "innerHeight", 1080);
     DEF_PROP_INT(ctx, window, "outerWidth", 1920);
     DEF_PROP_INT(ctx, window, "outerHeight", 1080);
@@ -1588,6 +1802,27 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, window, "parent", JS_DupValue(ctx, window));
     // globalThis also points to the same object (global = window)
     JS_SetPropertyStr(ctx, window, "globalThis", JS_DupValue(ctx, window));
+    
+    // ===== NodeFilter constants =====
+    JSValue node_filter = JS_NewObject(ctx);
+    DEF_PROP_INT(ctx, node_filter, "FILTER_ACCEPT", 1);
+    DEF_PROP_INT(ctx, node_filter, "FILTER_REJECT", 2);
+    DEF_PROP_INT(ctx, node_filter, "FILTER_SKIP", 3);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_ALL", 0xFFFFFFFF);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_ELEMENT", 0x1);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_ATTRIBUTE", 0x2);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_TEXT", 0x4);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_CDATA_SECTION", 0x8);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_ENTITY_REFERENCE", 0x10);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_ENTITY", 0x20);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_PROCESSING_INSTRUCTION", 0x40);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_COMMENT", 0x80);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_DOCUMENT", 0x100);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_DOCUMENT_TYPE", 0x200);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_DOCUMENT_FRAGMENT", 0x400);
+    DEF_PROP_INT(ctx, node_filter, "SHOW_NOTATION", 0x800);
+    JS_SetPropertyStr(ctx, global, "NodeFilter", node_filter);
+    JS_SetPropertyStr(ctx, window, "NodeFilter", JS_DupValue(ctx, node_filter));
     
     // ===== Document =====
     JSValue document = JS_NewObject(ctx);
@@ -1731,38 +1966,6 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     // fetch is set on global (which is window) - no need to duplicate
     JS_SetPropertyStr(ctx, global, "fetch", JS_NewCFunction(ctx, js_fetch, "fetch", 2));
     
-    // ===== EventTarget prototype methods =====
-    JSValue event_target_ctor = JS_GetPropertyStr(ctx, global, "EventTarget");
-    JSValue event_target_proto = JS_GetPropertyStr(ctx, event_target_ctor, "prototype");
-    if (!JS_IsUndefined(event_target_proto)) {
-        JS_SetPropertyStr(ctx, event_target_proto, "addEventListener",
-            JS_NewCFunction(ctx, js_event_target_addEventListener, "addEventListener", 2));
-        JS_SetPropertyStr(ctx, event_target_proto, "removeEventListener",
-            JS_NewCFunction(ctx, js_event_target_removeEventListener, "removeEventListener", 2));
-        JS_SetPropertyStr(ctx, event_target_proto, "dispatchEvent",
-            JS_NewCFunction(ctx, js_event_target_dispatchEvent, "dispatchEvent", 1));
-    }
-    JS_FreeValue(ctx, event_target_proto);
-    JS_FreeValue(ctx, event_target_ctor);
-    
-    // ===== Node prototype methods =====
-    JSValue node_ctor = JS_GetPropertyStr(ctx, global, "Node");
-    JSValue node_proto = JS_GetPropertyStr(ctx, node_ctor, "prototype");
-    if (!JS_IsUndefined(node_proto)) {
-        JS_SetPropertyStr(ctx, node_proto, "appendChild",
-            JS_NewCFunction(ctx, js_node_appendChild, "appendChild", 1));
-        JS_SetPropertyStr(ctx, node_proto, "insertBefore",
-            JS_NewCFunction(ctx, js_node_insertBefore, "insertBefore", 2));
-        JS_SetPropertyStr(ctx, node_proto, "removeChild",
-            JS_NewCFunction(ctx, js_node_removeChild, "removeChild", 1));
-        JS_SetPropertyStr(ctx, node_proto, "cloneNode",
-            JS_NewCFunction(ctx, js_node_cloneNode, "cloneNode", 1));
-        JS_SetPropertyStr(ctx, node_proto, "contains",
-            JS_NewCFunction(ctx, js_node_contains, "contains", 1));
-    }
-    JS_FreeValue(ctx, node_proto);
-    JS_FreeValue(ctx, node_ctor);
-    
     // ===== Shadow DOM APIs =====
     // ShadowRoot class
     JSValue shadow_root_proto = JS_NewObject(ctx);
@@ -1774,27 +1977,6 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetConstructor(ctx, shadow_root_ctor, shadow_root_proto);
     JS_SetPropertyStr(ctx, global, "ShadowRoot", shadow_root_ctor);
     JS_SetPropertyStr(ctx, window, "ShadowRoot", JS_DupValue(ctx, shadow_root_ctor));
-    
-    // Element.prototype.attachShadow and Element.prototype.shadowRoot
-    // We add these to the Element constructor's prototype
-    JSValue element_ctor = JS_GetPropertyStr(ctx, global, "Element");
-    JSValue element_proto = JS_GetPropertyStr(ctx, element_ctor, "prototype");
-    if (!JS_IsUndefined(element_proto)) {
-        // attachShadow method
-        JS_SetPropertyStr(ctx, element_proto, "attachShadow",
-            JS_NewCFunction(ctx, js_element_attach_shadow, "attachShadow", 1));
-        // shadowRoot getter
-        JSValue getter = JS_NewCFunction(ctx, js_element_get_shadow_root, "get shadowRoot", 0);
-        JS_DefinePropertyGetSet(ctx, element_proto, JS_NewAtom(ctx, "shadowRoot"),
-            getter, JS_UNDEFINED, JS_PROP_ENUMERABLE);
-        // querySelector and querySelectorAll
-        JS_SetPropertyStr(ctx, element_proto, "querySelector",
-            JS_NewCFunction(ctx, js_element_querySelector, "querySelector", 1));
-        JS_SetPropertyStr(ctx, element_proto, "querySelectorAll",
-            JS_NewCFunction(ctx, js_element_querySelectorAll, "querySelectorAll", 1));
-    }
-    JS_FreeValue(ctx, element_proto);
-    JS_FreeValue(ctx, element_ctor);
     
     // ===== Custom Elements API =====
     JSValue custom_elements = JS_NewObjectClass(ctx, js_custom_element_registry_class_id);
@@ -1834,16 +2016,6 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetConstructor(ctx, keyframe_effect_ctor, keyframe_effect_proto);
     JS_SetPropertyStr(ctx, global, "KeyframeEffect", keyframe_effect_ctor);
     JS_SetPropertyStr(ctx, window, "KeyframeEffect", JS_DupValue(ctx, keyframe_effect_ctor));
-    
-    // Element.prototype.animate
-    element_ctor = JS_GetPropertyStr(ctx, global, "Element");
-    element_proto = JS_GetPropertyStr(ctx, element_ctor, "prototype");
-    if (!JS_IsUndefined(element_proto)) {
-        JS_SetPropertyStr(ctx, element_proto, "animate",
-            JS_NewCFunction(ctx, js_element_animate, "animate", 2));
-    }
-    JS_FreeValue(ctx, element_proto);
-    JS_FreeValue(ctx, element_ctor);
     
     // ===== Font Loading API =====
     // FontFace class
@@ -1985,10 +2157,4 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, global, "DOMRect", dom_rect_ctor);
     JS_SetPropertyStr(ctx, window, "DOMRect", JS_DupValue(ctx, dom_rect_ctor));
     
-    // ===== DOM Constructors (stubs) =====
-    JS_SetPropertyStr(ctx, global, "EventTarget", JS_NewCFunction2(ctx, NULL, "EventTarget", 0, JS_CFUNC_constructor, 0));
-    JS_SetPropertyStr(ctx, global, "Node", JS_NewCFunction2(ctx, NULL, "Node", 0, JS_CFUNC_constructor, 0));
-    JS_SetPropertyStr(ctx, global, "Element", JS_NewCFunction2(ctx, NULL, "Element", 1, JS_CFUNC_constructor, 0));
-    JS_SetPropertyStr(ctx, global, "HTMLElement", JS_NewCFunction2(ctx, NULL, "HTMLElement", 1, JS_CFUNC_constructor, 0));
-    JS_SetPropertyStr(ctx, global, "DocumentFragment", JS_NewCFunction2(ctx, NULL, "DocumentFragment", 0, JS_CFUNC_constructor, 0));
 }
