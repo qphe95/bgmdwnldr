@@ -224,6 +224,89 @@ static JSValue js_object_get_prototype_of(JSContext *ctx, JSValueConst this_val,
     return proto;
 }
 
+// Helper to define a property with descriptor
+// Simplified implementation that only handles the most common cases
+static JSValue js_object_define_property(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 3) return JS_EXCEPTION;
+    
+    JSValue obj = argv[0];
+    JSValue prop = argv[1];
+    JSValue descriptor = argv[2];
+    
+    if (JS_IsNull(obj) || JS_IsUndefined(obj)) {
+        return JS_ThrowTypeError(ctx, "Object.defineProperty called on null or undefined");
+    }
+    
+    // Convert property to atom
+    JSAtom prop_atom;
+    if (JS_IsSymbol(prop)) {
+        prop_atom = JS_ValueToAtom(ctx, prop);
+    } else {
+        const char *prop_str = JS_ToCString(ctx, prop);
+        if (!prop_str) return JS_EXCEPTION;
+        prop_atom = JS_NewAtom(ctx, prop_str);
+        JS_FreeCString(ctx, prop_str);
+    }
+    
+    // Check for accessor property (get/set)
+    JSValue get_prop = JS_GetPropertyStr(ctx, descriptor, "get");
+    JSValue set_prop = JS_GetPropertyStr(ctx, descriptor, "set");
+    int has_get = !JS_IsException(get_prop) && !JS_IsUndefined(get_prop);
+    int has_set = !JS_IsException(set_prop) && !JS_IsUndefined(set_prop);
+    
+    // Get flags from descriptor
+    JSValue writable_prop = JS_GetPropertyStr(ctx, descriptor, "writable");
+    JSValue enumerable_prop = JS_GetPropertyStr(ctx, descriptor, "enumerable");
+    JSValue configurable_prop = JS_GetPropertyStr(ctx, descriptor, "configurable");
+    
+    int writable = !JS_IsException(writable_prop) && JS_ToBool(ctx, writable_prop);
+    int enumerable = !JS_IsException(enumerable_prop) && JS_ToBool(ctx, enumerable_prop);
+    int configurable = !JS_IsException(configurable_prop) && JS_ToBool(ctx, configurable_prop);
+    
+    JS_FreeValue(ctx, writable_prop);
+    JS_FreeValue(ctx, enumerable_prop);
+    JS_FreeValue(ctx, configurable_prop);
+    
+    int flags = JS_PROP_THROW;
+    if (writable) flags |= JS_PROP_WRITABLE;
+    if (enumerable) flags |= JS_PROP_ENUMERABLE;
+    if (configurable) flags |= JS_PROP_CONFIGURABLE;
+    
+    int def_result = -1;
+    
+    if (has_get || has_set) {
+        // Accessor property - JS_DefinePropertyGetSet takes ownership of getter/setter
+        JSValue getter = has_get ? get_prop : JS_UNDEFINED;
+        JSValue setter = has_set ? set_prop : JS_UNDEFINED;
+        if (!has_get) JS_FreeValue(ctx, get_prop);
+        if (!has_set) JS_FreeValue(ctx, set_prop);
+        def_result = JS_DefinePropertyGetSet(ctx, obj, prop_atom, getter, setter, flags);
+    } else {
+        // Data property - get value
+        JSValue value = JS_GetPropertyStr(ctx, descriptor, "value");
+        if (JS_IsException(value)) {
+            JS_FreeAtom(ctx, prop_atom);
+            JS_FreeValue(ctx, get_prop);
+            JS_FreeValue(ctx, set_prop);
+            return JS_EXCEPTION;
+        }
+        
+        JS_FreeValue(ctx, get_prop);
+        JS_FreeValue(ctx, set_prop);
+        
+        // JS_DefinePropertyValue takes ownership of value
+        def_result = JS_DefinePropertyValue(ctx, obj, prop_atom, value, flags);
+    }
+    
+    JS_FreeAtom(ctx, prop_atom);
+    
+    if (def_result < 0) {
+        return JS_EXCEPTION;
+    }
+    return JS_DupValue(ctx, obj);
+}
+
 // Object.create polyfill
 static JSValue js_object_create(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
@@ -2458,6 +2541,12 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
             JS_NewCFunction(ctx, js_object_create, "create", 2));
     }
     
+    // Object.defineProperty
+    if (!JS_IsException(object_ctor)) {
+        JS_SetPropertyStr(ctx, object_ctor, "defineProperty",
+            JS_NewCFunction(ctx, js_object_define_property, "defineProperty", 3));
+    }
+    
     // Object.defineProperties
     if (!JS_IsException(object_ctor)) {
         JS_SetPropertyStr(ctx, object_ctor, "defineProperties",
@@ -2498,6 +2587,18 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue dom_exception_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, dom_exception_proto, js_dom_exception_proto_funcs,
         sizeof(js_dom_exception_proto_funcs) / sizeof(js_dom_exception_proto_funcs[0]));
+    
+    // Set up prototype chain: DOMException.prototype -> Error.prototype
+    JSValue error_ctor = JS_GetPropertyStr(ctx, global, "Error");
+    if (!JS_IsException(error_ctor)) {
+        JSValue error_proto = JS_GetPropertyStr(ctx, error_ctor, "prototype");
+        if (!JS_IsException(error_proto)) {
+            JS_SetPrototype(ctx, dom_exception_proto, error_proto);
+            JS_FreeValue(ctx, error_proto);
+        }
+        JS_FreeValue(ctx, error_ctor);
+    }
+    
     JS_SetClassProto(ctx, js_dom_exception_class_id, dom_exception_proto);
     JSValue dom_exception_ctor = JS_NewCFunction2(ctx, js_dom_exception_constructor, "DOMException", 2, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, dom_exception_ctor, dom_exception_proto);
@@ -2717,6 +2818,13 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     
     // Set up window to reference itself (global object)
     JS_SetPropertyStr(ctx, window, "window", JS_DupValue(ctx, window));
+    
+    // Also expose DOMException on window (if it exists on global)
+    JSValue dom_exception = JS_GetPropertyStr(ctx, global, "DOMException");
+    if (!JS_IsException(dom_exception) && !JS_IsUndefined(dom_exception)) {
+        JS_SetPropertyStr(ctx, window, "DOMException", JS_DupValue(ctx, dom_exception));
+    }
+    JS_FreeValue(ctx, dom_exception);
     JS_SetPropertyStr(ctx, window, "self", JS_DupValue(ctx, window));
     JS_SetPropertyStr(ctx, window, "top", JS_DupValue(ctx, window));
     JS_SetPropertyStr(ctx, window, "parent", JS_DupValue(ctx, window));
