@@ -83,6 +83,387 @@ static JSValue js_dummy_function(JSContext *ctx, JSValueConst this_val, int argc
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     return JS_UNDEFINED;
 }
+
+// ============================================================================
+// ES6+ Polyfills (C implementations)
+// ============================================================================
+
+// Object.setPrototypeOf polyfill
+static JSValue js_object_set_prototype_of(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc < 2) return JS_EXCEPTION;
+    
+    JSValue obj = argv[0];
+    JSValue proto = argv[1];
+    
+    // Check for null/undefined
+    if (JS_IsNull(obj) || JS_IsUndefined(obj)) {
+        return JS_ThrowTypeError(ctx, "Object.setPrototypeOf called on null or undefined");
+    }
+    
+    // Set the prototype using __proto__
+    JSValue proto_key = JS_NewString(ctx, "__proto__");
+    JS_SetProperty(ctx, obj, JS_ValueToAtom(ctx, proto_key), JS_DupValue(ctx, proto));
+    JS_FreeValue(ctx, proto_key);
+    
+    return JS_DupValue(ctx, obj);
+}
+
+// Object.getOwnPropertySymbols polyfill - returns empty array
+static JSValue js_object_get_own_property_symbols(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return JS_NewArray(ctx);
+}
+
+// Object.assign polyfill
+static JSValue js_object_assign(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    
+    JSValue target = JS_DupValue(ctx, argv[0]);
+    
+    for (int i = 1; i < argc; i++) {
+        JSValue source = argv[i];
+        if (JS_IsNull(source) || JS_IsUndefined(source)) continue;
+        
+        // Enumerate properties using for-in equivalent
+        JSValue prop_names = JS_GetPropertyStr(ctx, source, "__proto__");
+        // Simple approach: use JavaScript to get keys
+        char assign_js[256];
+        snprintf(assign_js, sizeof(assign_js), 
+            "(function(t, s) { for (var k in s) { if (s.hasOwnProperty(k)) t[k] = s[k]; } })({}, {});");
+        JSValue assign_func = JS_Eval(ctx, assign_js, strlen(assign_js), "<assign>", 0);
+        if (!JS_IsException(assign_func) && JS_IsFunction(ctx, assign_func)) {
+            JSValue args[2] = { target, source };
+            JS_FreeValue(ctx, JS_Call(ctx, assign_func, JS_UNDEFINED, 2, args));
+        }
+        JS_FreeValue(ctx, assign_func);
+        JS_FreeValue(ctx, prop_names);
+    }
+    
+    return target;
+}
+
+// Reflect.construct polyfill
+static JSValue js_reflect_construct(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_EXCEPTION;
+    
+    JSValue target = argv[0];
+    JSValue args_array = argv[1];
+    
+    // Get length of args array
+    JSValue len_val = JS_GetPropertyStr(ctx, args_array, "length");
+    uint32_t args_len = 0;
+    JS_ToUint32(ctx, &args_len, len_val);
+    JS_FreeValue(ctx, len_val);
+    
+    // Build arguments array
+    JSValue *args = malloc(sizeof(JSValue) * args_len);
+    for (uint32_t i = 0; i < args_len; i++) {
+        args[i] = JS_GetPropertyUint32(ctx, args_array, i);
+    }
+    
+    // Call constructor
+    JSValue result = JS_CallConstructor(ctx, target, (int)args_len, args);
+    
+    for (uint32_t i = 0; i < args_len; i++) {
+        JS_FreeValue(ctx, args[i]);
+    }
+    free(args);
+    
+    return result;
+}
+
+// Reflect.apply polyfill
+static JSValue js_reflect_apply(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 3) return JS_EXCEPTION;
+    
+    JSValue func = argv[0];
+    JSValue this_arg = argv[1];
+    JSValue args_array = argv[2];
+    
+    // Get length of args array
+    JSValue args_len_val = JS_GetPropertyStr(ctx, args_array, "length");
+    uint32_t args_len = 0;
+    JS_ToUint32(ctx, &args_len, args_len_val);
+    JS_FreeValue(ctx, args_len_val);
+    
+    // Build arguments array
+    JSValue *args = malloc(sizeof(JSValue) * args_len);
+    for (uint32_t i = 0; i < args_len; i++) {
+        args[i] = JS_GetPropertyUint32(ctx, args_array, i);
+    }
+    
+    // Call function
+    JSValue result = JS_Call(ctx, func, this_arg, (int)args_len, args);
+    
+    for (uint32_t i = 0; i < args_len; i++) {
+        JS_FreeValue(ctx, args[i]);
+    }
+    free(args);
+    
+    return result;
+}
+
+// Reflect.has polyfill
+static JSValue js_reflect_has(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_EXCEPTION;
+    
+    JSValue target = argv[0];
+    const char *prop = JS_ToCString(ctx, argv[1]);
+    if (!prop) return JS_FALSE;
+    
+    int has_prop = JS_HasProperty(ctx, target, JS_NewAtom(ctx, prop));
+    JS_FreeCString(ctx, prop);
+    
+    return JS_NewBool(ctx, has_prop);
+}
+
+// Promise.prototype.finally polyfill
+static JSValue js_promise_finally(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc < 1 || !JS_IsObject(this_val)) return JS_EXCEPTION;
+    
+    JSValue on_finally = argv[0];
+    
+    // Create the finally handler
+    JSValue handler = JS_NewCFunction(ctx, js_dummy_function, "finally_handler", 0);
+    
+    // Call .then with the handler
+    JSValue then_method = JS_GetPropertyStr(ctx, this_val, "then");
+    JSValue args[2] = { handler, handler };
+    JSValue result = JS_Call(ctx, then_method, this_val, 2, args);
+    
+    JS_FreeValue(ctx, then_method);
+    JS_FreeValue(ctx, handler);
+    
+    return result;
+}
+
+// String.prototype.includes polyfill
+static JSValue js_string_includes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *str = JS_ToCString(ctx, this_val);
+    if (!str) return JS_FALSE;
+    
+    if (argc < 1) {
+        JS_FreeCString(ctx, str);
+        return JS_FALSE;
+    }
+    
+    const char *search = JS_ToCString(ctx, argv[0]);
+    if (!search) {
+        JS_FreeCString(ctx, str);
+        return JS_FALSE;
+    }
+    
+    int32_t start = 0;
+    if (argc > 1) {
+        JS_ToInt32(ctx, &start, argv[1]);
+    }
+    
+    // Adjust start position
+    size_t str_len = strlen(str);
+    if (start < 0) start = 0;
+    if ((size_t)start > str_len) start = (int32_t)str_len;
+    
+    // Search for substring
+    const char *found = strstr(str + start, search);
+    
+    JS_FreeCString(ctx, str);
+    JS_FreeCString(ctx, search);
+    
+    return JS_NewBool(ctx, found != NULL);
+}
+
+// Array.prototype.includes polyfill
+static JSValue js_array_includes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc < 1) return JS_FALSE;
+    
+    JSValue search_element = argv[0];
+    int32_t from_index = 0;
+    if (argc > 1) {
+        JS_ToInt32(ctx, &from_index, argv[1]);
+    }
+    
+    JSValue len_val = JS_GetPropertyStr(ctx, this_val, "length");
+    uint32_t len = 0;
+    JS_ToUint32(ctx, &len, len_val);
+    JS_FreeValue(ctx, len_val);
+    
+    if (from_index < 0) {
+        from_index = (int32_t)len + from_index;
+        if (from_index < 0) from_index = 0;
+    }
+    
+    for (uint32_t i = (uint32_t)from_index; i < len; i++) {
+        JSValue elem = JS_GetPropertyUint32(ctx, this_val, i);
+        int is_equal = JS_StrictEq(ctx, elem, search_element);
+        JS_FreeValue(ctx, elem);
+        if (is_equal) return JS_TRUE;
+    }
+    
+    return JS_FALSE;
+}
+
+// Array.from polyfill
+static JSValue js_array_from(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_NewArray(ctx);
+    
+    JSValue array_like = argv[0];
+    uint32_t len = 0;
+    
+    JSValue len_val2 = JS_GetPropertyStr(ctx, array_like, "length");
+    if (JS_ToUint32(ctx, &len, len_val2)) {
+        JS_FreeValue(ctx, len_val2);
+        JS_FreeValue(ctx, len_val2);
+        return JS_NewArray(ctx);
+    }
+    JS_FreeValue(ctx, len_val2);
+    
+    JSValue result = JS_NewArray(ctx);
+    for (uint32_t i = 0; i < len; i++) {
+        JSValue val = JS_GetPropertyUint32(ctx, array_like, i);
+        JS_SetPropertyUint32(ctx, result, i, val);
+    }
+    
+    return result;
+}
+
+// ============================================================================
+// Map Polyfill Implementation
+// ============================================================================
+
+typedef struct {
+    JSValue entries;  // Object storing key->value mappings
+    int size;
+} MapData;
+
+JSClassID js_map_class_id = 0;
+
+static void js_map_finalizer(JSRuntime *rt, JSValue val) {
+    MapData *map = JS_GetOpaque(val, js_map_class_id);
+    if (map) {
+        JS_FreeValueRT(rt, map->entries);
+        free(map);
+    }
+}
+
+static JSClassDef js_map_class_def = {
+    "Map",
+    .finalizer = js_map_finalizer,
+};
+
+static JSValue js_map_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    MapData *map = calloc(1, sizeof(MapData));
+    if (!map) return JS_EXCEPTION;
+    
+    map->entries = JS_NewObject(ctx);
+    map->size = 0;
+    
+    JSValue obj = JS_NewObjectClass(ctx, js_map_class_id);
+    JS_SetOpaque(obj, map);
+    return obj;
+}
+
+static JSValue js_map_set(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
+    if (!map || argc < 2) return JS_EXCEPTION;
+    
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) return JS_EXCEPTION;
+    
+    // Check if key exists
+    JSValue existing = JS_GetPropertyStr(ctx, map->entries, key);
+    int exists = !JS_IsUndefined(existing);
+    JS_FreeValue(ctx, existing);
+    
+    if (!exists) map->size++;
+    
+    JS_SetPropertyStr(ctx, map->entries, key, JS_DupValue(ctx, argv[1]));
+    JS_FreeCString(ctx, key);
+    
+    return JS_DupValue(ctx, this_val);
+}
+
+static JSValue js_map_get(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
+    if (!map || argc < 1) return JS_EXCEPTION;
+    
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) return JS_EXCEPTION;
+    
+    JSValue val = JS_GetPropertyStr(ctx, map->entries, key);
+    JS_FreeCString(ctx, key);
+    
+    return val;
+}
+
+static JSValue js_map_has(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
+    if (!map || argc < 1) return JS_EXCEPTION;
+    
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) return JS_EXCEPTION;
+    
+    JSValue val = JS_GetPropertyStr(ctx, map->entries, key);
+    JS_FreeCString(ctx, key);
+    
+    int exists = !JS_IsUndefined(val);
+    JS_FreeValue(ctx, val);
+    
+    return JS_NewBool(ctx, exists);
+}
+
+static JSValue js_map_delete(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
+    if (!map || argc < 1) return JS_EXCEPTION;
+    
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) return JS_EXCEPTION;
+    
+    JSValue val = JS_GetPropertyStr(ctx, map->entries, key);
+    int exists = !JS_IsUndefined(val);
+    JS_FreeValue(ctx, val);
+    
+    if (exists) {
+        JSValue undefined = JS_UNDEFINED;
+        JS_SetPropertyStr(ctx, map->entries, key, undefined);
+        map->size--;
+    }
+    
+    JS_FreeCString(ctx, key);
+    return JS_NewBool(ctx, exists);
+}
+
+static JSValue js_map_clear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)argc; (void)argv;
+    MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
+    if (!map) return JS_EXCEPTION;
+    
+    JS_FreeValue(ctx, map->entries);
+    map->entries = JS_NewObject(ctx);
+    map->size = 0;
+    
+    return JS_UNDEFINED;
+}
+
+static JSValue js_map_get_size(JSContext *ctx, JSValueConst this_val) {
+    MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
+    if (!map) return JS_EXCEPTION;
+    return JS_NewInt32(ctx, map->size);
+}
+
+static const JSCFunctionListEntry js_map_proto_funcs[] = {
+    JS_CFUNC_DEF("set", 2, js_map_set),
+    JS_CFUNC_DEF("get", 1, js_map_get),
+    JS_CFUNC_DEF("has", 1, js_map_has),
+    JS_CFUNC_DEF("delete", 1, js_map_delete),
+    JS_CFUNC_DEF("clear", 0, js_map_clear),
+    JS_CGETSET_DEF("size", js_map_get_size, NULL),
+};
+
 extern JSClassID js_xhr_class_id;
 extern JSClassID js_video_class_id;
 extern JSValue js_xhr_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv);
@@ -1743,6 +2124,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_NewClassID(&js_dom_rect_class_id);
     JS_NewClassID(&js_dom_rect_read_only_class_id);
     JS_NewClassID(&js_performance_timing_class_id);
+    JS_NewClassID(&js_map_class_id);
     
     // Register classes with the runtime
     JSRuntime *rt = JS_GetRuntime(ctx);
@@ -1760,7 +2142,91 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_NewClass(rt, js_performance_observer_class_id, &js_performance_observer_class_def);
     JS_NewClass(rt, js_dom_rect_class_id, &js_dom_rect_class_def);
     JS_NewClass(rt, js_dom_rect_read_only_class_id, &js_dom_rect_read_only_class_def);
+    JS_NewClass(rt, js_map_class_id, &js_map_class_def);
     JS_NewClass(rt, js_performance_timing_class_id, &js_performance_timing_class_def);
+    
+    // ===== ES6+ Polyfills Registration =====
+    // Get Object constructor
+    JSValue object_ctor = JS_GetPropertyStr(ctx, global, "Object");
+    
+    // Object.setPrototypeOf
+    if (!JS_IsException(object_ctor)) {
+        JS_SetPropertyStr(ctx, object_ctor, "setPrototypeOf",
+            JS_NewCFunction(ctx, js_object_set_prototype_of, "setPrototypeOf", 2));
+    }
+    
+    // Object.getOwnPropertySymbols
+    if (!JS_IsException(object_ctor)) {
+        JS_SetPropertyStr(ctx, object_ctor, "getOwnPropertySymbols",
+            JS_NewCFunction(ctx, js_object_get_own_property_symbols, "getOwnPropertySymbols", 1));
+    }
+    
+    // Object.assign
+    if (!JS_IsException(object_ctor)) {
+        JS_SetPropertyStr(ctx, object_ctor, "assign",
+            JS_NewCFunction(ctx, js_object_assign, "assign", 2));
+    }
+    
+    JS_FreeValue(ctx, object_ctor);
+    
+    // Create Reflect object
+    JSValue reflect_obj = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, reflect_obj, "construct",
+        JS_NewCFunction(ctx, js_reflect_construct, "construct", 2));
+    JS_SetPropertyStr(ctx, reflect_obj, "apply",
+        JS_NewCFunction(ctx, js_reflect_apply, "apply", 3));
+    JS_SetPropertyStr(ctx, reflect_obj, "has",
+        JS_NewCFunction(ctx, js_reflect_has, "has", 2));
+    JS_SetPropertyStr(ctx, global, "Reflect", reflect_obj);
+    
+    // Map constructor
+    JSValue map_proto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, map_proto, js_map_proto_funcs, 
+        sizeof(js_map_proto_funcs) / sizeof(js_map_proto_funcs[0]));
+    JSValue map_ctor = JS_NewCFunction2(ctx, js_map_constructor, "Map", 0, JS_CFUNC_constructor, 0);
+    JS_SetConstructor(ctx, map_ctor, map_proto);
+    JS_SetClassProto(ctx, js_map_class_id, map_proto);
+    JS_SetPropertyStr(ctx, global, "Map", map_ctor);
+    JS_SetPropertyStr(ctx, global, "Map", JS_DupValue(ctx, map_ctor));
+    
+    // Promise.prototype.finally
+    JSValue promise_ctor = JS_GetPropertyStr(ctx, global, "Promise");
+    if (!JS_IsException(promise_ctor)) {
+        JSValue promise_proto = JS_GetPropertyStr(ctx, promise_ctor, "prototype");
+        if (!JS_IsException(promise_proto)) {
+            JS_SetPropertyStr(ctx, promise_proto, "finally",
+                JS_NewCFunction(ctx, js_promise_finally, "finally", 1));
+            JS_FreeValue(ctx, promise_proto);
+        }
+        JS_FreeValue(ctx, promise_ctor);
+    }
+    
+    // String.prototype.includes
+    JSValue string_ctor = JS_GetPropertyStr(ctx, global, "String");
+    if (!JS_IsException(string_ctor)) {
+        JSValue string_proto = JS_GetPropertyStr(ctx, string_ctor, "prototype");
+        if (!JS_IsException(string_proto)) {
+            JS_SetPropertyStr(ctx, string_proto, "includes",
+                JS_NewCFunction(ctx, js_string_includes, "includes", 1));
+            JS_FreeValue(ctx, string_proto);
+        }
+        JS_FreeValue(ctx, string_ctor);
+    }
+    
+    // Array.prototype.includes
+    JSValue array_ctor = JS_GetPropertyStr(ctx, global, "Array");
+    if (!JS_IsException(array_ctor)) {
+        JSValue array_proto = JS_GetPropertyStr(ctx, array_ctor, "prototype");
+        if (!JS_IsException(array_proto)) {
+            JS_SetPropertyStr(ctx, array_proto, "includes",
+                JS_NewCFunction(ctx, js_array_includes, "includes", 1));
+            JS_FreeValue(ctx, array_proto);
+        }
+        // Array.from
+        JS_SetPropertyStr(ctx, array_ctor, "from",
+            JS_NewCFunction(ctx, js_array_from, "from", 1));
+        JS_FreeValue(ctx, array_ctor);
+    }
     
     // ===== Window (global object itself) =====
     // window IS the global object - this ensures 'this' at global level refers to window

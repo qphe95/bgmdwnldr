@@ -22,6 +22,7 @@ extern JSClassID js_performance_entry_class_id;
 extern JSClassID js_performance_observer_class_id;
 extern JSClassID js_dom_rect_class_id;
 extern JSClassID js_dom_rect_read_only_class_id;
+extern JSClassID js_map_class_id;
 
 // Initialize all browser stubs
 void init_browser_stubs(JSContext *ctx, JSValue global);
