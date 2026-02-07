@@ -224,38 +224,61 @@ static JSValue js_object_get_prototype_of(JSContext *ctx, JSValueConst this_val,
     return proto;
 }
 
-// Helper to define a property with descriptor
-// Simplified implementation that only handles the most common cases
+// Object.defineProperty implementation with correct ownership semantics
+// 
+// OWNERSHIP RULES for QuickJS API:
+// - JS_GetPropertyStr: returns NEW value (caller must free)
+// - JS_DefinePropertyValue: TAKES OWNERSHIP of the value (frees it internally)
+// - JS_DefinePropertyGetSet: does NOT take ownership (dupes internally)
+// - JS_NewAtom: creates atom (caller must free with JS_FreeAtom)
+//
+// This implementation tracks ownership explicitly to avoid leaks or double-frees.
+
 static JSValue js_object_define_property(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
-    if (argc < 3) return JS_EXCEPTION;
+    
+    // === OWNED RESOURCES (must be freed on all exit paths) ===
+    JSAtom prop_atom = 0;
+    JSValue get_prop = JS_UNDEFINED;      // Owned: from JS_GetPropertyStr
+    JSValue set_prop = JS_UNDEFINED;      // Owned: from JS_GetPropertyStr
+    JSValue value = JS_UNDEFINED;         // Owned: from JS_GetPropertyStr (data property only)
+    JSValue result = JS_UNDEFINED;        // Return value
+    
+    if (argc < 3) {
+        result = JS_EXCEPTION;
+        goto cleanup_all;
+    }
     
     JSValue obj = argv[0];
     JSValue prop = argv[1];
     JSValue descriptor = argv[2];
     
     if (JS_IsNull(obj) || JS_IsUndefined(obj)) {
-        return JS_ThrowTypeError(ctx, "Object.defineProperty called on null or undefined");
+        result = JS_ThrowTypeError(ctx, "Object.defineProperty called on null or undefined");
+        goto cleanup_all;
     }
     
     // Convert property to atom
-    JSAtom prop_atom;
     if (JS_IsSymbol(prop)) {
         prop_atom = JS_ValueToAtom(ctx, prop);
     } else {
         const char *prop_str = JS_ToCString(ctx, prop);
-        if (!prop_str) return JS_EXCEPTION;
+        if (!prop_str) {
+            result = JS_EXCEPTION;
+            goto cleanup_all;
+        }
         prop_atom = JS_NewAtom(ctx, prop_str);
         JS_FreeCString(ctx, prop_str);
     }
     
-    // Check for accessor property (get/set)
-    JSValue get_prop = JS_GetPropertyStr(ctx, descriptor, "get");
-    JSValue set_prop = JS_GetPropertyStr(ctx, descriptor, "set");
+    // Get descriptor properties
+    get_prop = JS_GetPropertyStr(ctx, descriptor, "get");
+    set_prop = JS_GetPropertyStr(ctx, descriptor, "set");
+    
     int has_get = !JS_IsException(get_prop) && !JS_IsUndefined(get_prop);
     int has_set = !JS_IsException(set_prop) && !JS_IsUndefined(set_prop);
     
-    // Get flags from descriptor
+    // Get flags
     JSValue writable_prop = JS_GetPropertyStr(ctx, descriptor, "writable");
     JSValue enumerable_prop = JS_GetPropertyStr(ctx, descriptor, "enumerable");
     JSValue configurable_prop = JS_GetPropertyStr(ctx, descriptor, "configurable");
@@ -268,6 +291,19 @@ static JSValue js_object_define_property(JSContext *ctx, JSValueConst this_val, 
     JS_FreeValue(ctx, enumerable_prop);
     JS_FreeValue(ctx, configurable_prop);
     
+    // Validate descriptor - cannot have both value/writable and get/set
+    if ((has_get || has_set) && !JS_IsException(get_prop) && !JS_IsException(set_prop)) {
+        // Check if descriptor has value
+        JSValue has_value_prop = JS_GetPropertyStr(ctx, descriptor, "value");
+        int has_value = !JS_IsException(has_value_prop) && !JS_IsUndefined(has_value_prop);
+        JS_FreeValue(ctx, has_value_prop);
+        
+        if (has_value || writable) {
+            // Error: accessor descriptor cannot have value/writable
+            goto cleanup_error_invalid_descriptor;
+        }
+    }
+    
     int flags = JS_PROP_THROW;
     if (writable) flags |= JS_PROP_WRITABLE;
     if (enumerable) flags |= JS_PROP_ENUMERABLE;
@@ -276,35 +312,69 @@ static JSValue js_object_define_property(JSContext *ctx, JSValueConst this_val, 
     int def_result = -1;
     
     if (has_get || has_set) {
-        // Accessor property - JS_DefinePropertyGetSet takes ownership of getter/setter
+        // === ACCESSOR PROPERTY ===
+        // JS_DefinePropertyGetSet does NOT take ownership of getter/setter
+        // It internally duplicates them, so we must free our references
+        
         JSValue getter = has_get ? get_prop : JS_UNDEFINED;
         JSValue setter = has_set ? set_prop : JS_UNDEFINED;
-        if (!has_get) JS_FreeValue(ctx, get_prop);
-        if (!has_set) JS_FreeValue(ctx, set_prop);
-        def_result = JS_DefinePropertyGetSet(ctx, obj, prop_atom, getter, setter, flags);
-    } else {
-        // Data property - get value
-        JSValue value = JS_GetPropertyStr(ctx, descriptor, "value");
-        if (JS_IsException(value)) {
-            JS_FreeAtom(ctx, prop_atom);
-            JS_FreeValue(ctx, get_prop);
-            JS_FreeValue(ctx, set_prop);
-            return JS_EXCEPTION;
-        }
         
+        // Call - JS_DefinePropertyGetSet will dup the values internally
+        def_result = JS_DefinePropertyGetSet(ctx, obj, prop_atom, getter, setter, flags);
+        
+        // Now free our original references (JS_DefinePropertyGetSet doesn't take ownership)
         JS_FreeValue(ctx, get_prop);
         JS_FreeValue(ctx, set_prop);
+        get_prop = JS_UNDEFINED;
+        set_prop = JS_UNDEFINED;
         
-        // JS_DefinePropertyValue takes ownership of value
+    } else {
+        // === DATA PROPERTY ===
+        // Get the value from descriptor
+        value = JS_GetPropertyStr(ctx, descriptor, "value");
+        if (JS_IsException(value)) {
+            goto cleanup_error;
+        }
+        
+        // JS_DefinePropertyValue TAKES OWNERSHIP of value
+        // After this call, we must NOT free value
         def_result = JS_DefinePropertyValue(ctx, obj, prop_atom, value, flags);
+        
+        // Mark value as transferred (no longer owned by us)
+        value = JS_UNDEFINED;
+        
+        // Free get_prop and set_prop (they were checked but not used)
+        JS_FreeValue(ctx, get_prop);
+        JS_FreeValue(ctx, set_prop);
+        get_prop = JS_UNDEFINED;
+        set_prop = JS_UNDEFINED;
     }
     
     JS_FreeAtom(ctx, prop_atom);
+    prop_atom = 0;
     
     if (def_result < 0) {
         return JS_EXCEPTION;
     }
+    
+    // Success: return the object (duped because we need to return a new reference)
     return JS_DupValue(ctx, obj);
+    
+cleanup_error_invalid_descriptor:
+    result = JS_ThrowTypeError(ctx, "Invalid property descriptor: cannot specify both value/writable and get/set");
+    goto cleanup_all;
+    
+cleanup_error:
+    result = JS_EXCEPTION;
+    goto cleanup_all;
+    
+cleanup_all:
+    // Free all owned resources
+    if (prop_atom) JS_FreeAtom(ctx, prop_atom);
+    if (!JS_IsUndefined(get_prop)) JS_FreeValue(ctx, get_prop);
+    if (!JS_IsUndefined(set_prop)) JS_FreeValue(ctx, set_prop);
+    if (!JS_IsUndefined(value)) JS_FreeValue(ctx, value);
+    return result;
 }
 
 // Object.create polyfill
