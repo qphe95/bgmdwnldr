@@ -81,6 +81,7 @@ typedef struct {
     size_t pos;
     int line;
     int column;
+    int nesting_depth;
     HtmlDocument *document;
 } HtmlParser;
 

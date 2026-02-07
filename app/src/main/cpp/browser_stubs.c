@@ -59,6 +59,20 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val, int argc, J
     return JS_UNDEFINED;
 }
 
+// getComputedStyle stub - returns a CSSStyleDeclaration-like object
+static JSValue js_get_computed_style(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    // Return an object with getPropertyValue method
+    JSValue style = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, style, "getPropertyValue", 
+        JS_NewCFunction(ctx, js_empty_string, "getPropertyValue", 1));
+    JS_SetPropertyStr(ctx, style, "width", JS_NewString(ctx, "auto"));
+    JS_SetPropertyStr(ctx, style, "height", JS_NewString(ctx, "auto"));
+    JS_SetPropertyStr(ctx, style, "display", JS_NewString(ctx, "block"));
+    JS_SetPropertyStr(ctx, style, "position", JS_NewString(ctx, "static"));
+    return style;
+}
+
 static JSValue js_dummy_function_true(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     return JS_TRUE;
@@ -115,12 +129,50 @@ JSClassID js_dom_rect_read_only_class_id = 0;
 #define DEF_PROP_UNDEFINED(ctx, obj, name) \
     JS_SetPropertyStr(ctx, obj, name, JS_UNDEFINED)
 
+// Dummy then function for mock promises
+static JSValue js_promise_then(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    // Call the onFulfilled callback immediately with undefined
+    if (argc > 0 && JS_IsFunction(ctx, argv[0])) {
+        JSValue undefined = JS_UNDEFINED;
+        JSValue result = JS_Call(ctx, argv[0], JS_UNDEFINED, 1, &undefined);
+        JS_FreeValue(ctx, result);
+    }
+    return JS_DupValue(ctx, this_val);
+}
+
 // Helper to create a resolved Promise
 static JSValue js_create_resolved_promise(JSContext *ctx, JSValue value) {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue promise_ctor = JS_GetPropertyStr(ctx, global, "Promise");
+    
+    // Check if Promise constructor exists and is an object
+    if (JS_IsException(promise_ctor) || !JS_IsObject(promise_ctor)) {
+        JS_FreeValue(ctx, promise_ctor);
+        JS_FreeValue(ctx, global);
+        // Fallback: return a mock promise-like object
+        JSValue mock_promise = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, mock_promise, "then", 
+            JS_NewCFunction(ctx, js_promise_then, "then", 2));
+        return mock_promise;
+    }
+    
     JSValue resolve_func = JS_GetPropertyStr(ctx, promise_ctor, "resolve");
-    JSValue result = JS_Call(ctx, resolve_func, JS_UNDEFINED, 1, &value);
+    
+    // Check if Promise.resolve exists and is a function
+    if (JS_IsException(resolve_func) || !JS_IsFunction(ctx, resolve_func)) {
+        JS_FreeValue(ctx, resolve_func);
+        JS_FreeValue(ctx, promise_ctor);
+        JS_FreeValue(ctx, global);
+        // Fallback: return a mock promise-like object
+        JSValue mock_promise = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, mock_promise, "then", 
+            JS_NewCFunction(ctx, js_promise_then, "then", 2));
+        return mock_promise;
+    }
+    
+    // Call Promise.resolve with the Promise constructor as 'this'
+    JSValue result = JS_Call(ctx, resolve_func, promise_ctor, 1, &value);
+    
     JS_FreeValue(ctx, resolve_func);
     JS_FreeValue(ctx, promise_ctor);
     JS_FreeValue(ctx, global);
@@ -131,8 +183,35 @@ static JSValue js_create_resolved_promise(JSContext *ctx, JSValue value) {
 static JSValue js_create_empty_resolved_promise(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue promise_ctor = JS_GetPropertyStr(ctx, global, "Promise");
+    
+    // Check if Promise constructor exists and is an object
+    if (JS_IsException(promise_ctor) || !JS_IsObject(promise_ctor)) {
+        JS_FreeValue(ctx, promise_ctor);
+        JS_FreeValue(ctx, global);
+        // Fallback: return a mock promise-like object
+        JSValue mock_promise = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, mock_promise, "then", 
+            JS_NewCFunction(ctx, js_promise_then, "then", 2));
+        return mock_promise;
+    }
+    
     JSValue resolve_func = JS_GetPropertyStr(ctx, promise_ctor, "resolve");
-    JSValue result = JS_Call(ctx, resolve_func, JS_UNDEFINED, 0, NULL);
+    
+    // Check if Promise.resolve exists and is a function
+    if (JS_IsException(resolve_func) || !JS_IsFunction(ctx, resolve_func)) {
+        JS_FreeValue(ctx, resolve_func);
+        JS_FreeValue(ctx, promise_ctor);
+        JS_FreeValue(ctx, global);
+        // Fallback: return a mock promise-like object
+        JSValue mock_promise = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, mock_promise, "then", 
+            JS_NewCFunction(ctx, js_promise_then, "then", 2));
+        return mock_promise;
+    }
+    
+    // Call Promise.resolve with the Promise constructor as 'this'
+    JSValue result = JS_Call(ctx, resolve_func, promise_ctor, 0, NULL);
+    
     JS_FreeValue(ctx, resolve_func);
     JS_FreeValue(ctx, promise_ctor);
     JS_FreeValue(ctx, global);
@@ -1810,6 +1889,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     DEF_FUNC(ctx, window, "addEventListener", js_undefined, 2);
     DEF_FUNC(ctx, window, "removeEventListener", js_undefined, 2);
     DEF_FUNC(ctx, window, "dispatchEvent", js_true, 1);
+    DEF_FUNC(ctx, window, "getComputedStyle", js_get_computed_style, 1);
     
     // Set up window to reference itself (global object)
     JS_SetPropertyStr(ctx, window, "window", JS_DupValue(ctx, window));
@@ -1882,6 +1962,14 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
             JS_NewCFunction(ctx, js_element_set_attribute, "setAttribute", 2));
         JS_SetPropertyStr(ctx, doc_element, "appendChild",
             JS_NewCFunction(ctx, js_node_appendChild, "appendChild", 1));
+        
+        // Add clientWidth/clientHeight properties (viewport dimensions)
+        DEF_PROP_INT(ctx, doc_element, "clientWidth", 1920);
+        DEF_PROP_INT(ctx, doc_element, "clientHeight", 1080);
+        DEF_PROP_INT(ctx, doc_element, "scrollWidth", 1920);
+        DEF_PROP_INT(ctx, doc_element, "scrollHeight", 1080);
+        DEF_PROP_INT(ctx, doc_element, "offsetWidth", 1920);
+        DEF_PROP_INT(ctx, doc_element, "offsetHeight", 1080);
     } else {
         // Fallback to plain object if constructor fails
         JS_FreeValue(ctx, doc_element);
@@ -1897,6 +1985,15 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     }
     JS_SetPropertyStr(ctx, body_element, "appendChild",
         JS_NewCFunction(ctx, js_node_appendChild, "appendChild", 1));
+    
+    // Add clientWidth/clientHeight properties to body (viewport dimensions)
+    DEF_PROP_INT(ctx, body_element, "clientWidth", 1920);
+    DEF_PROP_INT(ctx, body_element, "clientHeight", 937);  // 1080 - some UI chrome
+    DEF_PROP_INT(ctx, body_element, "scrollWidth", 1920);
+    DEF_PROP_INT(ctx, body_element, "scrollHeight", 937);
+    DEF_PROP_INT(ctx, body_element, "offsetWidth", 1920);
+    DEF_PROP_INT(ctx, body_element, "offsetHeight", 937);
+    
     JS_SetPropertyStr(ctx, document, "body", body_element);
     
     JS_SetPropertyStr(ctx, global, "document", document);
