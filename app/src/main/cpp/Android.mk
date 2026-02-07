@@ -21,6 +21,7 @@ LOCAL_SRC_FILES := \
     main.c \
     audio_extract.c \
     html_media_extract.c \
+    html_dom.c \
     http_download.c \
     jobs.c \
     media_store.c \

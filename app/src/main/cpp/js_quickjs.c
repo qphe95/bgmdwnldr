@@ -8,6 +8,7 @@
 #include "cutils.h"
 #include "quickjs.h"
 #include "browser_stubs.h"
+#include "html_dom.h"
 
 #define LOG_TAG "js_quickjs"
 #define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -666,75 +667,149 @@ static char* extract_attr(const char *html, const char *tag_end, const char *att
     return value;
 }
 
-// Parse HTML and create video elements from <video> tags
+// Create DOM nodes from parsed HTML document
+static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) {
+    if (!ctx || !doc) return 0;
+    
+    int count = 0;
+    
+    /* Create elements from body children */
+    if (doc->body && doc->body->first_child) {
+        HtmlNode *node = doc->body->first_child;
+        
+        while (node) {
+            if (node->type == HTML_NODE_ELEMENT) {
+                /* Create the element */
+                JSValue elem = html_create_element_js(ctx, node->tag_name, node->attributes);
+                
+                if (!JS_IsNull(elem) && !JS_IsException(elem)) {
+                    /* Check for video elements specifically */
+                    if (strcasecmp(node->tag_name, "video") == 0) {
+                        LOG_INFO("Creating video element from parsed HTML");
+                        
+                        /* Extract src attribute if present */
+                        HtmlAttribute *attr = node->attributes;
+                        while (attr) {
+                            if (strcasecmp(attr->name, "src") == 0 && attr->value[0]) {
+                                JS_SetPropertyStr(ctx, elem, "src", JS_NewString(ctx, attr->value));
+                                record_captured_url(attr->value);
+                            }
+                            if (strcasecmp(attr->name, "id") == 0 && attr->value[0]) {
+                                JS_SetPropertyStr(ctx, elem, "id", JS_NewString(ctx, attr->value));
+                            }
+                            attr = attr->next;
+                        }
+                        
+                        count++;
+                    }
+                    
+                    /* Add to document.body */
+                    JSValue body = JS_GetPropertyStr(ctx, JS_GetGlobalObject(ctx), "document");
+                    if (!JS_IsUndefined(body) && !JS_IsNull(body)) {
+                        JSValue doc_body = JS_GetPropertyStr(ctx, body, "body");
+                        if (!JS_IsUndefined(doc_body) && !JS_IsNull(doc_body)) {
+                            JSValue appendChild = JS_GetPropertyStr(ctx, doc_body, "appendChild");
+                            if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
+                                JSValue args[1] = { elem };
+                                JS_Call(ctx, appendChild, doc_body, 1, args);
+                                JS_FreeValue(ctx, appendChild);
+                            }
+                            JS_FreeValue(ctx, doc_body);
+                        }
+                        JS_FreeValue(ctx, body);
+                    }
+                    
+                    JS_FreeValue(ctx, elem);
+                }
+            }
+            node = node->next_sibling;
+        }
+    }
+    
+    return count;
+}
+
+// Parse HTML and create elements from <video> tags using the proper DOM parser
 static int create_video_elements_from_html(JSContext *ctx, const char *html) {
     if (!html) return 0;
     
-    int count = 0;
-    const char *p = html;
+    LOG_INFO("Parsing HTML with DOM parser...");
     
-    LOG_INFO("Parsing HTML for video elements...");
-    
-    while ((p = strstr(p, "<video")) != NULL) {
-        // Find end of opening tag
-        const char *tag_end = strchr(p, '>');
-        if (!tag_end) break;
-        
-        // Check if it's a self-closing tag or has separate closing tag
-        int is_self_closing = (tag_end[-1] == '/');
-        
-        LOG_INFO("Found <video> tag at position %zu", p - html);
-        
-        // Extract attributes
-        char *id = extract_attr(p, tag_end, "id");
-        char *src = extract_attr(p, tag_end, "src");
-        char *data_src = extract_attr(p, tag_end, "data-src");
-        char *class_attr = extract_attr(p, tag_end, "class");
-        
-        // Build JS to create element
-        char js_code[4096];
-        snprintf(js_code, sizeof(js_code),
-            "(function() {\n"
-            "  var video = document.createElement('video');\n"
-            "  if (video) {\n"
-            "    video.id = '%s';\n"
-            "    video.className = '%s';\n"
-            "    video.src = '%s';\n"
-            "    if (document.body) document.body.appendChild(video);\n"
-            "    console.log('Created video element from HTML: id=' + video.id + ', src=' + video.src.substring(0, 50));\n"
-            "  }\n"
-            "})();",
-            id ? id : "",
-            class_attr ? class_attr : "",
-            src ? src : (data_src ? data_src : "")
-        );
-        
-        JSValue result = JS_Eval(ctx, js_code, strlen(js_code), "<html_video>", 0);
-        if (JS_IsException(result)) {
-            JSValue exception = JS_GetException(ctx);
-            const char *error = JS_ToCString(ctx, exception);
-            LOG_ERROR("Error creating video element from HTML: %s", error ? error : "unknown");
-            JS_FreeCString(ctx, error);
-            JS_FreeValue(ctx, exception);
-        } else {
-            LOG_INFO("Created video element from HTML: id=%s, src=%.50s%s",
-                     id ? id : "(none)",
-                     src ? src : (data_src ? data_src : "(none)"),
-                     (src && strlen(src) > 50) || (data_src && strlen(data_src) > 50) ? "..." : "");
-            count++;
-        }
-        JS_FreeValue(ctx, result);
-        
-        free(id);
-        free(src);
-        free(data_src);
-        free(class_attr);
-        
-        p = tag_end + 1;
+    /* Parse the HTML document */
+    HtmlDocument *doc = html_parse(html, strlen(html));
+    if (!doc) {
+        LOG_ERROR("Failed to parse HTML document");
+        return 0;
     }
     
-    LOG_INFO("Created %d video elements from HTML", count);
-    return count;
+    /* Get the count of video elements in the parsed document */
+    HtmlNode *video_nodes[64];
+    int video_count = html_document_get_elements_by_tag(doc, "video", video_nodes, 64);
+    
+    LOG_INFO("Found %d video elements in parsed HTML", video_count);
+    
+    /* Create video elements from the parsed DOM */
+    int created = 0;
+    for (int i = 0; i < video_count; i++) {
+        HtmlNode *node = video_nodes[i];
+        
+        /* Create video element */
+        JSValue video = js_video_constructor(ctx, JS_NULL, 0, NULL);
+        
+        if (!JS_IsException(video)) {
+            /* Extract and set attributes */
+            HtmlAttribute *attr = node->attributes;
+            while (attr) {
+                if (strcasecmp(attr->name, "id") == 0 && attr->value[0]) {
+                    JS_SetPropertyStr(ctx, video, "id", JS_NewString(ctx, attr->value));
+                } else if (strcasecmp(attr->name, "src") == 0 && attr->value[0]) {
+                    JS_SetPropertyStr(ctx, video, "src", JS_NewString(ctx, attr->value));
+                    record_captured_url(attr->value);
+                } else if (strcasecmp(attr->name, "class") == 0 && attr->value[0]) {
+                    JS_SetPropertyStr(ctx, video, "className", JS_NewString(ctx, attr->value));
+                }
+                attr = attr->next;
+            }
+            
+            /* If no ID set but one exists in JS, use a default */
+            JSValue id_prop = JS_GetPropertyStr(ctx, video, "id");
+            const char *current_id = JS_ToCString(ctx, id_prop);
+            if (!current_id || !current_id[0]) {
+                char default_id[32];
+                snprintf(default_id, sizeof(default_id), "video_%d", i);
+                JS_SetPropertyStr(ctx, video, "id", JS_NewString(ctx, default_id));
+            }
+            JS_FreeCString(ctx, current_id);
+            JS_FreeValue(ctx, id_prop);
+            
+            /* Add to document.body */
+            JSValue global = JS_GetGlobalObject(ctx);
+            JSValue doc = JS_GetPropertyStr(ctx, global, "document");
+            JSValue body = JS_GetPropertyStr(ctx, doc, "body");
+            
+            if (!JS_IsUndefined(body) && !JS_IsNull(body)) {
+                JSValue appendChild = JS_GetPropertyStr(ctx, body, "appendChild");
+                if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
+                    JSValue args[1] = { video };
+                    JS_Call(ctx, appendChild, body, 1, args);
+                    JS_FreeValue(ctx, appendChild);
+                    created++;
+                }
+            }
+            
+            JS_FreeValue(ctx, body);
+            JS_FreeValue(ctx, doc);
+            JS_FreeValue(ctx, global);
+            JS_FreeValue(ctx, video);
+        }
+    }
+    
+    LOG_INFO("Created %d video elements from parsed HTML", created);
+    
+    /* Free the parsed document */
+    html_document_free(doc);
+    
+    return created;
 }
 
 bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens, 

@@ -6,6 +6,7 @@
 #include <android/log.h>
 #include <quickjs.h>
 #include "browser_stubs.h"
+#include "html_dom.h"
 
 #define LOG_TAG "browser_stubs"
 #define LOG_ERROR(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
