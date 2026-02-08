@@ -287,7 +287,7 @@ JSModuleDef *jsc_module_loader(JSContext *ctx,
             /* create a dummy module */
             m = JS_NewCModule(ctx, module_name, js_module_dummy_init);
             if (!m) {
-                JS_FreeValue(ctx, val);
+
                 return NULL;
             }
 
@@ -303,7 +303,7 @@ JSModuleDef *jsc_module_loader(JSContext *ctx,
             fprintf(outfile, "};\n\n");
 
             output_object_code(ctx, outfile, val, cname, CNAME_TYPE_JSON_MODULE);
-            JS_FreeValue(ctx, val);
+
         } else {
             JSValue func_val;
 
@@ -321,7 +321,7 @@ JSModuleDef *jsc_module_loader(JSContext *ctx,
             
             /* the module is already referenced, so we must free it */
             m = JS_VALUE_GET_PTR(func_val);
-            JS_FreeValue(ctx, func_val);
+
         }
     }
     return m;
@@ -367,7 +367,7 @@ static void compile_file(JSContext *ctx, FILE *fo,
         }
     }
     output_object_code(ctx, fo, obj, c_name, CNAME_TYPE_SCRIPT);
-    JS_FreeValue(ctx, obj);
+
 }
 
 static const char main_c_template1[] =

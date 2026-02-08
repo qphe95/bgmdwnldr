@@ -63,14 +63,14 @@ static JSValue js_point_ctor(JSContext *ctx,
     if (JS_IsException(proto))
         goto fail;
     obj = JS_NewObjectProtoClass(ctx, proto, js_point_class_id);
-    JS_FreeValue(ctx, proto);
+
     if (JS_IsException(obj))
         goto fail;
     JS_SetOpaque(obj, s);
     return obj;
  fail:
     js_free(ctx, s);
-    JS_FreeValue(ctx, obj);
+
     return JS_EXCEPTION;
 }
 

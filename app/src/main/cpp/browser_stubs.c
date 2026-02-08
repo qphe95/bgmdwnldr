@@ -244,12 +244,8 @@ static JSValue js_object_get_prototype_of(JSContext *ctx, JSValueConst this_val,
 // This implementation tracks ownership explicitly to avoid leaks or double-frees.
 
 
-// Helper macro to safely free JSValue - checks for both undefined and exception
-#define SAFE_FREE_VALUE(ctx, val) do { \
-    if (!JS_IsUndefined(val) && !JS_IsException(val)) { \
-        JS_FreeValue(ctx, val); \
-    } \
-} while(0)
+// SAFE_FREE_VALUE is no longer needed with mark-and-sweep GC
+#define SAFE_FREE_VALUE(ctx, val) do { (void)(val); } while(0)
 
 static JSValue js_object_define_property(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void) this_val;
@@ -335,7 +331,7 @@ static JSValue js_object_define_property(JSContext *ctx, JSValueConst this_val, 
     if (def_result < 0) {
         result = JS_EXCEPTION;
     } else {
-        result = JS_DupValue(ctx, obj);
+        result = obj;
     }
     
 cleanup:
@@ -357,8 +353,8 @@ static JSValue js_object_create(JSContext *ctx, JSValueConst this_val, int argc,
     JSValue obj = JS_NewObject(ctx);
     if (!JS_IsNull(proto)) {
         JSValue proto_key = JS_NewString(ctx, "__proto__");
-        JS_SetProperty(ctx, obj, JS_ValueToAtom(ctx, proto_key), JS_DupValue(ctx, proto));
-        JS_FreeValue(ctx, proto_key);
+        JS_SetProperty(ctx, obj, JS_ValueToAtom(ctx, proto_key), proto);
+
     }
     
     // Handle propertiesObject (second argument) if provided
@@ -370,15 +366,13 @@ static JSValue js_object_create(JSContext *ctx, JSValueConst this_val, int argc,
         JSValue object_ctor = JS_GetPropertyStr(ctx, JS_GetGlobalObject(ctx), "Object");
         JSValue keys_func = JS_GetPropertyStr(ctx, object_ctor, "keys");
         JSValue keys = JS_Call(ctx, keys_func, JS_UNDEFINED, 1, &props);
-        JS_FreeValue(ctx, keys_func);
-        JS_FreeValue(ctx, object_ctor);
-        
+
+
         if (!JS_IsException(keys)) {
             JSValue len_val = JS_GetPropertyStr(ctx, keys, "length");
             uint32_t key_count = 0;
             JS_ToUint32(ctx, &key_count, len_val);
-            JS_FreeValue(ctx, len_val);
-            
+
             for (uint32_t i = 0; i < key_count; i++) {
                 JSValue key_val = JS_GetPropertyUint32(ctx, keys, i);
                 const char *key = JS_ToCString(ctx, key_val);
@@ -390,16 +384,16 @@ static JSValue js_object_create(JSContext *ctx, JSValueConst this_val, int argc,
                         if (!JS_IsUndefined(val)) {
                             JS_SetPropertyStr(ctx, obj, key, val);
                         } else {
-                            JS_FreeValue(ctx, val);
+
                         }
                     }
-                    JS_FreeValue(ctx, desc);
+
                     JS_FreeCString(ctx, key);
                 }
-                JS_FreeValue(ctx, key_val);
+
             }
         }
-        JS_FreeValue(ctx, keys);
+
     }
     
     return obj;
@@ -422,16 +416,14 @@ static JSValue js_object_define_properties(JSContext *ctx, JSValueConst this_val
     JSValue object_ctor = JS_GetPropertyStr(ctx, global, "Object");
     JSValue keys_func = JS_GetPropertyStr(ctx, object_ctor, "keys");
     JSValue keys = JS_Call(ctx, keys_func, JS_UNDEFINED, 1, &props);
-    JS_FreeValue(ctx, keys_func);
-    JS_FreeValue(ctx, object_ctor);
-    JS_FreeValue(ctx, global);
-    
+
+
+
     if (!JS_IsException(keys)) {
         JSValue len_val = JS_GetPropertyStr(ctx, keys, "length");
         uint32_t key_count = 0;
         JS_ToUint32(ctx, &key_count, len_val);
-        JS_FreeValue(ctx, len_val);
-        
+
         for (uint32_t i = 0; i < key_count; i++) {
             JSValue key_val = JS_GetPropertyUint32(ctx, keys, i);
             const char *key = JS_ToCString(ctx, key_val);
@@ -443,18 +435,18 @@ static JSValue js_object_define_properties(JSContext *ctx, JSValueConst this_val
                     if (!JS_IsUndefined(val)) {
                         JS_SetPropertyStr(ctx, obj, key, val);
                     } else {
-                        JS_FreeValue(ctx, val);
+
                     }
                 }
-                JS_FreeValue(ctx, desc);
+
                 JS_FreeCString(ctx, key);
             }
-            JS_FreeValue(ctx, key_val);
+
         }
-        JS_FreeValue(ctx, keys);
+
     }
     
-    return JS_DupValue(ctx, obj);
+    return obj;
 }
 
 // Object.getOwnPropertyDescriptor polyfill
@@ -501,10 +493,9 @@ static JSValue js_object_set_prototype_of(JSContext *ctx, JSValueConst this_val,
     
     // Set the prototype using __proto__
     JSValue proto_key = JS_NewString(ctx, "__proto__");
-    JS_SetProperty(ctx, obj, JS_ValueToAtom(ctx, proto_key), JS_DupValue(ctx, proto));
-    JS_FreeValue(ctx, proto_key);
-    
-    return JS_DupValue(ctx, obj);
+    JS_SetProperty(ctx, obj, JS_ValueToAtom(ctx, proto_key), proto);
+
+    return obj;
 }
 
 // Object.getOwnPropertySymbols polyfill - returns empty array
@@ -518,7 +509,7 @@ static JSValue js_object_assign(JSContext *ctx, JSValueConst this_val, int argc,
     (void)this_val;
     if (argc < 1) return JS_UNDEFINED;
     
-    JSValue target = JS_DupValue(ctx, argv[0]);
+    JSValue target = argv[0];
     
     for (int i = 1; i < argc; i++) {
         JSValue source = argv[i];
@@ -529,16 +520,14 @@ static JSValue js_object_assign(JSContext *ctx, JSValueConst this_val, int argc,
         JSValue object_ctor = JS_GetPropertyStr(ctx, global, "Object");
         JSValue keys_func = JS_GetPropertyStr(ctx, object_ctor, "keys");
         JSValue keys = JS_Call(ctx, keys_func, JS_UNDEFINED, 1, &source);
-        JS_FreeValue(ctx, keys_func);
-        JS_FreeValue(ctx, object_ctor);
-        JS_FreeValue(ctx, global);
-        
+
+
+
         if (!JS_IsException(keys)) {
             JSValue len_val = JS_GetPropertyStr(ctx, keys, "length");
             uint32_t key_count = 0;
             JS_ToUint32(ctx, &key_count, len_val);
-            JS_FreeValue(ctx, len_val);
-            
+
             for (uint32_t j = 0; j < key_count; j++) {
                 JSValue key_val = JS_GetPropertyUint32(ctx, keys, j);
                 const char *key = JS_ToCString(ctx, key_val);
@@ -547,9 +536,9 @@ static JSValue js_object_assign(JSContext *ctx, JSValueConst this_val, int argc,
                     JS_SetPropertyStr(ctx, target, key, val);
                     JS_FreeCString(ctx, key);
                 }
-                JS_FreeValue(ctx, key_val);
+
             }
-            JS_FreeValue(ctx, keys);
+
         }
     }
     
@@ -568,8 +557,7 @@ static JSValue js_reflect_construct(JSContext *ctx, JSValueConst this_val, int a
     JSValue len_val = JS_GetPropertyStr(ctx, args_array, "length");
     uint32_t args_len = 0;
     JS_ToUint32(ctx, &args_len, len_val);
-    JS_FreeValue(ctx, len_val);
-    
+
     // Build arguments array
     JSValue *args = malloc(sizeof(JSValue) * args_len);
     for (uint32_t i = 0; i < args_len; i++) {
@@ -580,7 +568,7 @@ static JSValue js_reflect_construct(JSContext *ctx, JSValueConst this_val, int a
     JSValue result = JS_CallConstructor(ctx, target, (int)args_len, args);
     
     for (uint32_t i = 0; i < args_len; i++) {
-        JS_FreeValue(ctx, args[i]);
+
     }
     free(args);
     
@@ -600,8 +588,7 @@ static JSValue js_reflect_apply(JSContext *ctx, JSValueConst this_val, int argc,
     JSValue args_len_val = JS_GetPropertyStr(ctx, args_array, "length");
     uint32_t args_len = 0;
     JS_ToUint32(ctx, &args_len, args_len_val);
-    JS_FreeValue(ctx, args_len_val);
-    
+
     // Build arguments array
     JSValue *args = malloc(sizeof(JSValue) * args_len);
     for (uint32_t i = 0; i < args_len; i++) {
@@ -612,7 +599,7 @@ static JSValue js_reflect_apply(JSContext *ctx, JSValueConst this_val, int argc,
     JSValue result = JS_Call(ctx, func, this_arg, (int)args_len, args);
     
     for (uint32_t i = 0; i < args_len; i++) {
-        JS_FreeValue(ctx, args[i]);
+
     }
     free(args);
     
@@ -649,10 +636,8 @@ static JSValue js_promise_finally(JSContext *ctx, JSValueConst this_val, int arg
     JSValue then_method = JS_GetPropertyStr(ctx, this_val, "then");
     JSValue args[2] = { handler, handler };
     JSValue result = JS_Call(ctx, then_method, this_val, 2, args);
-    
-    JS_FreeValue(ctx, then_method);
-    JS_FreeValue(ctx, handler);
-    
+
+
     return result;
 }
 
@@ -704,8 +689,7 @@ static JSValue js_array_includes(JSContext *ctx, JSValueConst this_val, int argc
     JSValue len_val = JS_GetPropertyStr(ctx, this_val, "length");
     uint32_t len = 0;
     JS_ToUint32(ctx, &len, len_val);
-    JS_FreeValue(ctx, len_val);
-    
+
     if (from_index < 0) {
         from_index = (int32_t)len + from_index;
         if (from_index < 0) from_index = 0;
@@ -714,7 +698,7 @@ static JSValue js_array_includes(JSContext *ctx, JSValueConst this_val, int argc
     for (uint32_t i = (uint32_t)from_index; i < len; i++) {
         JSValue elem = JS_GetPropertyUint32(ctx, this_val, i);
         int is_equal = JS_StrictEq(ctx, elem, search_element);
-        JS_FreeValue(ctx, elem);
+
         if (is_equal) return JS_TRUE;
     }
     
@@ -731,12 +715,11 @@ static JSValue js_array_from(JSContext *ctx, JSValueConst this_val, int argc, JS
     
     JSValue len_val2 = JS_GetPropertyStr(ctx, array_like, "length");
     if (JS_ToUint32(ctx, &len, len_val2)) {
-        JS_FreeValue(ctx, len_val2);
-        JS_FreeValue(ctx, len_val2);
+
+
         return JS_NewArray(ctx);
     }
-    JS_FreeValue(ctx, len_val2);
-    
+
     JSValue result = JS_NewArray(ctx);
     for (uint32_t i = 0; i < len; i++) {
         JSValue val = JS_GetPropertyUint32(ctx, array_like, i);
@@ -760,7 +743,7 @@ JSClassID js_map_class_id = 0;
 static void js_map_finalizer(JSRuntime *rt, JSValue val) {
     MapData *map = JS_GetOpaque(val, js_map_class_id);
     if (map) {
-        JS_FreeValueRT(rt, map->entries);
+
         free(map);
     }
 }
@@ -792,14 +775,13 @@ static JSValue js_map_set(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     // Check if key exists
     JSValue existing = JS_GetPropertyStr(ctx, map->entries, key);
     int exists = !JS_IsUndefined(existing);
-    JS_FreeValue(ctx, existing);
-    
+
     if (!exists) map->size++;
     
-    JS_SetPropertyStr(ctx, map->entries, key, JS_DupValue(ctx, argv[1]));
+    JS_SetPropertyStr(ctx, map->entries, key, argv[1]);
     JS_FreeCString(ctx, key);
     
-    return JS_DupValue(ctx, this_val);
+    return this_val;
 }
 
 static JSValue js_map_get(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -826,8 +808,7 @@ static JSValue js_map_has(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     JS_FreeCString(ctx, key);
     
     int exists = !JS_IsUndefined(val);
-    JS_FreeValue(ctx, val);
-    
+
     return JS_NewBool(ctx, exists);
 }
 
@@ -840,8 +821,7 @@ static JSValue js_map_delete(JSContext *ctx, JSValueConst this_val, int argc, JS
     
     JSValue val = JS_GetPropertyStr(ctx, map->entries, key);
     int exists = !JS_IsUndefined(val);
-    JS_FreeValue(ctx, val);
-    
+
     if (exists) {
         JSValue undefined = JS_UNDEFINED;
         JS_SetPropertyStr(ctx, map->entries, key, undefined);
@@ -856,8 +836,7 @@ static JSValue js_map_clear(JSContext *ctx, JSValueConst this_val, int argc, JSV
     (void)argc; (void)argv;
     MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
     if (!map) return JS_EXCEPTION;
-    
-    JS_FreeValue(ctx, map->entries);
+
     map->entries = JS_NewObject(ctx);
     map->size = 0;
     
@@ -931,9 +910,9 @@ static JSValue js_promise_then(JSContext *ctx, JSValueConst this_val, int argc, 
     if (argc > 0 && JS_IsFunction(ctx, argv[0])) {
         JSValue undefined = JS_UNDEFINED;
         JSValue result = JS_Call(ctx, argv[0], JS_UNDEFINED, 1, &undefined);
-        JS_FreeValue(ctx, result);
+
     }
-    return JS_DupValue(ctx, this_val);
+    return this_val;
 }
 
 // Helper to create a resolved Promise
@@ -943,8 +922,8 @@ static JSValue js_create_resolved_promise(JSContext *ctx, JSValue value) {
     
     // Check if Promise constructor exists and is an object
     if (JS_IsException(promise_ctor) || !JS_IsObject(promise_ctor)) {
-        JS_FreeValue(ctx, promise_ctor);
-        JS_FreeValue(ctx, global);
+
+
         // Fallback: return a mock promise-like object
         JSValue mock_promise = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, mock_promise, "then", 
@@ -956,9 +935,9 @@ static JSValue js_create_resolved_promise(JSContext *ctx, JSValue value) {
     
     // Check if Promise.resolve exists and is a function
     if (JS_IsException(resolve_func) || !JS_IsFunction(ctx, resolve_func)) {
-        JS_FreeValue(ctx, resolve_func);
-        JS_FreeValue(ctx, promise_ctor);
-        JS_FreeValue(ctx, global);
+
+
+
         // Fallback: return a mock promise-like object
         JSValue mock_promise = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, mock_promise, "then", 
@@ -968,10 +947,9 @@ static JSValue js_create_resolved_promise(JSContext *ctx, JSValue value) {
     
     // Call Promise.resolve with the Promise constructor as 'this'
     JSValue result = JS_Call(ctx, resolve_func, promise_ctor, 1, &value);
-    
-    JS_FreeValue(ctx, resolve_func);
-    JS_FreeValue(ctx, promise_ctor);
-    JS_FreeValue(ctx, global);
+
+
+
     return result;
 }
 
@@ -982,8 +960,8 @@ static JSValue js_create_empty_resolved_promise(JSContext *ctx) {
     
     // Check if Promise constructor exists and is an object
     if (JS_IsException(promise_ctor) || !JS_IsObject(promise_ctor)) {
-        JS_FreeValue(ctx, promise_ctor);
-        JS_FreeValue(ctx, global);
+
+
         // Fallback: return a mock promise-like object
         JSValue mock_promise = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, mock_promise, "then", 
@@ -995,9 +973,9 @@ static JSValue js_create_empty_resolved_promise(JSContext *ctx) {
     
     // Check if Promise.resolve exists and is a function
     if (JS_IsException(resolve_func) || !JS_IsFunction(ctx, resolve_func)) {
-        JS_FreeValue(ctx, resolve_func);
-        JS_FreeValue(ctx, promise_ctor);
-        JS_FreeValue(ctx, global);
+
+
+
         // Fallback: return a mock promise-like object
         JSValue mock_promise = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, mock_promise, "then", 
@@ -1007,10 +985,9 @@ static JSValue js_create_empty_resolved_promise(JSContext *ctx) {
     
     // Call Promise.resolve with the Promise constructor as 'this'
     JSValue result = JS_Call(ctx, resolve_func, promise_ctor, 0, NULL);
-    
-    JS_FreeValue(ctx, resolve_func);
-    JS_FreeValue(ctx, promise_ctor);
-    JS_FreeValue(ctx, global);
+
+
+
     return result;
 }
 
@@ -1027,8 +1004,8 @@ typedef struct {
 static void js_shadow_root_finalizer(JSRuntime *rt, JSValue val) {
     ShadowRootData *sr = JS_GetOpaque(val, js_shadow_root_class_id);
     if (sr) {
-        JS_FreeValueRT(rt, sr->host);
-        JS_FreeValueRT(rt, sr->innerHTML);
+
+
         free(sr);
     }
 }
@@ -1041,7 +1018,7 @@ static JSClassDef js_shadow_root_class_def = {
 static JSValue js_shadow_root_get_host(JSContext *ctx, JSValueConst this_val) {
     ShadowRootData *sr = JS_GetOpaque2(ctx, this_val, js_shadow_root_class_id);
     if (!sr) return JS_EXCEPTION;
-    return JS_DupValue(ctx, sr->host);
+    return sr->host;
 }
 
 static JSValue js_shadow_root_get_mode(JSContext *ctx, JSValueConst this_val) {
@@ -1053,14 +1030,14 @@ static JSValue js_shadow_root_get_mode(JSContext *ctx, JSValueConst this_val) {
 static JSValue js_shadow_root_get_innerHTML(JSContext *ctx, JSValueConst this_val) {
     ShadowRootData *sr = JS_GetOpaque2(ctx, this_val, js_shadow_root_class_id);
     if (!sr) return JS_EXCEPTION;
-    return JS_DupValue(ctx, sr->innerHTML);
+    return sr->innerHTML;
 }
 
 static JSValue js_shadow_root_set_innerHTML(JSContext *ctx, JSValueConst this_val, JSValueConst val) {
     ShadowRootData *sr = JS_GetOpaque2(ctx, this_val, js_shadow_root_class_id);
     if (!sr) return JS_EXCEPTION;
-    JS_FreeValue(ctx, sr->innerHTML);
-    sr->innerHTML = JS_DupValue(ctx, val);
+
+    sr->innerHTML = val;
     return JS_UNDEFINED;
 }
 
@@ -1104,24 +1081,23 @@ static JSValue js_element_attach_shadow(JSContext *ctx, JSValueConst this_val, i
     ShadowRootData *sr = calloc(1, sizeof(ShadowRootData));
     if (!sr) {
         JS_FreeCString(ctx, mode);
-        JS_FreeValue(ctx, mode_val);
+
         return JS_EXCEPTION;
     }
     
     strncpy(sr->mode, mode, sizeof(sr->mode) - 1);
     sr->mode[sizeof(sr->mode) - 1] = '\0';
-    sr->host = JS_DupValue(ctx, this_val);
+    sr->host = this_val;
     sr->innerHTML = JS_NewString(ctx, "");
     
     JSValue shadow_root = JS_NewObjectClass(ctx, js_shadow_root_class_id);
     JS_SetOpaque(shadow_root, sr);
     
     // Store shadowRoot reference on the element (internal property __shadowRoot)
-    JS_SetPropertyStr(ctx, this_val, "__shadowRoot", JS_DupValue(ctx, shadow_root));
+    JS_SetPropertyStr(ctx, this_val, "__shadowRoot", shadow_root);
     
     JS_FreeCString(ctx, mode);
-    JS_FreeValue(ctx, mode_val);
-    
+
     return shadow_root;
 }
 
@@ -1130,14 +1106,14 @@ static JSValue js_element_get_shadow_root(JSContext *ctx, JSValueConst this_val,
     (void)argc; (void)argv;
     JSValue shadow = JS_GetPropertyStr(ctx, this_val, "__shadowRoot");
     if (JS_IsUndefined(shadow)) {
-        JS_FreeValue(ctx, shadow);
+
         return JS_NULL;
     }
     
     // Check if mode is "open" - if closed, return null
     ShadowRootData *sr = JS_GetOpaque(shadow, js_shadow_root_class_id);
     if (sr && strcmp(sr->mode, "closed") == 0) {
-        JS_FreeValue(ctx, shadow);
+
         return JS_NULL;
     }
     
@@ -1176,7 +1152,7 @@ static JSValue js_event_target_addEventListener(JSContext *ctx, JSValueConst thi
     if (event) {
         char prop[128];
         snprintf(prop, sizeof(prop), "__on%s", event);
-        JS_SetPropertyStr(ctx, this_val, prop, JS_DupValue(ctx, argv[1]));
+        JS_SetPropertyStr(ctx, this_val, prop, argv[1]);
     }
     JS_FreeCString(ctx, event);
     return JS_UNDEFINED;
@@ -1198,17 +1174,17 @@ static JSValue js_event_target_dispatchEvent(JSContext *ctx, JSValueConst this_v
 static JSValue js_node_appendChild(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     if (argc < 1) return JS_NULL;
     // Return the appended child
-    return JS_DupValue(ctx, argv[0]);
+    return argv[0];
 }
 
 static JSValue js_node_insertBefore(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     if (argc < 1) return JS_NULL;
-    return JS_DupValue(ctx, argv[0]);
+    return argv[0];
 }
 
 static JSValue js_node_removeChild(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     if (argc < 1) return JS_NULL;
-    return JS_DupValue(ctx, argv[0]);
+    return argv[0];
 }
 
 static JSValue js_node_cloneNode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -1231,7 +1207,7 @@ typedef struct {
 static void js_custom_element_registry_finalizer(JSRuntime *rt, JSValue val) {
     CustomElementRegistryData *cer = JS_GetOpaque(val, js_custom_element_registry_class_id);
     if (cer) {
-        JS_FreeValueRT(rt, cer->registry);
+
         free(cer);
     }
 }
@@ -1257,7 +1233,7 @@ static JSValue js_custom_elements_define(JSContext *ctx, JSValueConst this_val, 
     }
     
     // Store in registry (the this_val should be the customElements object)
-    JS_SetPropertyStr(ctx, this_val, name, JS_DupValue(ctx, argv[1]));
+    JS_SetPropertyStr(ctx, this_val, name, argv[1]);
     
     JS_FreeCString(ctx, name);
     return JS_UNDEFINED;
@@ -1309,8 +1285,8 @@ typedef struct {
 static void js_animation_finalizer(JSRuntime *rt, JSValue val) {
     AnimationData *anim = JS_GetOpaque(val, js_animation_class_id);
     if (anim) {
-        JS_FreeValueRT(rt, anim->onfinish);
-        JS_FreeValueRT(rt, anim->effect);
+
+
         free(anim);
     }
 }
@@ -1318,8 +1294,8 @@ static void js_animation_finalizer(JSRuntime *rt, JSValue val) {
 static void js_keyframe_effect_finalizer(JSRuntime *rt, JSValue val) {
     KeyFrameEffectData *effect = JS_GetOpaque(val, js_keyframe_effect_class_id);
     if (effect) {
-        JS_FreeValueRT(rt, effect->target);
-        JS_FreeValueRT(rt, effect->keyframes);
+
+
         free(effect);
     }
 }
@@ -1347,7 +1323,7 @@ static JSValue js_animation_constructor(JSContext *ctx, JSValueConst new_target,
     anim->effect = JS_NULL;
     
     if (argc > 0) {
-        anim->effect = JS_DupValue(ctx, argv[0]);
+        anim->effect = argv[0];
         // Try to get duration from effect
         if (JS_IsObject(argv[0])) {
             JSValue duration_val = JS_GetPropertyStr(ctx, argv[0], "duration");
@@ -1355,7 +1331,7 @@ static JSValue js_animation_constructor(JSContext *ctx, JSValueConst new_target,
             if (!JS_IsException(duration_val) && !JS_ToFloat64(ctx, &duration, duration_val)) {
                 anim->duration = duration;
             }
-            JS_FreeValue(ctx, duration_val);
+
         }
     }
     
@@ -1428,21 +1404,21 @@ static JSValue js_animation_get_effect(JSContext *ctx, JSValueConst this_val) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
     if (JS_IsNull(anim->effect)) return JS_NULL;
-    return JS_DupValue(ctx, anim->effect);
+    return anim->effect;
 }
 
 // Animation.onfinish getter/setter
 static JSValue js_animation_get_onfinish(JSContext *ctx, JSValueConst this_val) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
-    return JS_DupValue(ctx, anim->onfinish);
+    return anim->onfinish;
 }
 
 static JSValue js_animation_set_onfinish(JSContext *ctx, JSValueConst this_val, JSValueConst val) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
-    JS_FreeValue(ctx, anim->onfinish);
-    anim->onfinish = JS_DupValue(ctx, val);
+
+    anim->onfinish = val;
     return JS_UNDEFINED;
 }
 
@@ -1469,10 +1445,10 @@ static JSValue js_keyframe_effect_constructor(JSContext *ctx, JSValueConst new_t
     strcpy(effect->easing, "linear");
     
     if (argc > 0) {
-        effect->target = JS_DupValue(ctx, argv[0]);
+        effect->target = argv[0];
     }
     if (argc > 1) {
-        effect->keyframes = JS_DupValue(ctx, argv[1]);
+        effect->keyframes = argv[1];
     }
     if (argc > 2 && JS_IsObject(argv[2])) {
         JSValue duration_val = JS_GetPropertyStr(ctx, argv[2], "duration");
@@ -1480,8 +1456,7 @@ static JSValue js_keyframe_effect_constructor(JSContext *ctx, JSValueConst new_t
         if (!JS_IsException(duration_val) && !JS_ToFloat64(ctx, &duration, duration_val)) {
             effect->duration = duration;
         }
-        JS_FreeValue(ctx, duration_val);
-        
+
         JSValue easing_val = JS_GetPropertyStr(ctx, argv[2], "easing");
         const char *easing = JS_ToCString(ctx, easing_val);
         if (easing) {
@@ -1489,7 +1464,7 @@ static JSValue js_keyframe_effect_constructor(JSContext *ctx, JSValueConst new_t
             effect->easing[sizeof(effect->easing) - 1] = '\0';
         }
         JS_FreeCString(ctx, easing);
-        JS_FreeValue(ctx, easing_val);
+
     }
     
     JSValue obj = JS_NewObjectClass(ctx, js_keyframe_effect_class_id);
@@ -1502,7 +1477,7 @@ static JSValue js_keyframe_effect_get_target(JSContext *ctx, JSValueConst this_v
     KeyFrameEffectData *effect = JS_GetOpaque2(ctx, this_val, js_keyframe_effect_class_id);
     if (!effect) return JS_EXCEPTION;
     if (JS_IsNull(effect->target)) return JS_NULL;
-    return JS_DupValue(ctx, effect->target);
+    return effect->target;
 }
 
 // KeyframeEffect.duration getter
@@ -1521,16 +1496,14 @@ static const JSCFunctionListEntry js_keyframe_effect_proto_funcs[] = {
 static JSValue js_element_animate(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     // Create KeyframeEffect
     JSValue effect_args[3];
-    effect_args[0] = JS_DupValue(ctx, this_val);  // target
-    effect_args[1] = argc > 0 ? JS_DupValue(ctx, argv[0]) : JS_NULL;  // keyframes
-    effect_args[2] = argc > 1 ? JS_DupValue(ctx, argv[1]) : JS_NULL;  // options
+    effect_args[0] = this_val;  // target
+    effect_args[1] = argc > 0 ? argv[0] : JS_NULL;  // keyframes
+    effect_args[2] = argc > 1 ? argv[1] : JS_NULL;  // options
     
     JSValue effect = js_keyframe_effect_constructor(ctx, JS_UNDEFINED, 3, effect_args);
-    
-    JS_FreeValue(ctx, effect_args[0]);
-    JS_FreeValue(ctx, effect_args[1]);
-    JS_FreeValue(ctx, effect_args[2]);
-    
+
+
+
     if (JS_IsException(effect)) {
         return effect;
     }
@@ -1539,8 +1512,7 @@ static JSValue js_element_animate(JSContext *ctx, JSValueConst this_val, int arg
     JSValue anim_args[1];
     anim_args[0] = effect;
     JSValue animation = js_animation_constructor(ctx, JS_UNDEFINED, 1, anim_args);
-    JS_FreeValue(ctx, effect);
-    
+
     if (JS_IsException(animation)) {
         return animation;
     }
@@ -1578,7 +1550,7 @@ static void js_font_face_finalizer(JSRuntime *rt, JSValue val) {
 static void js_font_face_set_finalizer(JSRuntime *rt, JSValue val) {
     FontFaceSetData *ffs = JS_GetOpaque(val, js_font_face_set_class_id);
     if (ffs) {
-        JS_FreeValueRT(rt, ffs->loaded_fonts);
+
         free(ffs);
     }
 }
@@ -1621,7 +1593,7 @@ static JSValue js_font_face_constructor(JSContext *ctx, JSValueConst new_target,
             strncpy(ff->display, display, sizeof(ff->display) - 1);
         }
         JS_FreeCString(ctx, display);
-        JS_FreeValue(ctx, display_val);
+
     }
     
     JSValue obj = JS_NewObjectClass(ctx, js_font_face_class_id);
@@ -1632,9 +1604,9 @@ static JSValue js_font_face_constructor(JSContext *ctx, JSValueConst new_target,
 // FontFace.load()
 static JSValue js_font_face_load(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     // Return a resolved promise with this FontFace
-    JSValue this_dup = JS_DupValue(ctx, this_val);
+    JSValue this_dup = this_val;
     JSValue result = js_create_resolved_promise(ctx, this_dup);
-    JS_FreeValue(ctx, this_dup);
+
     return result;
 }
 
@@ -1643,9 +1615,9 @@ static JSValue js_font_face_get_loaded(JSContext *ctx, JSValueConst this_val) {
     FontFaceData *ff = JS_GetOpaque2(ctx, this_val, js_font_face_class_id);
     if (!ff) return JS_EXCEPTION;
     // Return a resolved promise with this FontFace
-    JSValue this_dup = JS_DupValue(ctx, this_val);
+    JSValue this_dup = this_val;
     JSValue result = js_create_resolved_promise(ctx, this_dup);
-    JS_FreeValue(ctx, this_dup);
+
     return result;
 }
 
@@ -1673,7 +1645,7 @@ static JSValue js_font_face_set_load(JSContext *ctx, JSValueConst this_val, int 
     // Return a resolved promise with empty array (all fonts "loaded")
     JSValue empty_array = JS_NewArray(ctx);
     JSValue result = js_create_resolved_promise(ctx, empty_array);
-    JS_FreeValue(ctx, empty_array);
+
     return result;
 }
 
@@ -1726,10 +1698,10 @@ static JSValue js_font_face_set_iterator(JSContext *ctx, JSValueConst this_val, 
     JSValue empty_array = JS_CallConstructor(ctx, array_ctor, 0, NULL);
     JSValue result = JS_GetPropertyStr(ctx, empty_array, "values");
     JSValue iterator = JS_Call(ctx, result, empty_array, 0, NULL);
-    JS_FreeValue(ctx, result);
-    JS_FreeValue(ctx, empty_array);
-    JS_FreeValue(ctx, array_ctor);
-    JS_FreeValue(ctx, global);
+
+
+
+
     return iterator;
 }
 
@@ -1761,7 +1733,7 @@ typedef struct {
 static void js_mutation_observer_finalizer(JSRuntime *rt, JSValue val) {
     MutationObserverData *mo = JS_GetOpaque(val, js_mutation_observer_class_id);
     if (mo) {
-        JS_FreeValueRT(rt, mo->callback);
+
         free(mo);
     }
 }
@@ -1781,7 +1753,7 @@ static JSValue js_mutation_observer_constructor(JSContext *ctx, JSValueConst new
     if (!mo) return JS_EXCEPTION;
     
     mo->ctx = ctx;
-    mo->callback = JS_DupValue(ctx, argv[0]);
+    mo->callback = argv[0];
     
     JSValue obj = JS_NewObjectClass(ctx, js_mutation_observer_class_id);
     JS_SetOpaque(obj, mo);
@@ -1821,7 +1793,7 @@ typedef struct {
 static void js_resize_observer_finalizer(JSRuntime *rt, JSValue val) {
     ResizeObserverData *ro = JS_GetOpaque(val, js_resize_observer_class_id);
     if (ro) {
-        JS_FreeValueRT(rt, ro->callback);
+
         free(ro);
     }
 }
@@ -1841,7 +1813,7 @@ static JSValue js_resize_observer_constructor(JSContext *ctx, JSValueConst new_t
     if (!ro) return JS_EXCEPTION;
     
     ro->ctx = ctx;
-    ro->callback = JS_DupValue(ctx, argv[0]);
+    ro->callback = argv[0];
     
     JSValue obj = JS_NewObjectClass(ctx, js_resize_observer_class_id);
     JS_SetOpaque(obj, ro);
@@ -1884,8 +1856,8 @@ typedef struct {
 static void js_intersection_observer_finalizer(JSRuntime *rt, JSValue val) {
     IntersectionObserverData *io = JS_GetOpaque(val, js_intersection_observer_class_id);
     if (io) {
-        JS_FreeValueRT(rt, io->callback);
-        JS_FreeValueRT(rt, io->root);
+
+
         free(io);
     }
 }
@@ -1905,7 +1877,7 @@ static JSValue js_intersection_observer_constructor(JSContext *ctx, JSValueConst
     if (!io) return JS_EXCEPTION;
     
     io->ctx = ctx;
-    io->callback = JS_DupValue(ctx, argv[0]);
+    io->callback = argv[0];
     io->root = JS_NULL;
     strcpy(io->rootMargin, "0px");
     io->threshold = 0.0;
@@ -1914,10 +1886,9 @@ static JSValue js_intersection_observer_constructor(JSContext *ctx, JSValueConst
     if (argc > 1 && JS_IsObject(argv[1])) {
         JSValue root_val = JS_GetPropertyStr(ctx, argv[1], "root");
         if (!JS_IsUndefined(root_val) && !JS_IsNull(root_val)) {
-            io->root = JS_DupValue(ctx, root_val);
+            io->root = root_val;
         }
-        JS_FreeValue(ctx, root_val);
-        
+
         JSValue margin_val = JS_GetPropertyStr(ctx, argv[1], "rootMargin");
         const char *margin = JS_ToCString(ctx, margin_val);
         if (margin) {
@@ -1925,11 +1896,10 @@ static JSValue js_intersection_observer_constructor(JSContext *ctx, JSValueConst
             io->rootMargin[sizeof(io->rootMargin) - 1] = '\0';
         }
         JS_FreeCString(ctx, margin);
-        JS_FreeValue(ctx, margin_val);
-        
+
         JSValue threshold_val = JS_GetPropertyStr(ctx, argv[1], "threshold");
         JS_ToFloat64(ctx, &io->threshold, threshold_val);
-        JS_FreeValue(ctx, threshold_val);
+
     }
     
     JSValue obj = JS_NewObjectClass(ctx, js_intersection_observer_class_id);
@@ -2001,7 +1971,7 @@ static void js_performance_entry_finalizer(JSRuntime *rt, JSValue val) {
 static void js_performance_observer_finalizer(JSRuntime *rt, JSValue val) {
     PerformanceObserverData *po = JS_GetOpaque(val, js_performance_observer_class_id);
     if (po) {
-        JS_FreeValueRT(rt, po->callback);
+
         free(po);
     }
 }
@@ -2172,8 +2142,7 @@ static JSValue js_performance_get_timing(JSContext *ctx, JSValueConst this_val) 
     if (!JS_IsUndefined(timing_prop) && !JS_IsNull(timing_prop)) {
         return timing_prop;
     }
-    JS_FreeValue(ctx, timing_prop);
-    
+
     // Create timing object
     PerformanceTimingData *timing_data = calloc(1, sizeof(PerformanceTimingData));
     if (!timing_data) return JS_EXCEPTION;
@@ -2183,7 +2152,7 @@ static JSValue js_performance_get_timing(JSContext *ctx, JSValueConst this_val) 
     JS_SetOpaque(timing_obj, timing_data);
     
     // Store on the performance instance
-    JS_SetPropertyStr(ctx, (JSValue)this_val, "__timing", JS_DupValue(ctx, timing_obj));
+    JS_SetPropertyStr(ctx, (JSValue)this_val, "__timing", timing_obj);
     
     return timing_obj;
 }
@@ -2246,7 +2215,7 @@ static JSValue js_performance_observer_constructor(JSContext *ctx, JSValueConst 
     if (!po) return JS_EXCEPTION;
     
     po->ctx = ctx;
-    po->callback = JS_DupValue(ctx, argv[0]);
+    po->callback = argv[0];
     
     JSValue obj = JS_NewObjectClass(ctx, js_performance_observer_class_id);
     JS_SetOpaque(obj, po);
@@ -2393,11 +2362,10 @@ static JSValue js_dom_rect_from_rect(JSContext *ctx, JSValueConst this_val, int 
         JS_ToFloat64(ctx, &y, y_val);
         JS_ToFloat64(ctx, &width, w_val);
         JS_ToFloat64(ctx, &height, h_val);
-        
-        JS_FreeValue(ctx, x_val);
-        JS_FreeValue(ctx, y_val);
-        JS_FreeValue(ctx, w_val);
-        JS_FreeValue(ctx, h_val);
+
+
+
+
     }
     
     JSValue args[4] = {
@@ -2408,11 +2376,10 @@ static JSValue js_dom_rect_from_rect(JSContext *ctx, JSValueConst this_val, int 
     };
     
     JSValue result = js_dom_rect_constructor(ctx, JS_UNDEFINED, 4, args);
-    JS_FreeValue(ctx, args[0]);
-    JS_FreeValue(ctx, args[1]);
-    JS_FreeValue(ctx, args[2]);
-    JS_FreeValue(ctx, args[3]);
-    
+
+
+
+
     return result;
 }
 
@@ -2430,11 +2397,10 @@ static JSValue js_dom_rect_read_only_from_rect(JSContext *ctx, JSValueConst this
         JS_ToFloat64(ctx, &y, y_val);
         JS_ToFloat64(ctx, &width, w_val);
         JS_ToFloat64(ctx, &height, h_val);
-        
-        JS_FreeValue(ctx, x_val);
-        JS_FreeValue(ctx, y_val);
-        JS_FreeValue(ctx, w_val);
-        JS_FreeValue(ctx, h_val);
+
+
+
+
     }
     
     JSValue args[4] = {
@@ -2445,11 +2411,10 @@ static JSValue js_dom_rect_read_only_from_rect(JSContext *ctx, JSValueConst this
     };
     
     JSValue result = js_dom_rect_read_only_constructor(ctx, JS_UNDEFINED, 4, args);
-    JS_FreeValue(ctx, args[0]);
-    JS_FreeValue(ctx, args[1]);
-    JS_FreeValue(ctx, args[2]);
-    JS_FreeValue(ctx, args[3]);
-    
+
+
+
+
     return result;
 }
 
@@ -2613,9 +2578,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         JS_SetPropertyStr(ctx, object_ctor, "assign",
             JS_NewCFunction(ctx, js_object_assign, "assign", 2));
     }
-    
-    JS_FreeValue(ctx, object_ctor);
-    
+
     // Create Reflect object
     JSValue reflect_obj = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, reflect_obj, "construct",
@@ -2639,12 +2602,12 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
             JSValue obj_ctor = JS_GetPropertyStr(ctx, global, "Object");
             JSValue set_proto = JS_GetPropertyStr(ctx, obj_ctor, "setPrototypeOf");
             JSValue args[2] = { dom_exception_proto, error_proto };
-            JS_FreeValue(ctx, JS_Call(ctx, set_proto, JS_UNDEFINED, 2, args));
-            JS_FreeValue(ctx, set_proto);
-            JS_FreeValue(ctx, obj_ctor);
-            JS_FreeValue(ctx, error_proto);
+
+
+
+
         }
-        JS_FreeValue(ctx, error_ctor);
+
     }
     
     JS_SetClassProto(ctx, js_dom_exception_class_id, dom_exception_proto);
@@ -2675,7 +2638,6 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, dom_exception_ctor, "DATA_CLONE_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_DATA_CLONE_ERR));
     
     JS_SetPropertyStr(ctx, global, "DOMException", dom_exception_ctor);
-    JS_FreeValue(ctx, dom_exception_ctor);  // global.DOMException now owns it
     
     // Map constructor
     JSValue map_proto = JS_NewObject(ctx);
@@ -2685,7 +2647,6 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetConstructor(ctx, map_ctor, map_proto);
     JS_SetClassProto(ctx, js_map_class_id, map_proto);
     JS_SetPropertyStr(ctx, global, "Map", map_ctor);
-    JS_FreeValue(ctx, map_ctor);  // global.Map now owns the reference
     
     // Set Map prototype[Symbol.toStringTag]
     JSValue symbol_ctor = JS_GetPropertyStr(ctx, global, "Symbol");
@@ -2693,9 +2654,9 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         JSValue toStringTag = JS_GetPropertyStr(ctx, symbol_ctor, "toStringTag");
         if (!JS_IsException(toStringTag)) {
             JS_SetProperty(ctx, map_proto, JS_ValueToAtom(ctx, toStringTag), JS_NewString(ctx, "Map"));
-            JS_FreeValue(ctx, toStringTag);
+
         }
-        JS_FreeValue(ctx, symbol_ctor);
+
     }
     
     // Promise.prototype.finally
@@ -2705,9 +2666,9 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         if (!JS_IsException(promise_proto)) {
             JS_SetPropertyStr(ctx, promise_proto, "finally",
                 JS_NewCFunction(ctx, js_promise_finally, "finally", 1));
-            JS_FreeValue(ctx, promise_proto);
+
         }
-        JS_FreeValue(ctx, promise_ctor);
+
     }
     
     // String.prototype.includes
@@ -2717,9 +2678,9 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         if (!JS_IsException(string_proto)) {
             JS_SetPropertyStr(ctx, string_proto, "includes",
                 JS_NewCFunction(ctx, js_string_includes, "includes", 1));
-            JS_FreeValue(ctx, string_proto);
+
         }
-        JS_FreeValue(ctx, string_ctor);
+
     }
     
     // Array.prototype.includes
@@ -2729,12 +2690,12 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         if (!JS_IsException(array_proto)) {
             JS_SetPropertyStr(ctx, array_proto, "includes",
                 JS_NewCFunction(ctx, js_array_includes, "includes", 1));
-            JS_FreeValue(ctx, array_proto);
+
         }
         // Array.from
         JS_SetPropertyStr(ctx, array_ctor, "from",
             JS_NewCFunction(ctx, js_array_from, "from", 1));
-        JS_FreeValue(ctx, array_ctor);
+
     }
     
     // ===== Window (global object itself) =====
@@ -2748,7 +2709,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     // After setting a property, we MUST free the local reference!
     
     // Helper to set up prototype chain using Object.setPrototypeOf
-    JSValue object_ctor = JS_GetPropertyStr(ctx, global, "Object");
+    object_ctor = JS_GetPropertyStr(ctx, global, "Object");
     JSValue set_proto_of = JS_GetPropertyStr(ctx, object_ctor, "setPrototypeOf");
     
     // EventTarget constructor (base of all DOM constructors)
@@ -2757,7 +2718,6 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, event_target_proto, "constructor", event_target_ctor);
     JS_SetPropertyStr(ctx, event_target_ctor, "prototype", event_target_proto);
     JS_SetPropertyStr(ctx, global, "EventTarget", event_target_ctor);
-    JS_FreeValue(ctx, event_target_ctor);  // global.EventTarget now owns it
     // Keep event_target_proto for Node's prototype chain
     
     // Node constructor
@@ -2766,10 +2726,10 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, node_proto, "constructor", node_ctor);
     // Node.prototype -> EventTarget.prototype
     JSValue args_node[2] = { node_proto, event_target_proto };
-    JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args_node));
+
     JS_SetPropertyStr(ctx, node_ctor, "prototype", node_proto);
     JS_SetPropertyStr(ctx, global, "Node", node_ctor);
-    JS_FreeValue(ctx, node_ctor);
+
     // Note: event_target_proto is kept alive for adding methods below
     // It will be freed after we add methods to it
     // Keep node_proto for Element and DocumentFragment
@@ -2780,7 +2740,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, element_proto, "constructor", element_ctor);
     // Element.prototype -> Node.prototype
     JSValue args_element[2] = { element_proto, node_proto };
-    JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args_element));
+
     JS_SetPropertyStr(ctx, element_ctor, "prototype", element_proto);
     JS_SetPropertyStr(ctx, global, "Element", element_ctor);
     // DON'T free element_ctor yet - we need it for document.documentElement below
@@ -2793,7 +2753,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, html_element_proto, "constructor", html_element_ctor);
     // HTMLElement.prototype -> Element.prototype
     JSValue args_html_element[2] = { html_element_proto, element_proto };
-    JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args_html_element));
+
     JS_SetPropertyStr(ctx, html_element_ctor, "prototype", html_element_proto);
     JS_SetPropertyStr(ctx, global, "HTMLElement", html_element_ctor);
     // DON'T free html_element_ctor yet - we need it for document.body below
@@ -2806,12 +2766,11 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, doc_fragment_proto, "constructor", doc_fragment_ctor);
     // DocumentFragment.prototype -> Node.prototype
     JSValue args_doc_frag[2] = { doc_fragment_proto, node_proto };
-    JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args_doc_frag));
+
     JS_SetPropertyStr(ctx, doc_fragment_ctor, "prototype", doc_fragment_proto);
     JS_SetPropertyStr(ctx, global, "DocumentFragment", doc_fragment_ctor);
-    JS_FreeValue(ctx, doc_fragment_ctor);
-    JS_FreeValue(ctx, doc_fragment_proto);
-    
+
+
     // ===== Ensure DOM Prototype Chain Integrity =====
     // Re-fetch prototypes from global to ensure chains are properly linked
     // This handles cases where JS code may have modified prototypes
@@ -2832,43 +2791,39 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     if (!JS_IsUndefined(node_proto_check) && !JS_IsNull(node_proto_check) &&
         !JS_IsUndefined(event_target_proto_check) && !JS_IsNull(event_target_proto_check)) {
         JSValue args1[2] = { node_proto_check, event_target_proto_check };
-        JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args1));
+
     }
     
     if (!JS_IsUndefined(element_proto_check) && !JS_IsNull(element_proto_check) &&
         !JS_IsUndefined(node_proto_check) && !JS_IsNull(node_proto_check)) {
         JSValue args2[2] = { element_proto_check, node_proto_check };
-        JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args2));
+
     }
     
     if (!JS_IsUndefined(html_element_proto_check) && !JS_IsNull(html_element_proto_check) &&
         !JS_IsUndefined(element_proto_check) && !JS_IsNull(element_proto_check)) {
         JSValue args3[2] = { html_element_proto_check, element_proto_check };
-        JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args3));
+
     }
     
     if (!JS_IsUndefined(doc_fragment_proto_check) && !JS_IsNull(doc_fragment_proto_check) &&
         !JS_IsUndefined(node_proto_check) && !JS_IsNull(node_proto_check)) {
         JSValue args4[2] = { doc_fragment_proto_check, node_proto_check };
-        JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args4));
+
     }
-    
-    JS_FreeValue(ctx, event_target_proto_check);
-    JS_FreeValue(ctx, node_proto_check);
-    JS_FreeValue(ctx, element_proto_check);
-    JS_FreeValue(ctx, html_element_proto_check);
-    JS_FreeValue(ctx, doc_fragment_proto_check);
-    
-    JS_FreeValue(ctx, event_target_check);
-    JS_FreeValue(ctx, node_check);
-    JS_FreeValue(ctx, element_check);
-    JS_FreeValue(ctx, html_element_check);
-    JS_FreeValue(ctx, doc_fragment_check);
-    
+
+
+
+
+
+
+
+
+
+
     // Clean up Object.setPrototypeOf helper
-    JS_FreeValue(ctx, set_proto_of);
-    JS_FreeValue(ctx, object_ctor);
-    
+
+
     // node_proto will be freed after adding methods below
     
     // ===== EventTarget prototype methods =====
@@ -2974,7 +2929,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     if (!JS_IsException(dom_exception) && !JS_IsUndefined(dom_exception)) {
         JS_SetPropertyStr(ctx, window, "DOMException", dom_exception);  // transfers ownership
     } else {
-        JS_FreeValue(ctx, dom_exception);
+
     }
     
     // ===== NodeFilter constants =====
@@ -2996,7 +2951,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     DEF_PROP_INT(ctx, node_filter, "SHOW_DOCUMENT_FRAGMENT", 0x400);
     DEF_PROP_INT(ctx, node_filter, "SHOW_NOTATION", 0x800);
     JS_SetPropertyStr(ctx, global, "NodeFilter", node_filter);
-    JS_SetPropertyStr(ctx, window, "NodeFilter", JS_DupValue(ctx, node_filter));
+    JS_SetPropertyStr(ctx, window, "NodeFilter", node_filter);
     
     // ===== Document =====
     JSValue document = JS_NewObject(ctx);
@@ -3050,7 +3005,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         DEF_PROP_INT(ctx, doc_element, "offsetHeight", 1080);
     } else {
         // Fallback to plain object if constructor fails
-        JS_FreeValue(ctx, doc_element);
+
         doc_element = JS_NewObject(ctx);
     }
     JS_SetPropertyStr(ctx, document, "documentElement", doc_element);
@@ -3058,7 +3013,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     // Create document body
     JSValue body_element = JS_CallConstructor(ctx, html_element_ctor, 0, NULL);
     if (JS_IsException(body_element)) {
-        JS_FreeValue(ctx, body_element);
+
         body_element = JS_NewObject(ctx);
     }
     JS_SetPropertyStr(ctx, body_element, "appendChild",
@@ -3081,7 +3036,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     (void)html_element_proto; // owned by HTMLElement.prototype
     
     JS_SetPropertyStr(ctx, global, "document", document);
-    JS_SetPropertyStr(ctx, document, "defaultView", JS_DupValue(ctx, window));
+    JS_SetPropertyStr(ctx, document, "defaultView", window);
     
     // ===== Location =====
     JSValue location = JS_NewObject(ctx);
@@ -3096,7 +3051,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     DEF_PROP_STR(ctx, location, "origin", "https://www.youtube.com");
     DEF_FUNC(ctx, location, "toString", js_empty_string, 0);
     JS_SetPropertyStr(ctx, window, "location", location);
-    JS_SetPropertyStr(ctx, document, "location", JS_DupValue(ctx, location));
+    JS_SetPropertyStr(ctx, document, "location", location);
     
     // ===== Navigator =====
     JSValue navigator = JS_NewObject(ctx);
@@ -3146,7 +3101,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     DEF_FUNC(ctx, localStorage, "clear", js_undefined, 0);
     DEF_FUNC(ctx, localStorage, "key", js_null, 1);
     JS_SetPropertyStr(ctx, window, "localStorage", localStorage);
-    JS_SetPropertyStr(ctx, window, "sessionStorage", JS_DupValue(ctx, localStorage));
+    JS_SetPropertyStr(ctx, window, "sessionStorage", localStorage);
     
     // ===== Console =====
     JSValue console = JS_NewObject(ctx);
@@ -3171,9 +3126,8 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, xhr_ctor, "HEADERS_RECEIVED", JS_NewInt32(ctx, 2));
     JS_SetPropertyStr(ctx, xhr_ctor, "LOADING", JS_NewInt32(ctx, 3));
     JS_SetPropertyStr(ctx, xhr_ctor, "DONE", JS_NewInt32(ctx, 4));
-    // global === window, so set once and free
+    // global === window, so set once
     JS_SetPropertyStr(ctx, global, "XMLHttpRequest", xhr_ctor);
-    JS_FreeValue(ctx, xhr_ctor);  // global.XMLHttpRequest now owns it
     
     // ===== HTMLVideoElement =====
     JSValue video_proto = JS_NewObject(ctx);
@@ -3192,9 +3146,8 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, video_ctor, "NETWORK_IDLE", JS_NewInt32(ctx, 1));
     JS_SetPropertyStr(ctx, video_ctor, "NETWORK_LOADING", JS_NewInt32(ctx, 2));
     JS_SetPropertyStr(ctx, video_ctor, "NETWORK_NO_SOURCE", JS_NewInt32(ctx, 3));
-    // global === window, so set once and free
+    // global === window, so set once
     JS_SetPropertyStr(ctx, global, "HTMLVideoElement", video_ctor);
-    JS_FreeValue(ctx, video_ctor);  // global.HTMLVideoElement now owns it
     
     // ===== fetch API =====
     // fetch is set on global (which is window) - no need to duplicate
@@ -3210,8 +3163,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         0, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, shadow_root_ctor, shadow_root_proto);
     JS_SetPropertyStr(ctx, global, "ShadowRoot", shadow_root_ctor);
-    JS_FreeValue(ctx, shadow_root_ctor);
-    
+
     // ===== Custom Elements API =====
     JSValue custom_elements = JS_NewObjectClass(ctx, js_custom_element_registry_class_id);
     JS_SetPropertyStr(ctx, custom_elements, "define",
@@ -3226,8 +3178,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue ce_registry_ctor = JS_NewCFunction2(ctx, NULL, "CustomElementRegistry",
         0, JS_CFUNC_constructor, 0);
     JS_SetPropertyStr(ctx, global, "CustomElementRegistry", ce_registry_ctor);
-    JS_FreeValue(ctx, ce_registry_ctor);
-    
+
     // ===== Web Animations API =====
     // Animation class
     JSValue animation_proto = JS_NewObject(ctx);
@@ -3238,8 +3189,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, animation_ctor, animation_proto);
     JS_SetPropertyStr(ctx, global, "Animation", animation_ctor);
-    JS_FreeValue(ctx, animation_ctor);
-    
+
     // KeyframeEffect class
     JSValue keyframe_effect_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, keyframe_effect_proto, js_keyframe_effect_proto_funcs,
@@ -3249,8 +3199,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         3, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, keyframe_effect_ctor, keyframe_effect_proto);
     JS_SetPropertyStr(ctx, global, "KeyframeEffect", keyframe_effect_ctor);
-    JS_FreeValue(ctx, keyframe_effect_ctor);
-    
+
     // ===== Font Loading API =====
     // FontFace class
     JSValue font_face_proto = JS_NewObject(ctx);
@@ -3261,8 +3210,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         3, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, font_face_ctor, font_face_proto);
     JS_SetPropertyStr(ctx, global, "FontFace", font_face_ctor);
-    JS_FreeValue(ctx, font_face_ctor);
-    
+
     // FontFaceSet class (document.fonts)
     JSValue font_face_set_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, font_face_set_proto, js_font_face_set_proto_funcs,
@@ -3283,10 +3231,10 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
             if (!JS_IsException(values_func)) {
                 JS_SetProperty(ctx, font_face_set_proto, JS_ValueToAtom(ctx, iterator_symbol), values_func);
             }
-            JS_FreeValue(ctx, values_func);
+
         }
-        JS_FreeValue(ctx, iterator_symbol);
-        JS_FreeValue(ctx, symbol_ctor2);
+
+
     }
     
     JS_SetPropertyStr(ctx, document, "fonts", font_face_set);
@@ -3294,8 +3242,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue font_face_set_ctor = JS_NewCFunction2(ctx, NULL, "FontFaceSet",
         0, JS_CFUNC_constructor, 0);
     JS_SetPropertyStr(ctx, global, "FontFaceSet", font_face_set_ctor);
-    JS_FreeValue(ctx, font_face_set_ctor);
-    
+
     // ===== Observer APIs =====
     // MutationObserver
     JSValue mutation_observer_proto = JS_NewObject(ctx);
@@ -3306,8 +3253,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, mutation_observer_ctor, mutation_observer_proto);
     JS_SetPropertyStr(ctx, global, "MutationObserver", mutation_observer_ctor);
-    JS_FreeValue(ctx, mutation_observer_ctor);
-    
+
     // ResizeObserver
     JSValue resize_observer_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, resize_observer_proto, js_resize_observer_proto_funcs,
@@ -3317,8 +3263,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, resize_observer_ctor, resize_observer_proto);
     JS_SetPropertyStr(ctx, global, "ResizeObserver", resize_observer_ctor);
-    JS_FreeValue(ctx, resize_observer_ctor);
-    
+
     // IntersectionObserver
     JSValue intersection_observer_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, intersection_observer_proto, js_intersection_observer_proto_funcs,
@@ -3328,8 +3273,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, intersection_observer_ctor, intersection_observer_proto);
     JS_SetPropertyStr(ctx, global, "IntersectionObserver", intersection_observer_ctor);
-    JS_FreeValue(ctx, intersection_observer_ctor);
-    
+
     // ===== Performance API =====
     // PerformanceEntry class
     JSValue performance_entry_proto = JS_NewObject(ctx);
@@ -3340,8 +3284,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         0, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, performance_entry_ctor, performance_entry_proto);
     JS_SetPropertyStr(ctx, global, "PerformanceEntry", performance_entry_ctor);
-    JS_FreeValue(ctx, performance_entry_ctor);
-    
+
     // PerformanceObserver class
     JSValue performance_observer_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, performance_observer_proto, js_performance_observer_proto_funcs,
@@ -3351,8 +3294,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, performance_observer_ctor, performance_observer_proto);
     JS_SetPropertyStr(ctx, global, "PerformanceObserver", performance_observer_ctor);
-    JS_FreeValue(ctx, performance_observer_ctor);
-    
+
     // Performance class
     JSValue performance_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, performance_proto, js_performance_proto_funcs,
@@ -3370,8 +3312,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         0, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, performance_ctor, performance_proto);
     JS_SetPropertyStr(ctx, global, "Performance", performance_ctor);
-    JS_FreeValue(ctx, performance_ctor);
-    
+
     // ===== DOMRect API =====
     // DOMRectReadOnly class
     JSValue dom_rect_read_only_proto = JS_NewObject(ctx);
@@ -3385,8 +3326,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue from_rect_ro = JS_NewCFunction(ctx, js_dom_rect_read_only_from_rect, "fromRect", 1);
     JS_SetPropertyStr(ctx, dom_rect_read_only_ctor, "fromRect", from_rect_ro);
     JS_SetPropertyStr(ctx, global, "DOMRectReadOnly", dom_rect_read_only_ctor);
-    JS_FreeValue(ctx, dom_rect_read_only_ctor);
-    
+
     // DOMRect class
     JSValue dom_rect_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, dom_rect_proto, js_dom_rect_proto_funcs,
@@ -3399,6 +3339,5 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue from_rect = JS_NewCFunction(ctx, js_dom_rect_from_rect, "fromRect", 1);
     JS_SetPropertyStr(ctx, dom_rect_ctor, "fromRect", from_rect);
     JS_SetPropertyStr(ctx, global, "DOMRect", dom_rect_ctor);
-    JS_FreeValue(ctx, dom_rect_ctor);
-    
+
 }

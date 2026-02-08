@@ -587,7 +587,7 @@ int js_module_set_import_meta(JSContext *ctx, JSValueConst func_val,
     JS_DefinePropertyValueStr(ctx, meta_obj, "main",
                               JS_NewBool(ctx, is_main),
                               JS_PROP_C_W_E);
-    JS_FreeValue(ctx, meta_obj);
+
     return 0;
 }
 
@@ -604,7 +604,7 @@ static JSModuleDef *create_json_module(JSContext *ctx, const char *module_name, 
     JSModuleDef *m;
     m = JS_NewCModule(ctx, module_name, json_module_init);
     if (!m) {
-        JS_FreeValue(ctx, val);
+
         return NULL;
     }
     /* only export the "default" symbol which will contain the JSON object */
@@ -659,7 +659,7 @@ int js_module_test_json(JSContext *ctx, JSValueConst attributes)
     if (!JS_IsString(str))
         return FALSE;
     cstr = JS_ToCStringLen(ctx, &len, str);
-    JS_FreeValue(ctx, str);
+
     if (!cstr)
         return FALSE;
     /* XXX: raise an error if unknown type ? */
@@ -721,7 +721,7 @@ JSModuleDef *js_module_loader(JSContext *ctx,
             js_module_set_import_meta(ctx, func_val, TRUE, FALSE);
             /* the module is already referenced, so we must free it */
             m = JS_VALUE_GET_PTR(func_val);
-            JS_FreeValue(ctx, func_val);
+
         }
     }
     return m;
@@ -839,7 +839,7 @@ static JSValue js_std_getenviron(JSContext *ctx, JSValueConst this_val,
     }
     return obj;
  fail:
-    JS_FreeValue(ctx, obj);
+
     return JS_EXCEPTION;
 }
 
@@ -866,7 +866,7 @@ static int get_bool_option(JSContext *ctx, BOOL *pbool,
     if (!JS_IsUndefined(val)) {
         *pbool = JS_ToBool(ctx, val);
     }
-    JS_FreeValue(ctx, val);
+
     return 0;
 }
 
@@ -983,7 +983,7 @@ static JSValue js_new_std_file(JSContext *ctx, FILE *f,
         return obj;
     s = js_mallocz(ctx, sizeof(*s));
     if (!s) {
-        JS_FreeValue(ctx, obj);
+
         return JS_EXCEPTION;
     }
     s->close_in_finalizer = close_in_finalizer;
@@ -1611,7 +1611,7 @@ static JSValue js_std_urlGet(JSContext *ctx, JSValueConst this_val,
         dbuf_free(data_buf);
     if (header_buf)
         dbuf_free(header_buf);
-    JS_FreeValue(ctx, response);
+
     return JS_EXCEPTION;
 }
 
@@ -1999,7 +1999,7 @@ static void free_rw_handler(JSRuntime *rt, JSOSRWHandler *rh)
     int i;
     list_del(&rh->link);
     for(i = 0; i < 2; i++) {
-        JS_FreeValueRT(rt, rh->rw_func[i]);
+
     }
     js_free_rt(rt, rh);
 }
@@ -2019,7 +2019,7 @@ static JSValue js_os_setReadHandler(JSContext *ctx, JSValueConst this_val,
     if (JS_IsNull(func)) {
         rh = find_rh(ts, fd);
         if (rh) {
-            JS_FreeValue(ctx, rh->rw_func[magic]);
+
             rh->rw_func[magic] = JS_NULL;
             if (JS_IsNull(rh->rw_func[0]) &&
                 JS_IsNull(rh->rw_func[1])) {
@@ -2040,8 +2040,8 @@ static JSValue js_os_setReadHandler(JSContext *ctx, JSValueConst this_val,
             rh->rw_func[1] = JS_NULL;
             list_add_tail(&rh->link, &ts->os_rw_handlers);
         }
-        JS_FreeValue(ctx, rh->rw_func[magic]);
-        rh->rw_func[magic] = JS_DupValue(ctx, func);
+
+        rh->rw_func[magic] = func;
     }
     return JS_UNDEFINED;
 }
@@ -2061,7 +2061,7 @@ static JSOSSignalHandler *find_sh(JSThreadState *ts, int sig_num)
 static void free_sh(JSRuntime *rt, JSOSSignalHandler *sh)
 {
     list_del(&sh->link);
-    JS_FreeValueRT(rt, sh->func);
+
     js_free_rt(rt, sh);
 }
 
@@ -2114,8 +2114,8 @@ static JSValue js_os_signal(JSContext *ctx, JSValueConst this_val,
             sh->sig_num = sig_num;
             list_add_tail(&sh->link, &ts->os_signal_handlers);
         }
-        JS_FreeValue(ctx, sh->func);
-        sh->func = JS_DupValue(ctx, func);
+
+        sh->func = func;
         signal(sig_num, os_signal_handler);
     }
     return JS_UNDEFINED;
@@ -2161,7 +2161,7 @@ static JSValue js_os_now(JSContext *ctx, JSValue this_val,
 static void free_timer(JSRuntime *rt, JSOSTimer *th)
 {
     list_del(&th->link);
-    JS_FreeValueRT(rt, th->func);
+
     js_free_rt(rt, th);
 }
 
@@ -2188,7 +2188,7 @@ static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
     else
         ts->next_timer_id++;
     th->timeout = get_time_ms() + delay;
-    th->func = JS_DupValue(ctx, func);
+    th->func = func;
     list_add_tail(&th->link, &ts->os_timers);
     return JS_NewInt32(ctx, th->timer_id);
 }
@@ -2241,17 +2241,17 @@ static JSValue js_os_sleepAsync(JSContext *ctx, JSValueConst this_val,
 
     th = js_mallocz(ctx, sizeof(*th));
     if (!th) {
-        JS_FreeValue(ctx, promise);
-        JS_FreeValue(ctx, resolving_funcs[0]);
-        JS_FreeValue(ctx, resolving_funcs[1]);
+
+
+
         return JS_EXCEPTION;
     }
     th->timer_id = -1;
     th->timeout = get_time_ms() + delay;
-    th->func = JS_DupValue(ctx, resolving_funcs[0]);
+    th->func = resolving_funcs[0];
     list_add_tail(&th->link, &ts->os_timers);
-    JS_FreeValue(ctx, resolving_funcs[0]);
-    JS_FreeValue(ctx, resolving_funcs[1]);
+
+
     return promise;
 }
 
@@ -2260,12 +2260,12 @@ static void call_handler(JSContext *ctx, JSValueConst func)
     JSValue ret, func1;
     /* 'func' might be destroyed when calling itself (if it frees the
        handler), so must take extra care */
-    func1 = JS_DupValue(ctx, func);
+    func1 = func;
     ret = JS_Call(ctx, func1, JS_UNDEFINED, 0, NULL);
-    JS_FreeValue(ctx, func1);
+
     if (JS_IsException(ret))
         js_std_dump_error(ctx);
-    JS_FreeValue(ctx, ret);
+
 }
 
 #ifdef USE_WORKER
@@ -2378,22 +2378,22 @@ static int handle_posted_message(JSRuntime *rt, JSContext *ctx,
             goto fail;
         obj = JS_NewObject(ctx);
         if (JS_IsException(obj)) {
-            JS_FreeValue(ctx, data_obj);
+
             goto fail;
         }
         JS_DefinePropertyValueStr(ctx, obj, "data", data_obj, JS_PROP_C_W_E);
 
         /* 'func' might be destroyed when calling itself (if it frees the
            handler), so must take extra care */
-        func = JS_DupValue(ctx, port->on_message_func);
+        func = port->on_message_func;
         retval = JS_Call(ctx, func, JS_UNDEFINED, 1, (JSValueConst *)&obj);
-        JS_FreeValue(ctx, obj);
-        JS_FreeValue(ctx, func);
+
+
         if (JS_IsException(retval)) {
         fail:
             js_std_dump_error(ctx);
         } else {
-            JS_FreeValue(ctx, retval);
+
         }
         ret = 1;
     } else {
@@ -2442,7 +2442,7 @@ static int js_os_poll(JSContext *ctx)
                 th->func = JS_UNDEFINED;
                 free_timer(rt, th);
                 call_handler(ctx, func);
-                JS_FreeValue(ctx, func);
+
                 return 0;
             } else if (delay < min_delay) {
                 min_delay = delay;
@@ -2552,7 +2552,7 @@ static int js_os_poll(JSContext *ctx)
                 th->func = JS_UNDEFINED;
                 free_timer(rt, th);
                 call_handler(ctx, func);
-                JS_FreeValue(ctx, func);
+
                 return 0;
             } else if (delay < min_delay) {
                 min_delay = delay;
@@ -3015,7 +3015,7 @@ static char **build_envp(JSContext *ctx, JSValueConst obj)
         if (JS_IsException(val))
             goto fail;
         str = JS_ToCString(ctx, val);
-        JS_FreeValue(ctx, val);
+
         if (!str)
             goto fail;
         key = JS_AtomToCString(ctx, tab[i].atom);
@@ -3127,7 +3127,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
     if (JS_IsException(val))
         return JS_EXCEPTION;
     ret = JS_ToUint32(ctx, &exec_argc, val);
-    JS_FreeValue(ctx, val);
+
     if (ret)
         return JS_EXCEPTION;
     /* arbitrary limit to avoid overflow */
@@ -3142,7 +3142,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
         if (JS_IsException(val))
             goto exception;
         str = JS_ToCString(ctx, val);
-        JS_FreeValue(ctx, val);
+
         if (!str)
             goto exception;
         exec_argv[i] = str;
@@ -3166,7 +3166,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
             goto exception;
         if (!JS_IsUndefined(val)) {
             file = JS_ToCString(ctx, val);
-            JS_FreeValue(ctx, val);
+
             if (!file)
                 goto exception;
         }
@@ -3176,7 +3176,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
             goto exception;
         if (!JS_IsUndefined(val)) {
             cwd = JS_ToCString(ctx, val);
-            JS_FreeValue(ctx, val);
+
             if (!cwd)
                 goto exception;
         }
@@ -3189,7 +3189,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
             if (!JS_IsUndefined(val)) {
                 int fd;
                 ret = JS_ToInt32(ctx, &fd, val);
-                JS_FreeValue(ctx, val);
+
                 if (ret)
                     goto exception;
                 std_fds[i] = fd;
@@ -3201,7 +3201,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
             goto exception;
         if (!JS_IsUndefined(val)) {
             envp = build_envp(ctx, val);
-            JS_FreeValue(ctx, val);
+
             if (!envp)
                 goto exception;
         }
@@ -3211,7 +3211,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
             goto exception;
         if (!JS_IsUndefined(val)) {
             ret = JS_ToUint32(ctx, &uid, val);
-            JS_FreeValue(ctx, val);
+
             if (ret)
                 goto exception;
         }
@@ -3221,7 +3221,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
             goto exception;
         if (!JS_IsUndefined(val)) {
             ret = JS_ToUint32(ctx, &gid, val);
-            JS_FreeValue(ctx, val);
+
             if (ret)
                 goto exception;
         }
@@ -3542,7 +3542,7 @@ static void js_free_port(JSRuntime *rt, JSWorkerMessageHandler *port)
 {
     if (port) {
         js_free_message_pipe(port->recv_pipe);
-        JS_FreeValueRT(rt, port->on_message_func);
+
         if (port->link.prev)
             list_del(&port->link);
         js_free_rt(rt, port);
@@ -3619,7 +3619,6 @@ static void *worker_func(void *opaque)
     val = js_std_await(ctx, val);
     if (JS_IsException(val))
         js_std_dump_error(ctx);
-    JS_FreeValue(ctx, val);
 
     js_std_loop(ctx);
 
@@ -3645,7 +3644,7 @@ static JSValue js_worker_ctor_internal(JSContext *ctx, JSValueConst new_target,
             goto fail;
     }
     obj = JS_NewObjectProtoClass(ctx, proto, js_worker_class_id);
-    JS_FreeValue(ctx, proto);
+
     if (JS_IsException(obj))
         goto fail;
     s = js_mallocz(ctx, sizeof(*s));
@@ -3657,7 +3656,7 @@ static JSValue js_worker_ctor_internal(JSContext *ctx, JSValueConst new_target,
     JS_SetOpaque(obj, s);
     return obj;
  fail:
-    JS_FreeValue(ctx, obj);
+
     return JS_EXCEPTION;
 }
 
@@ -3740,7 +3739,7 @@ static JSValue js_worker_ctor(JSContext *ctx, JSValueConst new_target,
         js_free_message_pipe(args->send_pipe);
         free(args);
     }
-    JS_FreeValue(ctx, obj);
+
     return JS_EXCEPTION;
 }
 
@@ -3841,8 +3840,8 @@ static JSValue js_worker_set_onmessage(JSContext *ctx, JSValueConst this_val,
             list_add_tail(&port->link, &ts->port_list);
             worker->msg_handler = port;
         }
-        JS_FreeValue(ctx, port->on_message_func);
-        port->on_message_func = JS_DupValue(ctx, func);
+
+        port->on_message_func = func;
     }
     return JS_UNDEFINED;
 }
@@ -3855,7 +3854,7 @@ static JSValue js_worker_get_onmessage(JSContext *ctx, JSValueConst this_val)
         return JS_EXCEPTION;
     port = worker->msg_handler;
     if (port) {
-        return JS_DupValue(ctx, port->on_message_func);
+        return port->on_message_func;
     } else {
         return JS_NULL;
     }
@@ -4090,7 +4089,6 @@ void js_std_add_helpers(JSContext *ctx, int argc, char **argv)
     JS_SetPropertyStr(ctx, global_obj, "__loadScript",
                       JS_NewCFunction(ctx, js_loadScript, "__loadScript", 1));
 
-    JS_FreeValue(ctx, global_obj);
 }
 
 void js_std_init_handlers(JSRuntime *rt)
@@ -4147,8 +4145,8 @@ void js_std_free_handlers(JSRuntime *rt)
 
     list_for_each_safe(el, el1, &ts->rejected_promise_list) {
         JSRejectedPromiseEntry *rp = list_entry(el, JSRejectedPromiseEntry, link);
-        JS_FreeValueRT(rt, rp->promise);
-        JS_FreeValueRT(rt, rp->reason);
+
+
         free(rp);
     }
 
@@ -4180,7 +4178,7 @@ void js_std_dump_error(JSContext *ctx)
 
     exception_val = JS_GetException(ctx);
     js_std_dump_error1(ctx, exception_val);
-    JS_FreeValue(ctx, exception_val);
+
 }
 
 static JSRejectedPromiseEntry *find_rejected_promise(JSContext *ctx, JSThreadState *ts,
@@ -4210,8 +4208,8 @@ void js_std_promise_rejection_tracker(JSContext *ctx, JSValueConst promise,
         if (!rp) {
             rp = malloc(sizeof(*rp));
             if (rp) {
-                rp->promise = JS_DupValue(ctx, promise);
-                rp->reason = JS_DupValue(ctx, reason);
+                rp->promise = promise;
+                rp->reason = reason;
                 list_add_tail(&rp->link, &ts->rejected_promise_list);
             }
         }
@@ -4219,8 +4217,8 @@ void js_std_promise_rejection_tracker(JSContext *ctx, JSValueConst promise,
         /* the rejection is handled, so the entry can be removed if present */
         rp = find_rejected_promise(ctx, ts, promise);
         if (rp) {
-            JS_FreeValue(ctx, rp->promise);
-            JS_FreeValue(ctx, rp->reason);
+
+
             list_del(&rp->link);
             free(rp);
         }
@@ -4282,11 +4280,11 @@ JSValue js_std_await(JSContext *ctx, JSValue obj)
         state = JS_PromiseState(ctx, obj);
         if (state == JS_PROMISE_FULFILLED) {
             ret = JS_PromiseResult(ctx, obj);
-            JS_FreeValue(ctx, obj);
+
             break;
         } else if (state == JS_PROMISE_REJECTED) {
             ret = JS_Throw(ctx, JS_PromiseResult(ctx, obj));
-            JS_FreeValue(ctx, obj);
+
             break;
         } else if (state == JS_PROMISE_PENDING) {
             int err;
@@ -4320,11 +4318,11 @@ void js_std_eval_binary(JSContext *ctx, const uint8_t *buf, size_t buf_len,
         if (JS_VALUE_GET_TAG(obj) == JS_TAG_MODULE) {
             js_module_set_import_meta(ctx, obj, FALSE, FALSE);
         }
-        JS_FreeValue(ctx, obj);
+
     } else {
         if (JS_VALUE_GET_TAG(obj) == JS_TAG_MODULE) {
             if (JS_ResolveModule(ctx, obj) < 0) {
-                JS_FreeValue(ctx, obj);
+
                 goto exception;
             }
             js_module_set_import_meta(ctx, obj, FALSE, TRUE);
@@ -4338,7 +4336,7 @@ void js_std_eval_binary(JSContext *ctx, const uint8_t *buf, size_t buf_len,
             js_std_dump_error(ctx);
             exit(1);
         }
-        JS_FreeValue(ctx, val);
+
     }
 }
 

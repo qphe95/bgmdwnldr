@@ -40,7 +40,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     //TODO targets with JS_ParseJSON, JS_ReadObject
     if (!JS_IsException(val)) {
         js_std_loop(ctx);
-        JS_FreeValue(ctx, val);
+
     }
     js_std_free_handlers(rt);
     JS_FreeContext(ctx);

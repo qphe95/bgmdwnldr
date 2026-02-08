@@ -2940,7 +2940,7 @@ static void JS_FreeAtomStruct(JSRuntime *rt, JSAtomStruct *p)
 {
 #if 0   /* JS_ATOM_NULL is not refcounted: __JS_AtomIsConst() includes 0 */
     if (unlikely(i == JS_ATOM_NULL)) {
-        p/* ref_count removed - using mark-and-sweep GC */
+        
         return;
     }
 #endif
@@ -4464,7 +4464,7 @@ static JSValue js_new_string_rope(JSContext *ctx, JSValue op1, JSValue op2)
     r = js_malloc(ctx, sizeof(*r));
     if (!r)
         goto fail;
-    r/* ref_count removed - using mark-and-sweep GC */
+    
     r->len = len;
     r->is_wide_char = is_wide_char;
     r->depth = depth + 1;
@@ -4800,7 +4800,7 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
     if (!sh_alloc)
         return NULL;
     sh = get_shape_from_alloc(sh_alloc, hash_size);
-    sh/* ref_count removed - using mark-and-sweep GC */
+    
     add_gc_object(rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
     if (proto)
         JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, proto));
@@ -11060,7 +11060,7 @@ static JSBigInt *js_bigint_new(JSContext *ctx, int len)
     r = js_malloc(ctx, sizeof(JSBigInt) + len * sizeof(js_limb_t));
     if (!r)
         return NULL;
-    r/* ref_count removed - using mark-and-sweep GC */
+    
     r->len = len;
     return r;
 }
@@ -11068,7 +11068,7 @@ static JSBigInt *js_bigint_new(JSContext *ctx, int len)
 static JSBigInt *js_bigint_set_si(JSBigIntBuf *buf, js_slimb_t a)
 {
     JSBigInt *r = (JSBigInt *)buf->big_int_buf;
-    r/* ref_count removed - using mark-and-sweep GC */ /* fail safe */
+     /* fail safe */
     r->len = 1;
     r->tab[0] = a;
     return r;
@@ -11080,7 +11080,7 @@ static JSBigInt *js_bigint_set_si64(JSBigIntBuf *buf, int64_t a)
     return js_bigint_set_si(buf, a);
 #else
     JSBigInt *r = (JSBigInt *)buf->big_int_buf;
-    r/* ref_count removed - using mark-and-sweep GC */ /* fail safe */
+     /* fail safe */
     if (a >= INT32_MIN && a <= INT32_MAX) {
         r->len = 1;
         r->tab[0] = a;
@@ -20220,7 +20220,7 @@ static JSAsyncFunctionState *async_func_init(JSContext *ctx,
     if (!s)
         return NULL;
     memset(s, 0, sizeof(*s));
-    s/* ref_count removed - using mark-and-sweep GC */
+    
     add_gc_object(ctx->rt, &s->header, JS_GC_OBJ_TYPE_ASYNC_FUNCTION);
 
     sf = &s->frame;
@@ -29144,7 +29144,7 @@ static JSModuleDef *js_new_module_def(JSContext *ctx, JSAtom name)
         JS_FreeAtom(ctx, name);
         return NULL;
     }
-    m/* ref_count removed - using mark-and-sweep GC */
+    
     add_gc_object(ctx->rt, &m->header, JS_GC_OBJ_TYPE_MODULE);
     m->module_name = name;
     m->module_ns = JS_UNDEFINED;
@@ -35616,7 +35616,7 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     b = js_mallocz(ctx, function_size);
     if (!b)
         goto fail;
-    b/* ref_count removed - using mark-and-sweep GC */
+    
 
     b->byte_code_buf = (void *)((uint8_t*)b + byte_code_offset);
     b->byte_code_len = fd->byte_code.size;
@@ -38295,7 +38295,7 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
         return JS_EXCEPTION;
 
     memcpy(b, &bc, offsetof(JSFunctionBytecode, debug));
-    b/* ref_count removed - using mark-and-sweep GC */
+    
     if (local_count != 0) {
         b->vardefs = (void *)((uint8_t*)b + vardefs_offset);
     }

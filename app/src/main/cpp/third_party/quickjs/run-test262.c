@@ -494,7 +494,6 @@ static void *agent_start(void *arg)
     agent->script = NULL;
     if (JS_IsException(ret_val))
         js_std_dump_error(ctx);
-    JS_FreeValue(ctx, ret_val);
 
     for(;;) {
         ret = JS_ExecutePendingJob(JS_GetRuntime(ctx), NULL);
@@ -523,17 +522,16 @@ static void *agent_start(void *arg)
                 args[1] = JS_NewInt32(ctx, agent->broadcast_val);
                 ret_val = JS_Call(ctx, agent->broadcast_func, JS_UNDEFINED,
                                   2, (JSValueConst *)args);
-                JS_FreeValue(ctx, args[0]);
-                JS_FreeValue(ctx, args[1]);
+
+
                 if (JS_IsException(ret_val))
                     js_std_dump_error(ctx);
-                JS_FreeValue(ctx, ret_val);
-                JS_FreeValue(ctx, agent->broadcast_func);
+
+
                 agent->broadcast_func = JS_UNDEFINED;
             }
         }
     }
-    JS_FreeValue(ctx, agent->broadcast_func);
 
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
@@ -577,7 +575,7 @@ static void js_agent_free(JSContext *ctx)
     list_for_each_safe(el, el1, &agent_list) {
         agent = list_entry(el, Test262Agent, link);
         pthread_join(agent->tid, NULL);
-        JS_FreeValue(ctx, agent->broadcast_sab);
+
         list_del(&agent->link);
         free(agent);
     }
@@ -632,7 +630,7 @@ static JSValue js_agent_broadcast(JSContext *ctx, JSValue this_val,
         agent->broadcast_pending = TRUE;
         /* the shared array buffer is used by the thread, so increment
            its refcount */
-        agent->broadcast_sab = JS_DupValue(ctx, sab);
+        agent->broadcast_sab = sab;
         agent->broadcast_sab_buf = buf;
         agent->broadcast_sab_size = buf_size;
         agent->broadcast_val = val;
@@ -654,8 +652,8 @@ static JSValue js_agent_receiveBroadcast(JSContext *ctx, JSValue this_val,
         return JS_ThrowTypeError(ctx, "must be called inside an agent");
     if (!JS_IsFunction(ctx, argv[0]))
         return JS_ThrowTypeError(ctx, "expecting function");
-    JS_FreeValue(ctx, agent->broadcast_func);
-    agent->broadcast_func = JS_DupValue(ctx, argv[0]);
+
+    agent->broadcast_func = argv[0];
     return JS_UNDEFINED;
 }
 
@@ -803,7 +801,7 @@ static JSValue add_helpers1(JSContext *ctx)
 #endif
 
     JS_SetPropertyStr(ctx, obj262, "global",
-                      JS_DupValue(ctx, global_obj));
+                      global_obj);
     JS_SetPropertyStr(ctx, obj262, "createRealm",
                       JS_NewCFunction(ctx, js_createRealm,
                                       "createRealm", 0));
@@ -813,15 +811,14 @@ static JSValue add_helpers1(JSContext *ctx)
     JS_SetPropertyStr(ctx, obj262, "gc",
                       JS_NewCFunction(ctx, js_gc, "gc", 0));
 
-    JS_SetPropertyStr(ctx, global_obj, "$262", JS_DupValue(ctx, obj262));
+    JS_SetPropertyStr(ctx, global_obj, "$262", obj262);
 
-    JS_FreeValue(ctx, global_obj);
     return obj262;
 }
 
 static void add_helpers(JSContext *ctx)
 {
-    JS_FreeValue(ctx, add_helpers1(ctx));
+
 }
 
 static char *load_file(const char *filename, size_t *lenp)
@@ -881,7 +878,7 @@ static JSModuleDef *js_module_loader_test(JSContext *ctx,
             return NULL;
         m = JS_NewCModule(ctx, module_name, json_module_init_test);
         if (!m) {
-            JS_FreeValue(ctx, val);
+
             return NULL;
         }
         /* only export the "default" symbol which will contain the JSON object */
@@ -897,7 +894,7 @@ static JSModuleDef *js_module_loader_test(JSContext *ctx,
             return NULL;
         /* the module is already referenced, so we must free it */
         m = JS_VALUE_GET_PTR(func_val);
-        JS_FreeValue(ctx, func_val);
+
     }
     return m;
 }
@@ -1267,7 +1264,7 @@ static int eval_buf(JSContext *ctx, const char *buf, size_t buf_len,
         if (ret_promise) {
             promise = res_val;
         } else {
-            JS_FreeValue(ctx, res_val);
+
         }
         for(;;) {
             ret = JS_ExecutePendingJob(JS_GetRuntime(ctx), NULL);
@@ -1295,7 +1292,7 @@ static int eval_buf(JSContext *ctx, const char *buf, size_t buf_len,
                 break;
             }
         }
-        JS_FreeValue(ctx, promise);
+
     }
 
     if (JS_IsException(res_val)) {
@@ -1333,8 +1330,8 @@ static int eval_buf(JSContext *ctx, const char *buf, size_t buf_len,
                     JS_FreeCString(ctx, stack_str);
                 }
             }
-            JS_FreeValue(ctx, stack);
-            JS_FreeValue(ctx, name);
+
+
         }
         if (is_negative) {
             ret = 0;
@@ -1423,13 +1420,13 @@ static int eval_buf(JSContext *ctx, const char *buf, size_t buf_len,
                 }
             }
         }
-        JS_FreeValue(ctx, msg_val);
+
         JS_FreeCString(ctx, msg);
         free(s);
     }
     JS_FreeCString(ctx, error_name);
-    JS_FreeValue(ctx, exception_val);
-    JS_FreeValue(ctx, res_val);
+
+
     return ret;
 }
 
@@ -1937,7 +1934,7 @@ int run_test262_harness_test(const char *filename, BOOL is_module)
         if (is_module) {
             promise = res_val;
         } else {
-            JS_FreeValue(ctx, res_val);
+
         }
         for(;;) {
             ret = JS_ExecutePendingJob(JS_GetRuntime(ctx), NULL);
@@ -1957,7 +1954,7 @@ int run_test262_harness_test(const char *filename, BOOL is_module)
                 ret_code = 1;
             }
         }
-        JS_FreeValue(ctx, promise);
+
     }
     free(buf);
 #ifdef CONFIG_AGENT

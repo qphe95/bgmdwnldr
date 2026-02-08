@@ -71,7 +71,7 @@ static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
     } else {
         ret = 0;
     }
-    JS_FreeValue(ctx, val);
+
     return ret;
 }
 

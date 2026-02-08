@@ -745,7 +745,7 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, JSValu
                     if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
                         JSValue args[1] = { js_node };
                         JS_Call(ctx, appendChild, parent, 1, args);
-                        JS_FreeValue(ctx, appendChild);
+
                     }
                 }
             }
@@ -764,9 +764,9 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, JSValu
                         JSValue push = JS_GetPropertyStr(ctx, childNodes, "push");
                         JSValue args[1] = { js_node };
                         JS_Call(ctx, push, childNodes, 1, args);
-                        JS_FreeValue(ctx, push);
+
                     }
-                    JS_FreeValue(ctx, childNodes);
+
                 }
             }
             break;
@@ -830,7 +830,7 @@ JSValue html_create_js_document(JSContext *ctx, HtmlDocument *doc) {
     }
     
     JS_SetPropertyStr(ctx, js_doc, "body", body_element);
-    JS_SetPropertyStr(ctx, doc_element, "body", JS_DupValue(ctx, body_element));
+    JS_SetPropertyStr(ctx, doc_element, "body", body_element);
     
     /* Create head element reference */
     JSValue head_element = JS_NULL;
@@ -848,7 +848,7 @@ JSValue html_create_js_document(JSContext *ctx, HtmlDocument *doc) {
     }
     
     JS_SetPropertyStr(ctx, js_doc, "head", head_element);
-    JS_SetPropertyStr(ctx, doc_element, "head", JS_DupValue(ctx, head_element));
+    JS_SetPropertyStr(ctx, doc_element, "head", head_element);
     
     /* Add document methods */
     /* Note: createElement is provided by js_quickjs.c */
@@ -879,9 +879,7 @@ bool html_create_dom_in_js(JSContext *ctx, HtmlDocument *doc) {
     if (!JS_IsNull(doc_elem) && !JS_IsUndefined(doc_elem)) {
         JS_SetPropertyStr(ctx, global, "documentElement", doc_elem);
     }
-    
-    JS_FreeValue(ctx, global);
-    
+
     LOG_INFO("DOM created successfully in JS context");
     return true;
 }

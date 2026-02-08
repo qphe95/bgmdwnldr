@@ -39,7 +39,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     //TODO target with JS_ParseJSON
     if (JS_IsException(obj)) {
         js_std_free_handlers(rt);
-        JS_FreeValue(ctx, obj);
+
         JS_FreeContext(ctx);
         JS_FreeRuntime(rt);
         return 0;
@@ -47,7 +47,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     obj = js_std_await(ctx, obj);
     size_t bytecode_size;
     uint8_t* bytecode = JS_WriteObject(ctx, &bytecode_size, obj, JS_WRITE_OBJ_BYTECODE);
-    JS_FreeValue(ctx, obj);
+
     if (!bytecode) {
         js_std_free_handlers(rt);
         JS_FreeContext(ctx);
@@ -70,7 +70,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     JSValue val;
     if (JS_VALUE_GET_TAG(obj) == JS_TAG_MODULE) {
         if (JS_ResolveModule(ctx, obj) < 0) {
-            JS_FreeValue(ctx, obj);
+
             js_std_free_handlers(rt);
             JS_FreeContext(ctx);
             JS_FreeRuntime(rt);
@@ -84,7 +84,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     } else {
         js_std_loop(ctx);
     }
-    JS_FreeValue(ctx, val);
+
     js_std_free_handlers(rt);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);

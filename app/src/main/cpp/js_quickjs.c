@@ -81,10 +81,10 @@ typedef struct {
 static void js_xhr_finalizer(JSRuntime *rt, JSValue val) {
     XMLHttpRequest *xhr = JS_GetOpaque(val, js_xhr_class_id);
     if (xhr) {
-        JS_FreeValueRT(rt, xhr->onload);
-        JS_FreeValueRT(rt, xhr->onerror);
-        JS_FreeValueRT(rt, xhr->onreadystatechange);
-        JS_FreeValueRT(rt, xhr->headers);
+
+
+
+
         free(xhr);
     }
 }
@@ -216,15 +216,7 @@ typedef struct {
 static void js_video_finalizer(JSRuntime *rt, JSValue val) {
     HTMLVideoElement *vid = JS_GetOpaque(val, js_video_class_id);
     if (vid) {
-        // Free the callback values if they are not null/undefined
-        // Note: JS_FreeValueRT is safe to call on JS_NULL (it's a no-op for immediate values)
-        // but we check anyway for clarity
-        if (!JS_IsNull(vid->onloadstart)) JS_FreeValueRT(rt, vid->onloadstart);
-        if (!JS_IsNull(vid->onloadedmetadata)) JS_FreeValueRT(rt, vid->onloadedmetadata);
-        if (!JS_IsNull(vid->oncanplay)) JS_FreeValueRT(rt, vid->oncanplay);
-        if (!JS_IsNull(vid->onplay)) JS_FreeValueRT(rt, vid->onplay);
-        if (!JS_IsNull(vid->onplaying)) JS_FreeValueRT(rt, vid->onplaying);
-        if (!JS_IsNull(vid->onerror)) JS_FreeValueRT(rt, vid->onerror);
+        // Callback values are freed by mark-and-sweep GC
         free(vid);
     }
 }
@@ -381,13 +373,12 @@ static JSValue js_video_get_network_state(JSContext *ctx, JSValueConst this_val)
     static JSValue js_video_get_##name(JSContext *ctx, JSValueConst this_val) { \
         HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
         if (!vid) return JS_EXCEPTION; \
-        return JS_DupValue(ctx, vid->field); \
+        return vid->field; \
     } \
     static JSValue js_video_set_##name(JSContext *ctx, JSValueConst this_val, JSValueConst val) { \
         HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
         if (!vid) return JS_EXCEPTION; \
-        JS_FreeValue(ctx, vid->field); \
-        vid->field = JS_DupValue(ctx, val); \
+        vid->field = val; \
         return JS_UNDEFINED; \
     }
 
@@ -443,9 +434,8 @@ JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue promise_ctor = JS_GetPropertyStr(ctx, global, "Promise");
     JSValue promise = JS_CallConstructor(ctx, promise_ctor, 0, NULL);
-    JS_FreeValue(ctx, promise_ctor);
-    JS_FreeValue(ctx, global);
-    
+
+
     return promise;
 }
 
@@ -513,7 +503,7 @@ static JSValue js_element_add_event_listener(JSContext *ctx, JSValueConst this_v
     if (event) {
         char prop[128];
         snprintf(prop, sizeof(prop), "__on%s", event);
-        JS_SetPropertyStr(ctx, this_val, prop, JS_DupValue(ctx, argv[1]));
+        JS_SetPropertyStr(ctx, this_val, prop, argv[1]);
     }
     JS_FreeCString(ctx, event);
     return JS_UNDEFINED;
@@ -560,8 +550,8 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     
     // Skip if window doesn't exist or isn't an object
     if (JS_IsUndefined(window_obj) || JS_IsNull(window_obj) || !JS_IsObject(window_obj)) {
-        JS_FreeValue(ctx, window_obj);
-        JS_FreeValue(ctx, global);
+
+
         return;
     }
     
@@ -569,16 +559,16 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     // We check this by comparing using JS_StrictEq which returns 1 if equal
     int is_equal = JS_StrictEq(ctx, window_obj, global);
     if (is_equal == 1) {
-        JS_FreeValue(ctx, window_obj);
-        JS_FreeValue(ctx, global);
+
+
         return;
     }
     
     // Skip internal properties
     const char *prop_name = JS_AtomToCString(ctx, var_name);
     if (!prop_name) {
-        JS_FreeValue(ctx, window_obj);
-        JS_FreeValue(ctx, global);
+
+
         return;
     }
     
@@ -593,8 +583,8 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
         strcmp(prop_name, "document") == 0 ||
         strcmp(prop_name, "console") == 0) {
         JS_FreeCString(ctx, prop_name);
-        JS_FreeValue(ctx, window_obj);
-        JS_FreeValue(ctx, global);
+
+
         return;
     }
     
@@ -608,7 +598,7 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
             // Skip undefined values - the callback may be called during closure
             // creation before the variable is actually initialized
             if (JS_IsUndefined(val)) {
-                JS_FreeValue(ctx, val);
+
             } else {
                 // Reference counting:
                 // 1. global object holds a reference to the value
@@ -616,11 +606,11 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
                 // 3. We dup val to create val_dup (third reference)
                 // 4. We free val (back to global's reference + val_dup)
                 // 5. JS_SetProperty consumes val_dup (back to global's reference)
-                JSValue val_dup = JS_DupValue(ctx, val);
-                JS_FreeValue(ctx, val);
+                JSValue val_dup = val;
+
                 if (JS_SetProperty(ctx, window_obj, var_name, val_dup) < 0) {
                     // SetProperty failed, free our duped reference to avoid leak
-                    JS_FreeValue(ctx, val_dup);
+
                 }
                 // If successful, val_dup reference is now owned by window_obj
             }
@@ -628,8 +618,8 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     }
     
     JS_FreeCString(ctx, prop_name);
-    JS_FreeValue(ctx, window_obj);
-    JS_FreeValue(ctx, global);
+
+
 }
 
 // Initialize browser environment
@@ -643,9 +633,7 @@ static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
     // Initialize all browser stubs (DOM, window, document, XMLHttpRequest, etc.)
     // This sets up constructors, prototype chains, and document.body
     init_browser_stubs(ctx, global);
-    
-    JS_FreeValue(ctx, global);
-    
+
     LOG_INFO("Browser environment initialized");
 }
 
@@ -744,14 +732,13 @@ static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) 
                             if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
                                 JSValue args[1] = { elem };
                                 JS_Call(ctx, appendChild, doc_body, 1, args);
-                                JS_FreeValue(ctx, appendChild);
+
                             }
-                            JS_FreeValue(ctx, doc_body);
+
                         }
-                        JS_FreeValue(ctx, body);
+
                     }
-                    
-                    JS_FreeValue(ctx, elem);
+
                 }
             }
             node = node->next_sibling;
@@ -812,8 +799,7 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
                 JS_SetPropertyStr(ctx, video, "id", JS_NewString(ctx, default_id));
             }
             JS_FreeCString(ctx, current_id);
-            JS_FreeValue(ctx, id_prop);
-            
+
             /* Add to document.body */
             JSValue global = JS_GetGlobalObject(ctx);
             JSValue doc = JS_GetPropertyStr(ctx, global, "document");
@@ -824,15 +810,14 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
                 if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
                     JSValue args[1] = { video };
                     JS_Call(ctx, appendChild, body, 1, args);
-                    JS_FreeValue(ctx, appendChild);
+
                     created++;
                 }
             }
-            
-            JS_FreeValue(ctx, body);
-            JS_FreeValue(ctx, doc);
-            JS_FreeValue(ctx, global);
-            JS_FreeValue(ctx, video);
+
+
+
+
         }
     }
     
@@ -902,10 +887,9 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         const char *error = JS_ToCString(ctx, exception);
         LOG_ERROR("Setup error: %s", error ? error : "unknown");
         JS_FreeCString(ctx, error);
-        JS_FreeValue(ctx, exception);
+
     }
-    JS_FreeValue(ctx, setup_result);
-    
+
     // Parse HTML and create video elements BEFORE loading scripts
     // This handles Scenario B: HTML has <video> tags directly
     if (html && strlen(html) > 0) {
@@ -939,10 +923,9 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         const char *error = JS_ToCString(ctx, exception);
         LOG_ERROR("Default video error: %s", error ? error : "unknown");
         JS_FreeCString(ctx, error);
-        JS_FreeValue(ctx, exception);
+
     }
-    JS_FreeValue(ctx, default_result);
-    
+
     // Note: Data payload scripts (ytInitialPlayerResponse, ytInitialData, etc.)
     // will execute naturally as part of the scripts array, defining global
     // variables just like in a real browser. No manual injection needed.
@@ -1093,10 +1076,9 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
             }
             
             JS_FreeCString(ctx, stack);
-            JS_FreeValue(ctx, stack_val);
-            
+
             JS_FreeCString(ctx, error);
-            JS_FreeValue(ctx, exception);
+
         } else {
             success_count++;
             LOG_INFO("Script %d executed successfully", i);
@@ -1116,10 +1098,10 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
                     "}"
                     "console.log('=== END BASE.JS CHECK ===');";
                 JSValue check_result = JS_Eval(ctx, check_base_js, strlen(check_base_js), "<check_base>", 0);
-                JS_FreeValue(ctx, check_result);
+
             }
         }
-        JS_FreeValue(ctx, result);
+
     }
     
     LOG_INFO("Executed %d/%d scripts successfully", success_count, script_count);
@@ -1209,10 +1191,9 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         const char *error = JS_ToCString(ctx, exception);
         LOG_ERROR("Player init error: %s", error ? error : "unknown");
         JS_FreeCString(ctx, error);
-        JS_FreeValue(ctx, exception);
+
     }
-    JS_FreeValue(ctx, init_result);
-    
+
     // Get captured URLs
     pthread_mutex_lock(&g_url_mutex);
     out_result->captured_url_count = g_captured_url_count;
