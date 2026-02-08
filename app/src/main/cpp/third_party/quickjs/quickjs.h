@@ -675,12 +675,6 @@ JSValue JS_ThrowOutOfMemory(JSContext *ctx);
 /* Note: Reference counting functions (JS_FreeValue, JS_DupValue, etc.) removed.
    Using mark-and-sweep GC only. */
 
-/* No-op macros for removed reference counting functions */
-#define JS_FreeValue(ctx, v) do { } while(0)
-#define JS_FreeValueRT(rt, v) do { } while(0)
-#define JS_DupValue(ctx, v) (v)
-#define JS_DupValueRT(rt, v) (v)
-
 JS_BOOL JS_StrictEq(JSContext *ctx, JSValueConst op1, JSValueConst op2);
 JS_BOOL JS_SameValue(JSContext *ctx, JSValueConst op1, JSValueConst op2);
 JS_BOOL JS_SameValueZero(JSContext *ctx, JSValueConst op1, JSValueConst op2);
