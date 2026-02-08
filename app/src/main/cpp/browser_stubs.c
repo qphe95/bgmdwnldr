@@ -532,7 +532,9 @@ static JSValue js_object_get_own_property_descriptor(JSContext *ctx, JSValueCons
     if (!prop) return JS_UNDEFINED;
     
     // Check if property exists
-    int has_prop = JS_HasProperty(ctx, obj, JS_NewAtom(ctx, prop));
+    JSAtom prop_atom = JS_NewAtom(ctx, prop);
+    int has_prop = JS_HasProperty(ctx, obj, prop_atom);
+    JS_FreeAtom(ctx, prop_atom);
     if (!has_prop) {
         JS_FreeCString(ctx, prop);
         return JS_UNDEFINED;
@@ -691,7 +693,9 @@ static JSValue js_reflect_has(JSContext *ctx, JSValueConst this_val, int argc, J
     const char *prop = JS_ToCString(ctx, argv[1]);
     if (!prop) return JS_FALSE;
     
-    int has_prop = JS_HasProperty(ctx, target, JS_NewAtom(ctx, prop));
+    JSAtom prop_atom = JS_NewAtom(ctx, prop);
+    int has_prop = JS_HasProperty(ctx, target, prop_atom);
+    JS_FreeAtom(ctx, prop_atom);
     JS_FreeCString(ctx, prop);
     
     return JS_NewBool(ctx, has_prop);
@@ -2866,8 +2870,11 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         JS_NewCFunction(ctx, js_element_attach_shadow, "attachShadow", 1));
     // shadowRoot getter
     JSValue getter = JS_NewCFunction(ctx, js_element_get_shadow_root, "get shadowRoot", 0);
-    JS_DefinePropertyGetSet(ctx, element_proto, JS_NewAtom(ctx, "shadowRoot"),
+    JSAtom shadow_root_atom = JS_NewAtom(ctx, "shadowRoot");
+    JS_DefinePropertyGetSet(ctx, element_proto, shadow_root_atom,
         getter, JS_UNDEFINED, JS_PROP_ENUMERABLE);
+    JS_FreeAtom(ctx, shadow_root_atom);
+    JS_FreeValue(ctx, getter);  // Free the getter function object
     // querySelector and querySelectorAll
     JS_SetPropertyStr(ctx, element_proto, "querySelector",
         JS_NewCFunction(ctx, js_element_querySelector, "querySelector", 1));
@@ -2877,15 +2884,12 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, element_proto, "animate",
         JS_NewCFunction(ctx, js_element_animate, "animate", 2));
     
-    // Free prototype references
-    JS_FreeValue(ctx, html_element_proto);
-    JS_FreeValue(ctx, html_element_ctor);
-    JS_FreeValue(ctx, element_proto);
-    JS_FreeValue(ctx, element_ctor);
-    JS_FreeValue(ctx, node_proto);
-    JS_FreeValue(ctx, node_ctor);
-    JS_FreeValue(ctx, event_target_proto);
-    JS_FreeValue(ctx, event_target_ctor);
+    // NOTE: We do NOT free the prototype and constructor objects here.
+    // They are still referenced by:
+    // 1. The global object (window.EventTarget, window.Node, etc.)
+    // 2. Each other through prototype chains (__proto__ links)
+    // 3. Later use in this function (e.g., JS_CallConstructor for doc_element)
+    // QuickJS garbage collector will clean them up when the context is freed.
     
     // ===== Window Properties =====
     DEF_PROP_INT(ctx, window, "innerWidth", 1920);
