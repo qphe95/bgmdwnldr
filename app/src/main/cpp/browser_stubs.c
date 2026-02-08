@@ -2754,7 +2754,8 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, node_ctor, "prototype", node_proto);
     JS_SetPropertyStr(ctx, global, "Node", node_ctor);
     JS_FreeValue(ctx, node_ctor);
-    JS_FreeValue(ctx, event_target_proto);  // now owned by Node.prototype.__proto__
+    // Note: event_target_proto is kept alive for adding methods below
+    // It will be freed after we add methods to it
     // Keep node_proto for Element and DocumentFragment
     
     // Element constructor
@@ -2766,7 +2767,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, global, "Element", element_ctor);
     // DON'T free element_ctor yet - we need it for document.documentElement below
     // Keep element_proto for HTMLElement
-    // node_proto is now referenced by Element.prototype.__proto__
+    // Note: node_proto is kept alive for adding methods below
     
     // HTMLElement constructor
     JSValue html_element_ctor = JS_NewCFunction2(ctx, js_dummy_function, "HTMLElement", 0, JS_CFUNC_constructor, 0);
@@ -2776,8 +2777,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, html_element_ctor, "prototype", html_element_proto);
     JS_SetPropertyStr(ctx, global, "HTMLElement", html_element_ctor);
     // DON'T free html_element_ctor yet - we need it for document.body below
-    // Free element_proto - now owned by HTMLElement.prototype.__proto__
-    JS_FreeValue(ctx, element_proto);
+    // element_proto will be freed after adding methods below
     // Keep html_element_ctor and html_element_proto for document.body
     
     // DocumentFragment constructor (needs node_proto)
@@ -2789,7 +2789,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, global, "DocumentFragment", doc_fragment_ctor);
     JS_FreeValue(ctx, doc_fragment_ctor);
     JS_FreeValue(ctx, doc_fragment_proto);
-    JS_FreeValue(ctx, node_proto);  // finally free node_proto
+    // node_proto will be freed after adding methods below
     
     // ===== EventTarget prototype methods =====
     JS_SetPropertyStr(ctx, event_target_proto, "addEventListener",
@@ -2800,6 +2800,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         JS_NewCFunction(ctx, js_event_target_dispatchEvent, "dispatchEvent", 1));
     
     // ===== Node prototype methods =====
+    // Note: node_proto is still valid here
     JS_SetPropertyStr(ctx, node_proto, "appendChild",
         JS_NewCFunction(ctx, js_node_appendChild, "appendChild", 1));
     JS_SetPropertyStr(ctx, node_proto, "insertBefore",
@@ -2818,10 +2819,11 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     // shadowRoot getter
     JSValue getter = JS_NewCFunction(ctx, js_element_get_shadow_root, "get shadowRoot", 0);
     JSAtom shadow_root_atom = JS_NewAtom(ctx, "shadowRoot");
+    // Note: JS_DefinePropertyGetSet takes ownership of the getter/setter values.
+    // Do NOT free getter after passing it - the property now owns it.
     JS_DefinePropertyGetSet(ctx, element_proto, shadow_root_atom,
         getter, JS_UNDEFINED, JS_PROP_ENUMERABLE);
     JS_FreeAtom(ctx, shadow_root_atom);
-    JS_FreeValue(ctx, getter);  // Free the getter function object
     // querySelector and querySelectorAll
     JS_SetPropertyStr(ctx, element_proto, "querySelector",
         JS_NewCFunction(ctx, js_element_querySelector, "querySelector", 1));
@@ -2831,7 +2833,13 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, element_proto, "animate",
         JS_NewCFunction(ctx, js_element_animate, "animate", 2));
     
-    // NOTE: We do NOT free the prototype and constructor objects here.
+    // Now safe to free prototypes - all methods have been added
+    // These are kept alive by prototype chains and global references
+    JS_FreeValue(ctx, event_target_proto);
+    JS_FreeValue(ctx, node_proto);
+    JS_FreeValue(ctx, element_proto);
+    
+    // NOTE: We do NOT free the constructor objects here.
     // They are still referenced by:
     // 1. The global object (window.EventTarget, window.Node, etc.)
     // 2. Each other through prototype chains (__proto__ links)
