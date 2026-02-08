@@ -5671,18 +5671,11 @@ static void js_autoinit_mark(JSRuntime *rt, JSProperty *pr,
 static void free_property(JSRuntime *rt, JSProperty *pr, int prop_flags)
 {
     if (unlikely(prop_flags & JS_PROP_TMASK)) {
-        if ((prop_flags & JS_PROP_TMASK) == JS_PROP_GETSET) {
-            if (pr->u.getset.getter)
-                
-            if (pr->u.getset.setter)
-                
-        } else if ((prop_flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
+        if ((prop_flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
             free_var_ref(rt, pr->u.var_ref);
         } else if ((prop_flags & JS_PROP_TMASK) == JS_PROP_AUTOINIT) {
             js_autoinit_free(rt, pr);
         }
-    } else {
-        
     }
 }
 
@@ -7557,7 +7550,7 @@ static int JS_OrdinaryIsInstanceOf(JSContext *ctx, JSValueConst val,
             /* slow case if exotic object in the prototype chain */
             if (unlikely(p->is_exotic && !p->fast_array)) {
                 JSValue obj1;
-                obj1 = JS_MKPTR(JS_TAG_OBJECT, (JSObject *p));
+                obj1 = JS_MKPTR(JS_TAG_OBJECT, (JSObject *)p);
                 for(;;) {
                     obj1 = JS_GetPrototypeFree(ctx, obj1);
                     if (JS_IsException(obj1)) {
@@ -17380,7 +17373,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             pc += 4;
             BREAK;
         CASE(OP_push_const):
-            *sp++ = b->cpool[get_u32(pc]);
+            *sp++ = b->cpool[get_u32(pc)];
             pc += 4;
             BREAK;
 #if SHORT_OPCODES
@@ -17659,7 +17652,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
 
         CASE(OP_fclosure):
             {
-                JSValue bfunc = b->cpool[get_u32(pc]);
+                JSValue bfunc = b->cpool[get_u32(pc)];
                 pc += 4;
                 *sp++ = js_closure(ctx, bfunc, var_refs, sf, FALSE);
                 if (unlikely(JS_IsException(sp[-1])))
@@ -42882,11 +42875,6 @@ static JSValue js_array_sort(JSContext *ctx, JSValueConst this_val,
     return obj;
 
 exception:
-    for (; n < pos; n++) {
-        
-        if (array[n].str)
-            
-    }
     js_free(ctx, array);
 fail:
     
@@ -46947,10 +46935,6 @@ static void js_regexp_finalizer(JSRuntime *rt, JSValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
     JSRegExp *re = &p->u.regexp;
-    if (re->bytecode != NULL)
-        
-    if (re->pattern != NULL)
-        
 }
 
 /* create a string containing the RegExp bytecode */
@@ -51518,9 +51502,6 @@ static void js_map_finalizer(JSRuntime *rt, JSValue val)
             if (!mr->empty) {
                 if (s->is_weak)
                     js_weakref_free(rt, mr->key);
-                else
-                    
-                
             }
             js_free_rt(rt, mr);
         }
