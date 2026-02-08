@@ -216,12 +216,15 @@ typedef struct {
 static void js_video_finalizer(JSRuntime *rt, JSValue val) {
     HTMLVideoElement *vid = JS_GetOpaque(val, js_video_class_id);
     if (vid) {
-        JS_FreeValueRT(rt, vid->onloadstart);
-        JS_FreeValueRT(rt, vid->onloadedmetadata);
-        JS_FreeValueRT(rt, vid->oncanplay);
-        JS_FreeValueRT(rt, vid->onplay);
-        JS_FreeValueRT(rt, vid->onplaying);
-        JS_FreeValueRT(rt, vid->onerror);
+        // Free the callback values if they are not null/undefined
+        // Note: JS_FreeValueRT is safe to call on JS_NULL (it's a no-op for immediate values)
+        // but we check anyway for clarity
+        if (!JS_IsNull(vid->onloadstart)) JS_FreeValueRT(rt, vid->onloadstart);
+        if (!JS_IsNull(vid->onloadedmetadata)) JS_FreeValueRT(rt, vid->onloadedmetadata);
+        if (!JS_IsNull(vid->oncanplay)) JS_FreeValueRT(rt, vid->oncanplay);
+        if (!JS_IsNull(vid->onplay)) JS_FreeValueRT(rt, vid->onplay);
+        if (!JS_IsNull(vid->onplaying)) JS_FreeValueRT(rt, vid->onplaying);
+        if (!JS_IsNull(vid->onerror)) JS_FreeValueRT(rt, vid->onerror);
         free(vid);
     }
 }
@@ -373,6 +376,28 @@ static JSValue js_video_get_network_state(JSContext *ctx, JSValueConst this_val)
     return JS_NewInt32(ctx, vid->network_state);
 }
 
+// Generic getter/setter for event callbacks
+#define DEFINE_VIDEO_EVENT_HANDLER(name, field) \
+    static JSValue js_video_get_##name(JSContext *ctx, JSValueConst this_val) { \
+        HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
+        if (!vid) return JS_EXCEPTION; \
+        return JS_DupValue(ctx, vid->field); \
+    } \
+    static JSValue js_video_set_##name(JSContext *ctx, JSValueConst this_val, JSValueConst val) { \
+        HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
+        if (!vid) return JS_EXCEPTION; \
+        JS_FreeValue(ctx, vid->field); \
+        vid->field = JS_DupValue(ctx, val); \
+        return JS_UNDEFINED; \
+    }
+
+DEFINE_VIDEO_EVENT_HANDLER(onloadstart, onloadstart)
+DEFINE_VIDEO_EVENT_HANDLER(onloadedmetadata, onloadedmetadata)
+DEFINE_VIDEO_EVENT_HANDLER(oncanplay, oncanplay)
+DEFINE_VIDEO_EVENT_HANDLER(onplay, onplay)
+DEFINE_VIDEO_EVENT_HANDLER(onplaying, onplaying)
+DEFINE_VIDEO_EVENT_HANDLER(onerror, onerror)
+
 const JSCFunctionListEntry js_video_proto_funcs[] = {
     JS_CFUNC_DEF("load", 0, js_video_load),
     JS_CFUNC_DEF("play", 0, js_video_play),
@@ -397,6 +422,12 @@ const JSCFunctionListEntry js_video_proto_funcs[] = {
     JS_CGETSET_DEF("defaultPlaybackRate", NULL, NULL),
     JS_CGETSET_DEF("preload", NULL, NULL),
     JS_CGETSET_DEF("crossOrigin", NULL, NULL),
+    JS_CGETSET_DEF("onloadstart", js_video_get_onloadstart, js_video_set_onloadstart),
+    JS_CGETSET_DEF("onloadedmetadata", js_video_get_onloadedmetadata, js_video_set_onloadedmetadata),
+    JS_CGETSET_DEF("oncanplay", js_video_get_oncanplay, js_video_set_oncanplay),
+    JS_CGETSET_DEF("onplay", js_video_get_onplay, js_video_set_onplay),
+    JS_CGETSET_DEF("onplaying", js_video_get_onplaying, js_video_set_onplaying),
+    JS_CGETSET_DEF("onerror", js_video_get_onerror, js_video_set_onerror),
 };
 const size_t js_video_proto_funcs_count = sizeof(js_video_proto_funcs) / sizeof(js_video_proto_funcs[0]);
 

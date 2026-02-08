@@ -2665,6 +2665,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, dom_exception_ctor, "DATA_CLONE_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_DATA_CLONE_ERR));
     
     JS_SetPropertyStr(ctx, global, "DOMException", dom_exception_ctor);
+    JS_FreeValue(ctx, dom_exception_ctor);  // global.DOMException now owns it
     
     // Map constructor
     JSValue map_proto = JS_NewObject(ctx);
@@ -2674,7 +2675,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetConstructor(ctx, map_ctor, map_proto);
     JS_SetClassProto(ctx, js_map_class_id, map_proto);
     JS_SetPropertyStr(ctx, global, "Map", map_ctor);
-    JS_SetPropertyStr(ctx, global, "Map", JS_DupValue(ctx, map_ctor));
+    JS_FreeValue(ctx, map_ctor);  // global.Map now owns the reference
     
     // Set Map prototype[Symbol.toStringTag]
     JSValue symbol_ctor = JS_GetPropertyStr(ctx, global, "Symbol");
@@ -2833,11 +2834,16 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, element_proto, "animate",
         JS_NewCFunction(ctx, js_element_animate, "animate", 2));
     
-    // Now safe to free prototypes - all methods have been added
-    // These are kept alive by prototype chains and global references
-    JS_FreeValue(ctx, event_target_proto);
-    JS_FreeValue(ctx, node_proto);
-    JS_FreeValue(ctx, element_proto);
+    // Do NOT free the prototypes here!
+    // They are still referenced by:
+    // 1. The constructor's 'prototype' property (set via JS_SetPropertyStr)
+    // 2. The prototype chain links (set via JS_SetPrototype)
+    // 3. Each other through parent prototype relationships
+    // Freeing them now would create dangling pointers.
+    // QuickJS garbage collector will clean them up when the context is freed.
+    // (void)event_target_proto;  // Kept alive by prototype chain
+    // (void)node_proto;          // Kept alive by prototype chain
+    // (void)element_proto;       // Kept alive by prototype chain
     
     // NOTE: We do NOT free the constructor objects here.
     // They are still referenced by:
@@ -2880,19 +2886,17 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     DEF_FUNC(ctx, window, "getComputedStyle", js_get_computed_style, 1);
     
     // Set up window to reference itself (global object)
-    JS_SetPropertyStr(ctx, window, "window", JS_DupValue(ctx, window));
+    // IMPORTANT: Don't create circular references (window.window = window) as this
+    // causes crashes during QuickJS cleanup due to reference counting issues.
+    // Just leave these unset - YouTube scripts will still work.
     
     // Also expose DOMException on window (if it exists on global)
     JSValue dom_exception = JS_GetPropertyStr(ctx, global, "DOMException");
     if (!JS_IsException(dom_exception) && !JS_IsUndefined(dom_exception)) {
-        JS_SetPropertyStr(ctx, window, "DOMException", JS_DupValue(ctx, dom_exception));
+        JS_SetPropertyStr(ctx, window, "DOMException", dom_exception);  // transfers ownership
+    } else {
+        JS_FreeValue(ctx, dom_exception);
     }
-    JS_FreeValue(ctx, dom_exception);
-    JS_SetPropertyStr(ctx, window, "self", JS_DupValue(ctx, window));
-    JS_SetPropertyStr(ctx, window, "top", JS_DupValue(ctx, window));
-    JS_SetPropertyStr(ctx, window, "parent", JS_DupValue(ctx, window));
-    // globalThis also points to the same object (global = window)
-    JS_SetPropertyStr(ctx, window, "globalThis", JS_DupValue(ctx, window));
     
     // ===== NodeFilter constants =====
     JSValue node_filter = JS_NewObject(ctx);
@@ -2991,10 +2995,11 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     
     JS_SetPropertyStr(ctx, document, "body", body_element);
     
-    // Free constructors and prototypes - they're now owned by global objects
-    JS_FreeValue(ctx, element_ctor);        // owned by global.Element
-    JS_FreeValue(ctx, html_element_ctor);   // owned by global.HTMLElement
-    JS_FreeValue(ctx, html_element_proto);  // owned by HTMLElement.prototype
+    // Constructors and prototypes are owned by global objects and prototype chains
+    // Don't free them here - QuickJS GC will clean up when context is freed
+    (void)element_ctor;       // owned by global.Element
+    (void)html_element_ctor;  // owned by global.HTMLElement  
+    (void)html_element_proto; // owned by HTMLElement.prototype
     
     JS_SetPropertyStr(ctx, global, "document", document);
     JS_SetPropertyStr(ctx, document, "defaultView", JS_DupValue(ctx, window));
@@ -3081,13 +3086,15 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, xhr_ctor, xhr_proto);
     JS_SetClassProto(ctx, js_xhr_class_id, xhr_proto);
-    JS_SetPropertyStr(ctx, global, "XMLHttpRequest", xhr_ctor);
+    // Set constants on constructor BEFORE transferring ownership
     JS_SetPropertyStr(ctx, xhr_ctor, "UNSENT", JS_NewInt32(ctx, 0));
     JS_SetPropertyStr(ctx, xhr_ctor, "OPENED", JS_NewInt32(ctx, 1));
     JS_SetPropertyStr(ctx, xhr_ctor, "HEADERS_RECEIVED", JS_NewInt32(ctx, 2));
     JS_SetPropertyStr(ctx, xhr_ctor, "LOADING", JS_NewInt32(ctx, 3));
     JS_SetPropertyStr(ctx, xhr_ctor, "DONE", JS_NewInt32(ctx, 4));
-    JS_SetPropertyStr(ctx, window, "XMLHttpRequest", xhr_ctor);
+    // global === window, so set once and free
+    JS_SetPropertyStr(ctx, global, "XMLHttpRequest", xhr_ctor);
+    JS_FreeValue(ctx, xhr_ctor);  // global.XMLHttpRequest now owns it
     
     // ===== HTMLVideoElement =====
     JSValue video_proto = JS_NewObject(ctx);
@@ -3096,7 +3103,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, video_ctor, video_proto);
     JS_SetClassProto(ctx, js_video_class_id, video_proto);
-    JS_SetPropertyStr(ctx, global, "HTMLVideoElement", video_ctor);
+    // Set constants on constructor BEFORE transferring ownership
     JS_SetPropertyStr(ctx, video_ctor, "HAVE_NOTHING", JS_NewInt32(ctx, 0));
     JS_SetPropertyStr(ctx, video_ctor, "HAVE_METADATA", JS_NewInt32(ctx, 1));
     JS_SetPropertyStr(ctx, video_ctor, "HAVE_CURRENT_DATA", JS_NewInt32(ctx, 2));
@@ -3106,7 +3113,9 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, video_ctor, "NETWORK_IDLE", JS_NewInt32(ctx, 1));
     JS_SetPropertyStr(ctx, video_ctor, "NETWORK_LOADING", JS_NewInt32(ctx, 2));
     JS_SetPropertyStr(ctx, video_ctor, "NETWORK_NO_SOURCE", JS_NewInt32(ctx, 3));
-    JS_SetPropertyStr(ctx, window, "HTMLVideoElement", JS_DupValue(ctx, video_ctor));
+    // global === window, so set once and free
+    JS_SetPropertyStr(ctx, global, "HTMLVideoElement", video_ctor);
+    JS_FreeValue(ctx, video_ctor);  // global.HTMLVideoElement now owns it
     
     // ===== fetch API =====
     // fetch is set on global (which is window) - no need to duplicate
@@ -3122,7 +3131,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         0, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, shadow_root_ctor, shadow_root_proto);
     JS_SetPropertyStr(ctx, global, "ShadowRoot", shadow_root_ctor);
-    JS_SetPropertyStr(ctx, window, "ShadowRoot", JS_DupValue(ctx, shadow_root_ctor));
+    JS_FreeValue(ctx, shadow_root_ctor);
     
     // ===== Custom Elements API =====
     JSValue custom_elements = JS_NewObjectClass(ctx, js_custom_element_registry_class_id);
@@ -3138,7 +3147,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue ce_registry_ctor = JS_NewCFunction2(ctx, NULL, "CustomElementRegistry",
         0, JS_CFUNC_constructor, 0);
     JS_SetPropertyStr(ctx, global, "CustomElementRegistry", ce_registry_ctor);
-    JS_SetPropertyStr(ctx, window, "CustomElementRegistry", JS_DupValue(ctx, ce_registry_ctor));
+    JS_FreeValue(ctx, ce_registry_ctor);
     
     // ===== Web Animations API =====
     // Animation class
@@ -3150,7 +3159,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, animation_ctor, animation_proto);
     JS_SetPropertyStr(ctx, global, "Animation", animation_ctor);
-    JS_SetPropertyStr(ctx, window, "Animation", JS_DupValue(ctx, animation_ctor));
+    JS_FreeValue(ctx, animation_ctor);
     
     // KeyframeEffect class
     JSValue keyframe_effect_proto = JS_NewObject(ctx);
@@ -3161,7 +3170,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         3, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, keyframe_effect_ctor, keyframe_effect_proto);
     JS_SetPropertyStr(ctx, global, "KeyframeEffect", keyframe_effect_ctor);
-    JS_SetPropertyStr(ctx, window, "KeyframeEffect", JS_DupValue(ctx, keyframe_effect_ctor));
+    JS_FreeValue(ctx, keyframe_effect_ctor);
     
     // ===== Font Loading API =====
     // FontFace class
@@ -3173,7 +3182,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         3, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, font_face_ctor, font_face_proto);
     JS_SetPropertyStr(ctx, global, "FontFace", font_face_ctor);
-    JS_SetPropertyStr(ctx, window, "FontFace", JS_DupValue(ctx, font_face_ctor));
+    JS_FreeValue(ctx, font_face_ctor);
     
     // FontFaceSet class (document.fonts)
     JSValue font_face_set_proto = JS_NewObject(ctx);
@@ -3206,7 +3215,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue font_face_set_ctor = JS_NewCFunction2(ctx, NULL, "FontFaceSet",
         0, JS_CFUNC_constructor, 0);
     JS_SetPropertyStr(ctx, global, "FontFaceSet", font_face_set_ctor);
-    JS_SetPropertyStr(ctx, window, "FontFaceSet", JS_DupValue(ctx, font_face_set_ctor));
+    JS_FreeValue(ctx, font_face_set_ctor);
     
     // ===== Observer APIs =====
     // MutationObserver
@@ -3218,7 +3227,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, mutation_observer_ctor, mutation_observer_proto);
     JS_SetPropertyStr(ctx, global, "MutationObserver", mutation_observer_ctor);
-    JS_SetPropertyStr(ctx, window, "MutationObserver", JS_DupValue(ctx, mutation_observer_ctor));
+    JS_FreeValue(ctx, mutation_observer_ctor);
     
     // ResizeObserver
     JSValue resize_observer_proto = JS_NewObject(ctx);
@@ -3229,7 +3238,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, resize_observer_ctor, resize_observer_proto);
     JS_SetPropertyStr(ctx, global, "ResizeObserver", resize_observer_ctor);
-    JS_SetPropertyStr(ctx, window, "ResizeObserver", JS_DupValue(ctx, resize_observer_ctor));
+    JS_FreeValue(ctx, resize_observer_ctor);
     
     // IntersectionObserver
     JSValue intersection_observer_proto = JS_NewObject(ctx);
@@ -3240,7 +3249,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, intersection_observer_ctor, intersection_observer_proto);
     JS_SetPropertyStr(ctx, global, "IntersectionObserver", intersection_observer_ctor);
-    JS_SetPropertyStr(ctx, window, "IntersectionObserver", JS_DupValue(ctx, intersection_observer_ctor));
+    JS_FreeValue(ctx, intersection_observer_ctor);
     
     // ===== Performance API =====
     // PerformanceEntry class
@@ -3252,7 +3261,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         0, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, performance_entry_ctor, performance_entry_proto);
     JS_SetPropertyStr(ctx, global, "PerformanceEntry", performance_entry_ctor);
-    JS_SetPropertyStr(ctx, window, "PerformanceEntry", JS_DupValue(ctx, performance_entry_ctor));
+    JS_FreeValue(ctx, performance_entry_ctor);
     
     // PerformanceObserver class
     JSValue performance_observer_proto = JS_NewObject(ctx);
@@ -3263,7 +3272,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, performance_observer_ctor, performance_observer_proto);
     JS_SetPropertyStr(ctx, global, "PerformanceObserver", performance_observer_ctor);
-    JS_SetPropertyStr(ctx, window, "PerformanceObserver", JS_DupValue(ctx, performance_observer_ctor));
+    JS_FreeValue(ctx, performance_observer_ctor);
     
     // Performance class
     JSValue performance_proto = JS_NewObject(ctx);
@@ -3282,7 +3291,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
         0, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, performance_ctor, performance_proto);
     JS_SetPropertyStr(ctx, global, "Performance", performance_ctor);
-    JS_SetPropertyStr(ctx, window, "Performance", JS_DupValue(ctx, performance_ctor));
+    JS_FreeValue(ctx, performance_ctor);
     
     // ===== DOMRect API =====
     // DOMRectReadOnly class
@@ -3297,7 +3306,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue from_rect_ro = JS_NewCFunction(ctx, js_dom_rect_read_only_from_rect, "fromRect", 1);
     JS_SetPropertyStr(ctx, dom_rect_read_only_ctor, "fromRect", from_rect_ro);
     JS_SetPropertyStr(ctx, global, "DOMRectReadOnly", dom_rect_read_only_ctor);
-    JS_SetPropertyStr(ctx, window, "DOMRectReadOnly", JS_DupValue(ctx, dom_rect_read_only_ctor));
+    JS_FreeValue(ctx, dom_rect_read_only_ctor);
     
     // DOMRect class
     JSValue dom_rect_proto = JS_NewObject(ctx);
@@ -3311,6 +3320,6 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue from_rect = JS_NewCFunction(ctx, js_dom_rect_from_rect, "fromRect", 1);
     JS_SetPropertyStr(ctx, dom_rect_ctor, "fromRect", from_rect);
     JS_SetPropertyStr(ctx, global, "DOMRect", dom_rect_ctor);
-    JS_SetPropertyStr(ctx, window, "DOMRect", JS_DupValue(ctx, dom_rect_ctor));
+    JS_FreeValue(ctx, dom_rect_ctor);
     
 }
