@@ -2801,48 +2801,65 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue window = global;  // Use global object as window (no new object created)
     
     // ===== Create DOM Constructors with proper prototype chain in C =====
-    // EventTarget constructor
+    // Reference counting rules:
+    // - JS_NewCFunction2/JS_NewObject: returns value with refcount 1
+    // - JS_SetPropertyStr: duplicates the value (refcount +1)
+    // - JS_SetPrototype: adds reference to prototype (refcount +1)
+    // After setting a property, we MUST free the local reference!
+    
+    // EventTarget constructor (base of all DOM constructors)
     JSValue event_target_ctor = JS_NewCFunction2(ctx, js_dummy_function, "EventTarget", 0, JS_CFUNC_constructor, 0);
     JSValue event_target_proto = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, event_target_proto, "constructor", JS_DupValue(ctx, event_target_ctor));
-    JS_SetPropertyStr(ctx, event_target_ctor, "prototype", JS_DupValue(ctx, event_target_proto));
+    JS_SetPropertyStr(ctx, event_target_proto, "constructor", event_target_ctor);
+    JS_SetPropertyStr(ctx, event_target_ctor, "prototype", event_target_proto);
     JS_SetPropertyStr(ctx, global, "EventTarget", event_target_ctor);
+    JS_FreeValue(ctx, event_target_ctor);  // global.EventTarget now owns it
+    // Keep event_target_proto for Node's prototype chain
     
     // Node constructor
     JSValue node_ctor = JS_NewCFunction2(ctx, js_dummy_function, "Node", 0, JS_CFUNC_constructor, 0);
     JSValue node_proto = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, node_proto, "constructor", JS_DupValue(ctx, node_ctor));
-    // Set Node.prototype.__proto__ = EventTarget.prototype
-    JS_SetPropertyStr(ctx, node_proto, "__proto__", JS_DupValue(ctx, event_target_proto));
-    JS_SetPropertyStr(ctx, node_ctor, "prototype", JS_DupValue(ctx, node_proto));
+    JS_SetPropertyStr(ctx, node_proto, "constructor", node_ctor);
+    JS_SetPrototype(ctx, node_proto, event_target_proto);
+    JS_SetPropertyStr(ctx, node_ctor, "prototype", node_proto);
     JS_SetPropertyStr(ctx, global, "Node", node_ctor);
+    JS_FreeValue(ctx, node_ctor);
+    JS_FreeValue(ctx, event_target_proto);  // now owned by Node.prototype.__proto__
+    // Keep node_proto for Element and DocumentFragment
     
     // Element constructor
     JSValue element_ctor = JS_NewCFunction2(ctx, js_dummy_function, "Element", 0, JS_CFUNC_constructor, 0);
     JSValue element_proto = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, element_proto, "constructor", JS_DupValue(ctx, element_ctor));
-    // Set Element.prototype.__proto__ = Node.prototype
-    JS_SetPropertyStr(ctx, element_proto, "__proto__", JS_DupValue(ctx, node_proto));
-    JS_SetPropertyStr(ctx, element_ctor, "prototype", JS_DupValue(ctx, element_proto));
+    JS_SetPropertyStr(ctx, element_proto, "constructor", element_ctor);
+    JS_SetPrototype(ctx, element_proto, node_proto);
+    JS_SetPropertyStr(ctx, element_ctor, "prototype", element_proto);
     JS_SetPropertyStr(ctx, global, "Element", element_ctor);
+    // DON'T free element_ctor yet - we need it for document.documentElement below
+    // Keep element_proto for HTMLElement
+    // node_proto is now referenced by Element.prototype.__proto__
     
     // HTMLElement constructor
     JSValue html_element_ctor = JS_NewCFunction2(ctx, js_dummy_function, "HTMLElement", 0, JS_CFUNC_constructor, 0);
     JSValue html_element_proto = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, html_element_proto, "constructor", JS_DupValue(ctx, html_element_ctor));
-    // Set HTMLElement.prototype.__proto__ = Element.prototype
-    JS_SetPropertyStr(ctx, html_element_proto, "__proto__", JS_DupValue(ctx, element_proto));
-    JS_SetPropertyStr(ctx, html_element_ctor, "prototype", JS_DupValue(ctx, html_element_proto));
+    JS_SetPropertyStr(ctx, html_element_proto, "constructor", html_element_ctor);
+    JS_SetPrototype(ctx, html_element_proto, element_proto);
+    JS_SetPropertyStr(ctx, html_element_ctor, "prototype", html_element_proto);
     JS_SetPropertyStr(ctx, global, "HTMLElement", html_element_ctor);
+    // DON'T free html_element_ctor yet - we need it for document.body below
+    // Free element_proto - now owned by HTMLElement.prototype.__proto__
+    JS_FreeValue(ctx, element_proto);
+    // Keep html_element_ctor and html_element_proto for document.body
     
-    // DocumentFragment constructor
+    // DocumentFragment constructor (needs node_proto)
     JSValue doc_fragment_ctor = JS_NewCFunction2(ctx, js_dummy_function, "DocumentFragment", 0, JS_CFUNC_constructor, 0);
     JSValue doc_fragment_proto = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, doc_fragment_proto, "constructor", JS_DupValue(ctx, doc_fragment_ctor));
-    // Set DocumentFragment.prototype.__proto__ = Node.prototype
-    JS_SetPropertyStr(ctx, doc_fragment_proto, "__proto__", JS_DupValue(ctx, node_proto));
-    JS_SetPropertyStr(ctx, doc_fragment_ctor, "prototype", JS_DupValue(ctx, doc_fragment_proto));
+    JS_SetPropertyStr(ctx, doc_fragment_proto, "constructor", doc_fragment_ctor);
+    JS_SetPrototype(ctx, doc_fragment_proto, node_proto);  // node_proto still valid here
+    JS_SetPropertyStr(ctx, doc_fragment_ctor, "prototype", doc_fragment_proto);
     JS_SetPropertyStr(ctx, global, "DocumentFragment", doc_fragment_ctor);
+    JS_FreeValue(ctx, doc_fragment_ctor);
+    JS_FreeValue(ctx, doc_fragment_proto);
+    JS_FreeValue(ctx, node_proto);  // finally free node_proto
     
     // ===== EventTarget prototype methods =====
     JS_SetPropertyStr(ctx, event_target_proto, "addEventListener",
@@ -3036,6 +3053,11 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     
     JS_SetPropertyStr(ctx, document, "body", body_element);
     
+    // Free constructors and prototypes - they're now owned by global objects
+    JS_FreeValue(ctx, element_ctor);        // owned by global.Element
+    JS_FreeValue(ctx, html_element_ctor);   // owned by global.HTMLElement
+    JS_FreeValue(ctx, html_element_proto);  // owned by HTMLElement.prototype
+    
     JS_SetPropertyStr(ctx, global, "document", document);
     JS_SetPropertyStr(ctx, document, "defaultView", JS_DupValue(ctx, window));
     
@@ -3120,15 +3142,14 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue xhr_ctor = JS_NewCFunction2(ctx, js_xhr_constructor, "XMLHttpRequest", 
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, xhr_ctor, xhr_proto);
-    JS_SetClassProto(ctx, js_xhr_class_id, xhr_proto);  // Note: JS_SetClassProto stores proto without dups
-    // Do NOT free xhr_proto here - it's now owned by the class
+    JS_SetClassProto(ctx, js_xhr_class_id, xhr_proto);
     JS_SetPropertyStr(ctx, global, "XMLHttpRequest", xhr_ctor);
     JS_SetPropertyStr(ctx, xhr_ctor, "UNSENT", JS_NewInt32(ctx, 0));
     JS_SetPropertyStr(ctx, xhr_ctor, "OPENED", JS_NewInt32(ctx, 1));
     JS_SetPropertyStr(ctx, xhr_ctor, "HEADERS_RECEIVED", JS_NewInt32(ctx, 2));
     JS_SetPropertyStr(ctx, xhr_ctor, "LOADING", JS_NewInt32(ctx, 3));
     JS_SetPropertyStr(ctx, xhr_ctor, "DONE", JS_NewInt32(ctx, 4));
-    JS_SetPropertyStr(ctx, window, "XMLHttpRequest", JS_DupValue(ctx, xhr_ctor));
+    JS_SetPropertyStr(ctx, window, "XMLHttpRequest", xhr_ctor);
     
     // ===== HTMLVideoElement =====
     JSValue video_proto = JS_NewObject(ctx);
@@ -3136,8 +3157,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue video_ctor = JS_NewCFunction2(ctx, js_video_constructor, "HTMLVideoElement",
         1, JS_CFUNC_constructor, 0);
     JS_SetConstructor(ctx, video_ctor, video_proto);
-    JS_SetClassProto(ctx, js_video_class_id, video_proto);  // Note: JS_SetClassProto stores proto without dups
-    // Do NOT free video_proto here - it's now owned by the class
+    JS_SetClassProto(ctx, js_video_class_id, video_proto);
     JS_SetPropertyStr(ctx, global, "HTMLVideoElement", video_ctor);
     JS_SetPropertyStr(ctx, video_ctor, "HAVE_NOTHING", JS_NewInt32(ctx, 0));
     JS_SetPropertyStr(ctx, video_ctor, "HAVE_METADATA", JS_NewInt32(ctx, 1));

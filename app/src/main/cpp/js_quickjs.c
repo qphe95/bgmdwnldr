@@ -601,6 +601,114 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     JS_FreeValue(ctx, global);
 }
 
+// Helper function to set up prototype chain: Object.setPrototypeOf(childProto, parentProto)
+static void js_set_prototype_chain(JSContext *ctx, JSValueConst child_proto, JSValueConst parent_proto) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue object_ctor = JS_GetPropertyStr(ctx, global, "Object");
+    JSValue set_proto = JS_GetPropertyStr(ctx, object_ctor, "setPrototypeOf");
+    
+    JSValue args[2] = { child_proto, parent_proto };
+    JSValue result = JS_Call(ctx, set_proto, JS_UNDEFINED, 2, args);
+    
+    JS_FreeValue(ctx, result);
+    JS_FreeValue(ctx, set_proto);
+    JS_FreeValue(ctx, object_ctor);
+    JS_FreeValue(ctx, global);
+}
+
+// Helper to get a prototype from a constructor: Constructor.prototype
+static JSValue js_get_prototype(JSContext *ctx, JSValueConst ctor) {
+    return JS_GetPropertyStr(ctx, ctor, "prototype");
+}
+
+// Set up DOM prototype chains in C
+static void js_setup_dom_prototypes(JSContext *ctx) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    
+    // Get constructors from global
+    JSValue event_target = JS_GetPropertyStr(ctx, global, "EventTarget");
+    JSValue node = JS_GetPropertyStr(ctx, global, "Node");
+    JSValue element = JS_GetPropertyStr(ctx, global, "Element");
+    JSValue html_element = JS_GetPropertyStr(ctx, global, "HTMLElement");
+    JSValue doc_fragment = JS_GetPropertyStr(ctx, global, "DocumentFragment");
+    
+    // Get prototypes
+    JSValue event_target_proto = js_get_prototype(ctx, event_target);
+    JSValue node_proto = js_get_prototype(ctx, node);
+    JSValue element_proto = js_get_prototype(ctx, element);
+    JSValue html_element_proto = js_get_prototype(ctx, html_element);
+    JSValue doc_fragment_proto = js_get_prototype(ctx, doc_fragment);
+    
+    // Set up prototype chains if all prototypes exist
+    // Node.prototype -> EventTarget.prototype
+    if (!JS_IsUndefined(node_proto) && !JS_IsNull(node_proto) &&
+        !JS_IsUndefined(event_target_proto) && !JS_IsNull(event_target_proto)) {
+        js_set_prototype_chain(ctx, node_proto, event_target_proto);
+    }
+    
+    // Element.prototype -> Node.prototype
+    if (!JS_IsUndefined(element_proto) && !JS_IsNull(element_proto) &&
+        !JS_IsUndefined(node_proto) && !JS_IsNull(node_proto)) {
+        js_set_prototype_chain(ctx, element_proto, node_proto);
+    }
+    
+    // HTMLElement.prototype -> Element.prototype
+    if (!JS_IsUndefined(html_element_proto) && !JS_IsNull(html_element_proto) &&
+        !JS_IsUndefined(element_proto) && !JS_IsNull(element_proto)) {
+        js_set_prototype_chain(ctx, html_element_proto, element_proto);
+    }
+    
+    // DocumentFragment.prototype -> Node.prototype
+    if (!JS_IsUndefined(doc_fragment_proto) && !JS_IsNull(doc_fragment_proto) &&
+        !JS_IsUndefined(node_proto) && !JS_IsNull(node_proto)) {
+        js_set_prototype_chain(ctx, doc_fragment_proto, node_proto);
+    }
+    
+    // Clean up
+    JS_FreeValue(ctx, event_target_proto);
+    JS_FreeValue(ctx, node_proto);
+    JS_FreeValue(ctx, element_proto);
+    JS_FreeValue(ctx, html_element_proto);
+    JS_FreeValue(ctx, doc_fragment_proto);
+    
+    JS_FreeValue(ctx, event_target);
+    JS_FreeValue(ctx, node);
+    JS_FreeValue(ctx, element);
+    JS_FreeValue(ctx, html_element);
+    JS_FreeValue(ctx, doc_fragment);
+    
+    // Ensure document.body exists
+    JSValue document = JS_GetPropertyStr(ctx, global, "document");
+    if (!JS_IsUndefined(document) && !JS_IsNull(document)) {
+        JSValue body = JS_GetPropertyStr(ctx, document, "body");
+        if (JS_IsUndefined(body) || JS_IsNull(body)) {
+            // document.createElement('body') or use empty object
+            JSValue create_elem = JS_GetPropertyStr(ctx, document, "createElement");
+            if (!JS_IsUndefined(create_elem) && !JS_IsNull(create_elem)) {
+                JSValue tag_name = JS_NewString(ctx, "body");
+                JSValue args[1] = { tag_name };
+                JSValue new_body = JS_Call(ctx, create_elem, document, 1, args);
+                if (!JS_IsException(new_body)) {
+                    JS_SetPropertyStr(ctx, document, "body", new_body);
+                } else {
+                    JS_FreeValue(ctx, new_body);
+                    JSValue empty_obj = JS_NewObject(ctx);
+                    JS_SetPropertyStr(ctx, document, "body", empty_obj);
+                }
+                JS_FreeValue(ctx, tag_name);
+            } else {
+                JSValue empty_obj = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, document, "body", empty_obj);
+            }
+            JS_FreeValue(ctx, create_elem);
+        }
+        JS_FreeValue(ctx, body);
+    }
+    JS_FreeValue(ctx, document);
+    
+    JS_FreeValue(ctx, global);
+}
+
 // Initialize browser environment
 static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
     JSValue global = JS_GetGlobalObject(ctx);
@@ -613,6 +721,9 @@ static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
     init_browser_stubs(ctx, global);
     
     JS_FreeValue(ctx, global);
+    
+    // Set up DOM prototype chains using C API
+    js_setup_dom_prototypes(ctx);
     
     LOG_INFO("Browser environment initialized");
 }
