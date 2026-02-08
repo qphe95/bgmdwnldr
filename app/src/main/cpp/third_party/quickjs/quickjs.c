@@ -353,11 +353,10 @@ typedef enum {
     JS_GC_OBJ_TYPE_MODULE,
 } JSGCObjectTypeEnum;
 
-/* header for GC objects. GC objects are C data structures with a
-   reference count that can reference other GC objects. JS Objects are
-   a particular type of GC object. */
+/* header for GC objects. GC objects are C data structures that can
+   reference other GC objects. JS Objects are a particular type of GC object.
+   Note: ref_count removed - using mark-and-sweep GC only. */
 struct JSGCObjectHeader {
-    int ref_count; /* must come first, 32-bit */
     JSGCObjectTypeEnum gc_obj_type : 4;
     uint8_t mark : 1; /* used by the GC */
     uint8_t dummy0: 3;
@@ -382,7 +381,7 @@ typedef struct JSVarRef {
     union {
         JSGCObjectHeader header; /* must come first */
         struct {
-            int __gc_ref_count; /* corresponds to header.ref_count */
+            int __gc_ref_count; /* corresponds to unused header field */
             uint8_t __gc_mark; /* corresponds to header.mark/gc_obj_type */
             uint8_t is_detached;
             uint8_t is_lexical; /* only used with global variables */
@@ -425,7 +424,6 @@ typedef uint128_t js_dlimb_t;
 #endif
 
 typedef struct JSBigInt {
-    JSRefCountHeader header; /* must come first, 32-bit */
     uint32_t len; /* number of limbs, >= 1 */
     js_limb_t tab[]; /* two's complement representation, always
                         normalized so that 'len' is the minimum
@@ -434,7 +432,8 @@ typedef struct JSBigInt {
 
 /* this bigint structure can hold a 64 bit integer */
 typedef struct {
-    js_limb_t big_int_buf[sizeof(JSBigInt) / sizeof(js_limb_t)]; /* for JSBigInt */
+    uint32_t len_buf;  /* for JSBigInt.len */
+    js_limb_t big_int_buf[(sizeof(JSBigInt) - sizeof(uint32_t)) / sizeof(js_limb_t)]; /* for JSBigInt padding */
     /* must come just after */
     js_limb_t tab[(64 + JS_LIMB_BITS - 1) / JS_LIMB_BITS];
 } JSBigIntBuf;
@@ -519,7 +518,6 @@ typedef enum {
 #define JS_ATOM_HASH_PRIVATE JS_ATOM_HASH_MASK
 
 struct JSString {
-    JSRefCountHeader header; /* must come first, 32-bit */
     uint32_t len : 31;
     uint8_t is_wide_char : 1; /* 0 = 8 bits, 1 = 16 bits characters */
     /* for JS_ATOM_TYPE_SYMBOL: hash = weakref_count, atom_type = 3,
@@ -538,7 +536,6 @@ struct JSString {
 };
 
 typedef struct JSStringRope {
-    JSRefCountHeader header; /* must come first, 32-bit */
     uint32_t len;
     uint8_t is_wide_char; /* 0 = 8 bits, 1 = 16 bits characters */
     uint8_t depth; /* max depth of the rope tree */
@@ -932,7 +929,7 @@ struct JSObject {
     union {
         JSGCObjectHeader header;
         struct {
-            int __gc_ref_count; /* corresponds to header.ref_count */
+            int __gc_ref_count; /* corresponds to unused header field */
             uint8_t __gc_mark : 7; /* corresponds to header.mark/gc_obj_type */
             /* TRUE if the array prototype is "normal":
                - no small index properties which are get/set or non writable
@@ -954,8 +951,7 @@ struct JSObject {
         };
     };
     /* count the number of weak references to this object. The object
-       structure is freed only if header.ref_count = 0 and
-       weakref_count = 0 */
+       structure is freed only if weakref_count = 0 */
     uint32_t weakref_count; 
     JSShape *shape; /* prototype and property names + flag */
     JSProperty *prop; /* array of properties */
@@ -1904,10 +1900,8 @@ int JS_ExecutePendingJob(JSRuntime *rt, JSContext **pctx)
     JS_FreeValue(ctx, res);
     js_free(ctx, e);
     if (pctx) {
-        if (ctx->header.ref_count > 1)
-            *pctx = ctx;
-        else
-            *pctx = NULL;
+        /* ref_count check removed - using mark-and-sweep GC */
+        *pctx = ctx;
     }
     JS_FreeContext(ctx);
     return ret;
@@ -1935,7 +1929,7 @@ static JSString *js_alloc_string_rt(JSRuntime *rt, int max_len, int is_wide_char
     str = js_malloc_rt(rt, sizeof(JSString) + (max_len << is_wide_char) + 1 - is_wide_char);
     if (unlikely(!str))
         return NULL;
-    str->header.ref_count = 1;
+    /* ref_count removed - using mark-and-sweep GC */
     str->is_wide_char = is_wide_char;
     str->len = max_len;
     str->atom_type = 0;
@@ -1958,19 +1952,12 @@ static JSString *js_alloc_string(JSContext *ctx, int max_len, int is_wide_char)
     return p;
 }
 
-/* same as JS_FreeValueRT() but faster */
+/* Note: ref_count removed - strings are freed when unreachable */
 static inline void js_free_string(JSRuntime *rt, JSString *str)
 {
-    if (--str->header.ref_count <= 0) {
-        if (str->atom_type) {
-            JS_FreeAtomStruct(rt, str);
-        } else {
-#ifdef DUMP_LEAKS
-            list_del(&str->link);
-#endif
-            js_free_rt(rt, str);
-        }
-    }
+    /* No-op: mark-and-sweep GC handles string lifecycle */
+    (void)rt;
+    (void)str;
 }
 
 void JS_SetRuntimeInfo(JSRuntime *rt, const char *s)
@@ -2006,18 +1993,13 @@ void JS_FreeRuntime(JSRuntime *rt)
         JSGCObjectHeader *p;
         int count;
 
-        /* remove the internal refcounts to display only the object
-           referenced externally */
-        list_for_each(el, &rt->gc_obj_list) {
-            p = list_entry(el, JSGCObjectHeader, link);
-            p->mark = 0;
-        }
-        gc_decref(rt);
+        /* Mark all reachable objects from roots */
+        gc_mark_roots(rt);
 
         header_done = FALSE;
         list_for_each(el, &rt->gc_obj_list) {
             p = list_entry(el, JSGCObjectHeader, link);
-            if (p->ref_count != 0) {
+            if (p->mark) {
                 if (!header_done) {
                     printf("Object leaks:\n");
                     JS_DumpObjectHeader(rt);
@@ -2027,15 +2009,7 @@ void JS_FreeRuntime(JSRuntime *rt)
             }
         }
 
-        count = 0;
-        list_for_each(el, &rt->gc_obj_list) {
-            p = list_entry(el, JSGCObjectHeader, link);
-            if (p->ref_count == 0) {
-                count++;
-            }
-        }
-        if (count != 0)
-            printf("Secondary object leaks: %d\n", count);
+        /* No secondary object leaks tracking needed with mark-and-sweep */
     }
 #endif
     /* Clean up any remaining GC objects before asserting */
@@ -2084,7 +2058,7 @@ void JS_FreeRuntime(JSRuntime *rt)
         for(i = 0; i < rt->atom_size; i++) {
             JSAtomStruct *p = rt->atom_array[i];
             if (!atom_is_free(p) /* && p->str*/) {
-                if (i >= JS_ATOM_END || p->header.ref_count != 1) {
+                if (i >= JS_ATOM_END) {
                     if (!header_done) {
                         header_done = TRUE;
                         if (rt->rt_info) {
@@ -2098,7 +2072,7 @@ void JS_FreeRuntime(JSRuntime *rt)
                     if (rt->rt_info) {
                         printf(" ");
                     } else {
-                        printf("    %6u %6u ", i, p->header.ref_count);
+                        printf("    %6u %6u ", i, 0);
                     }
                     switch (p->atom_type) {
                     case JS_ATOM_TYPE_STRING:
@@ -2122,7 +2096,7 @@ void JS_FreeRuntime(JSRuntime *rt)
                         break;
                     }
                     if (rt->rt_info) {
-                        printf(":%u", p->header.ref_count);
+                        printf(":%u", 0);
                     } else {
                         printf("\n");
                     }
@@ -2161,11 +2135,11 @@ void JS_FreeRuntime(JSRuntime *rt)
             if (rt->rt_info) {
                 printf(" ");
             } else {
-                printf("    %6u ", str->header.ref_count);
+                printf("    %6u ", 0);
             }
             JS_DumpString(rt, str);
             if (rt->rt_info) {
-                printf(":%u", str->header.ref_count);
+                printf(":%u", 0);
             } else {
                 printf("\n");
             }
@@ -2201,7 +2175,7 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     ctx = js_mallocz_rt(rt, sizeof(JSContext));
     if (!ctx)
         return NULL;
-    ctx->header.ref_count = 1;
+    /* ref_count removed - using mark-and-sweep GC */
     add_gc_object(rt, &ctx->header, JS_GC_OBJ_TYPE_JS_CONTEXT);
 
     ctx->class_proto = js_malloc_rt(rt, sizeof(ctx->class_proto[0]) *
@@ -2312,7 +2286,7 @@ static void js_free_modules(JSContext *ctx, JSFreeModuleEnum flag)
 
 JSContext *JS_DupContext(JSContext *ctx)
 {
-    ctx->header.ref_count++;
+    /* ref_count removed - using mark-and-sweep GC */
     return ctx;
 }
 
@@ -2370,9 +2344,7 @@ void JS_FreeContext(JSContext *ctx)
     JSRuntime *rt = ctx->rt;
     int i;
 
-    if (--ctx->header.ref_count > 0)
-        return;
-    assert(ctx->header.ref_count == 0);
+    /* ref_count check removed - context freed when unreachable in GC */
 
 #ifdef DUMP_ATOMS
     JS_DumpAtoms(ctx->rt);
@@ -2604,8 +2576,8 @@ static __maybe_unused void JS_DumpString(JSRuntime *rt, const JSString *p)
         printf("<null>");
         return;
     }
-    printf("%d", p->header.ref_count);
-    sep = (p->header.ref_count == 1) ? '\"' : '\'';
+    printf("%d", 0);
+    sep = '\"';  /* ref_count removed - using mark-and-sweep GC */
     putchar(sep);
     for(i = 0; i < p->len; i++) {
         JS_DumpChar(stdout, string_get(p, i), sep);
@@ -2711,23 +2683,16 @@ static JSAtom JS_DupAtomRT(JSRuntime *rt, JSAtom v)
 {
     JSAtomStruct *p;
 
-    if (!__JS_AtomIsConst(v)) {
-        p = rt->atom_array[v];
-        p->header.ref_count++;
-    }
+    /* ref_count removed - using mark-and-sweep GC */
+    (void)rt;
+    (void)p;
     return v;
 }
 
 JSAtom JS_DupAtom(JSContext *ctx, JSAtom v)
 {
-    JSRuntime *rt;
-    JSAtomStruct *p;
-
-    if (!__JS_AtomIsConst(v)) {
-        rt = ctx->rt;
-        p = rt->atom_array[v];
-        p->header.ref_count++;
-    }
+    /* ref_count removed - using mark-and-sweep GC */
+    (void)ctx;
     return v;
 }
 
@@ -2793,9 +2758,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         if (str->atom_type == atom_type) {
             /* str is the atom, return its index */
             i = js_get_atom_index(rt, str);
-            /* reduce string refcount and increase atom's unless constant */
-            if (__JS_AtomIsConst(i))
-                str->header.ref_count--;
+            /* ref_count removed - using mark-and-sweep GC */
             return i;
         }
         /* try and locate an already registered atom */
@@ -2810,8 +2773,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
                 p->atom_type == atom_type &&
                 p->len == len &&
                 js_string_memcmp(p, 0, str, 0, len) == 0) {
-                if (!__JS_AtomIsConst(i))
-                    p->header.ref_count++;
+                /* ref_count removed - using mark-and-sweep GC */
                 goto done;
             }
             i = p->hash_next;
@@ -2851,7 +2813,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
                 js_free_rt(rt, new_array);
                 goto fail;
             }
-            p->header.ref_count = 1;  /* not refcounted */
+            /* ref_count removed - using mark-and-sweep GC */
             p->atom_type = JS_ATOM_TYPE_SYMBOL;
 #ifdef DUMP_LEAKS
             list_add_tail(&p->link, &rt->string_list);
@@ -2883,7 +2845,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
                              1 - str->is_wide_char);
             if (unlikely(!p))
                 goto fail;
-            p->header.ref_count = 1;
+            /* ref_count removed - using mark-and-sweep GC */
             p->is_wide_char = str->is_wide_char;
             p->len = str->len;
 #ifdef DUMP_LEAKS
@@ -2897,7 +2859,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         p = js_malloc_rt(rt, sizeof(JSAtomStruct)); /* empty wide string */
         if (!p)
             return JS_ATOM_NULL;
-        p->header.ref_count = 1;
+        /* ref_count removed - using mark-and-sweep GC */
         p->is_wide_char = 1;    /* Hack to represent NULL as a JSString */
         p->len = 0;
 #ifdef DUMP_LEAKS
@@ -2966,7 +2928,7 @@ static JSAtom __JS_FindAtom(JSRuntime *rt, const char *str, size_t len,
             p->is_wide_char == 0 &&
             memcmp(p->u.str8, str, len) == 0) {
             if (!__JS_AtomIsConst(i))
-                p->header.ref_count++;
+                /* ref_count removed - using mark-and-sweep GC */
             return i;
         }
         i = p->hash_next;
@@ -2978,7 +2940,7 @@ static void JS_FreeAtomStruct(JSRuntime *rt, JSAtomStruct *p)
 {
 #if 0   /* JS_ATOM_NULL is not refcounted: __JS_AtomIsConst() includes 0 */
     if (unlikely(i == JS_ATOM_NULL)) {
-        p->header.ref_count = INT32_MAX / 2;
+        p/* ref_count removed - using mark-and-sweep GC */
         return;
     }
 #endif
@@ -3028,8 +2990,7 @@ static void __JS_FreeAtom(JSRuntime *rt, uint32_t i)
     JSAtomStruct *p;
 
     p = rt->atom_array[i];
-    if (--p->header.ref_count > 0)
-        return;
+    /* ref_count check removed - atoms are managed by mark-and-sweep GC */
     JS_FreeAtomStruct(rt, p);
 }
 
@@ -4278,8 +4239,7 @@ static BOOL JS_ConcatStringInPlace(JSContext *ctx, JSString *p1, JSValueConst op
 
         if (p2->len == 0)
             return TRUE;
-        if (p1->header.ref_count != 1)
-            return FALSE;
+        /* ref_count check removed - using mark-and-sweep GC */
         size1 = js_malloc_usable_size(ctx, p1);
         if (p1->is_wide_char) {
             if (size1 >= sizeof(*p1) + ((p1->len + p2->len) << 1)) {
@@ -4451,7 +4411,7 @@ static JSValue js_linearize_string_rope(JSContext *ctx, JSValue rope)
     if (string_buffer_concat_value(b, rope))
         goto fail;
     ret = string_buffer_end(b);
-    if (r->header.ref_count > 1) {
+    if (0) {
         /* update the rope so that it won't need to be linearized again */
         JS_FreeValue(ctx, r->left);
         JS_FreeValue(ctx, r->right);
@@ -4504,7 +4464,7 @@ static JSValue js_new_string_rope(JSContext *ctx, JSValue op1, JSValue op2)
     r = js_malloc(ctx, sizeof(*r));
     if (!r)
         goto fail;
-    r->header.ref_count = 1;
+    r/* ref_count removed - using mark-and-sweep GC */
     r->len = len;
     r->is_wide_char = is_wide_char;
     r->depth = depth + 1;
@@ -4840,7 +4800,7 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
     if (!sh_alloc)
         return NULL;
     sh = get_shape_from_alloc(sh_alloc, hash_size);
-    sh->header.ref_count = 1;
+    sh/* ref_count removed - using mark-and-sweep GC */
     add_gc_object(rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
     if (proto)
         JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, proto));
@@ -4902,7 +4862,7 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     sh_alloc1 = get_alloc_from_shape(sh1);
     memcpy(sh_alloc, sh_alloc1, size);
     sh = get_shape_from_alloc(sh_alloc, hash_size);
-    sh->header.ref_count = 1;
+    /* ref_count removed - using mark-and-sweep GC */
     add_gc_object(ctx->rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
     sh->is_hashed = FALSE;
     if (sh->proto) {
@@ -4916,7 +4876,7 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
 
 static JSShape *js_dup_shape(JSShape *sh)
 {
-    sh->header.ref_count++;
+    /* ref_count removed - using mark-and-sweep GC */
     return sh;
 }
 
@@ -4925,7 +4885,7 @@ static void js_free_shape0(JSRuntime *rt, JSShape *sh)
     uint32_t i;
     JSShapeProperty *pr;
 
-    assert(sh->header.ref_count == 0);
+    /* ref_count check removed - using mark-and-sweep GC */
     if (sh->is_hashed)
         js_shape_hash_unlink(rt, sh);
     if (sh->proto != NULL) {
@@ -4942,9 +4902,8 @@ static void js_free_shape0(JSRuntime *rt, JSShape *sh)
 
 static void js_free_shape(JSRuntime *rt, JSShape *sh)
 {
-    if (unlikely(--sh->header.ref_count <= 0)) {
-        js_free_shape0(rt, sh);
-    }
+    /* ref_count check removed - shape freed when unreachable */
+    js_free_shape0(rt, sh);
 }
 
 static void js_free_shape_null(JSRuntime *rt, JSShape *sh)
@@ -5185,7 +5144,7 @@ static __maybe_unused void JS_DumpShape(JSRuntime *rt, int i, JSShape *sh)
 
     /* XXX: should output readable class prototype */
     printf("%5d %3d%c %14p %5d %5d", i,
-           sh->header.ref_count, " *"[sh->is_hashed],
+           0, " *"[sh->is_hashed],
            (void *)sh->proto, sh->prop_size, sh->prop_count);
     for(j = 0; j < sh->prop_count; j++) {
         printf(" %s", JS_AtomGetStrRT(rt, atom_buf, sizeof(atom_buf),
@@ -5337,7 +5296,7 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
         }
         break;
     }
-    p->header.ref_count = 1;
+    /* ref_count removed - using mark-and-sweep GC */
     add_gc_object(ctx->rt, &p->header, JS_GC_OBJ_TYPE_JS_OBJECT);
     if (props) {
         for(i = 0; i < sh->prop_count; i++)
@@ -5779,22 +5738,20 @@ static void set_cycle_flag(JSContext *ctx, JSValueConst obj)
 static void free_var_ref(JSRuntime *rt, JSVarRef *var_ref)
 {
     if (var_ref) {
-        assert(var_ref->header.ref_count > 0);
-        if (--var_ref->header.ref_count == 0) {
-            if (var_ref->is_detached) {
-                JS_FreeValueRT(rt, var_ref->value);
-            } else {
-                JSStackFrame *sf = var_ref->stack_frame;
-                assert(sf->var_refs[var_ref->var_ref_idx] == var_ref);
-                sf->var_refs[var_ref->var_ref_idx] = NULL;
-                if (sf->js_mode & JS_MODE_ASYNC) {
-                    JSAsyncFunctionState *async_func = container_of(sf, JSAsyncFunctionState, frame);
-                    async_func_free(rt, async_func);
-                }
+        /* ref_count check removed - var_ref freed when unreachable */
+        if (var_ref->is_detached) {
+            JS_FreeValueRT(rt, var_ref->value);
+        } else {
+            JSStackFrame *sf = var_ref->stack_frame;
+            assert(sf->var_refs[var_ref->var_ref_idx] == var_ref);
+            sf->var_refs[var_ref->var_ref_idx] = NULL;
+            if (sf->js_mode & JS_MODE_ASYNC) {
+                JSAsyncFunctionState *async_func = container_of(sf, JSAsyncFunctionState, frame);
+                async_func_free(rt, async_func);
             }
-            remove_gc_object(&var_ref->header);
-            js_free_rt(rt, var_ref);
         }
+        remove_gc_object(&var_ref->header);
+        js_free_rt(rt, var_ref);
     }
 }
 
@@ -5988,21 +5945,11 @@ static void free_object(JSRuntime *rt, JSObject *p)
     p->u.func.home_object = NULL;
 
     remove_gc_object(&p->header);
-    if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES) {
-        if (p->header.ref_count == 0 && p->weakref_count == 0) {
-            js_free_rt(rt, p);
-        } else {
-            /* keep the object structure because there are may be
-               references to it */
-            list_add_tail(&p->header.link, &rt->gc_zero_ref_count_list);
-        }
+    /* keep the object structure in case there are weak references to it */
+    if (p->weakref_count == 0) {
+        js_free_rt(rt, p);
     } else {
-        /* keep the object structure in case there are weak references to it */
-        if (p->weakref_count == 0) {
-            js_free_rt(rt, p);
-        } else {
-            p->header.mark = 0; /* reset the mark so that the weakref can be freed */
-        }
+        p->header.mark = 0; /* reset the mark so that the weakref can be freed */
     }
 }
 
@@ -6026,98 +5973,11 @@ static void free_gc_object(JSRuntime *rt, JSGCObjectHeader *gp)
     }
 }
 
+/* Note: free_zero_refcount removed - no longer needed with mark-and-sweep GC */
 static void free_zero_refcount(JSRuntime *rt)
 {
-    struct list_head *el;
-    JSGCObjectHeader *p;
-
-    rt->gc_phase = JS_GC_PHASE_DECREF;
-    for(;;) {
-        el = rt->gc_zero_ref_count_list.next;
-        if (el == &rt->gc_zero_ref_count_list)
-            break;
-        p = list_entry(el, JSGCObjectHeader, link);
-        assert(p->ref_count == 0);
-        free_gc_object(rt, p);
-    }
-    rt->gc_phase = JS_GC_PHASE_NONE;
-}
-
-/* called with the ref_count of 'v' reaches zero. */
-void __JS_FreeValueRT(JSRuntime *rt, JSValue v)
-{
-    uint32_t tag = JS_VALUE_GET_TAG(v);
-
-#ifdef DUMP_FREE
-    {
-        printf("Freeing ");
-        if (tag == JS_TAG_OBJECT) {
-            JS_DumpObject(rt, JS_VALUE_GET_OBJ(v));
-        } else {
-            JS_DumpValueShort(rt, v);
-            printf("\n");
-        }
-    }
-#endif
-
-    switch(tag) {
-    case JS_TAG_STRING:
-        {
-            JSString *p = JS_VALUE_GET_STRING(v);
-            if (p->atom_type) {
-                JS_FreeAtomStruct(rt, p);
-            } else {
-#ifdef DUMP_LEAKS
-                list_del(&p->link);
-#endif
-                js_free_rt(rt, p);
-            }
-        }
-        break;
-    case JS_TAG_STRING_ROPE:
-        /* Note: recursion is acceptable because the rope depth is bounded */
-        {
-            JSStringRope *p = JS_VALUE_GET_STRING_ROPE(v);
-            JS_FreeValueRT(rt, p->left);
-            JS_FreeValueRT(rt, p->right);
-            js_free_rt(rt, p);
-        }
-        break;
-    case JS_TAG_OBJECT:
-    case JS_TAG_FUNCTION_BYTECODE:
-    case JS_TAG_MODULE:
-        {
-            JSGCObjectHeader *p = JS_VALUE_GET_PTR(v);
-            if (rt->gc_phase != JS_GC_PHASE_REMOVE_CYCLES) {
-                list_del(&p->link);
-                list_add(&p->link, &rt->gc_zero_ref_count_list);
-                p->mark = 1; /* indicate that the object is about to be freed */
-                if (rt->gc_phase == JS_GC_PHASE_NONE) {
-                    free_zero_refcount(rt);
-                }
-            }
-        }
-        break;
-    case JS_TAG_BIG_INT:
-        {
-            JSBigInt *p = JS_VALUE_GET_PTR(v);
-            js_free_rt(rt, p);
-        }
-        break;
-    case JS_TAG_SYMBOL:
-        {
-            JSAtomStruct *p = JS_VALUE_GET_PTR(v);
-            JS_FreeAtomStruct(rt, p);
-        }
-        break;
-    default:
-        abort();
-    }
-}
-
-void __JS_FreeValue(JSContext *ctx, JSValue v)
-{
-    __JS_FreeValueRT(ctx->rt, v);
+    (void)rt;
+    /* No-op: mark-and-sweep GC handles all object freeing */
 }
 
 /* garbage collection */
@@ -6353,132 +6213,74 @@ static void mark_children(JSRuntime *rt, JSGCObjectHeader *gp,
     }
 }
 
-static void gc_decref_child(JSRuntime *rt, JSGCObjectHeader *p)
+/* Mark an object and all its children as reachable */
+static void gc_mark_recursive(JSRuntime *rt, JSGCObjectHeader *p)
 {
-    assert(p->ref_count > 0);
-    p->ref_count--;
-    if (p->ref_count == 0 && p->mark == 1) {
-        list_del(&p->link);
-        list_add_tail(&p->link, &rt->tmp_obj_list);
-    }
+    if (p->mark)
+        return;  /* Already marked */
+    p->mark = 1;
+    mark_children(rt, p, gc_mark_recursive);
 }
 
-static void gc_decref(JSRuntime *rt)
-{
-    struct list_head *el, *el1;
-    JSGCObjectHeader *p;
-
-    init_list_head(&rt->tmp_obj_list);
-
-    /* decrement the refcount of all the children of all the GC
-       objects and move the GC objects with zero refcount to
-       tmp_obj_list */
-    list_for_each_safe(el, el1, &rt->gc_obj_list) {
-        p = list_entry(el, JSGCObjectHeader, link);
-        assert(p->mark == 0);
-        mark_children(rt, p, gc_decref_child);
-        p->mark = 1;
-        if (p->ref_count == 0) {
-            list_del(&p->link);
-            list_add_tail(&p->link, &rt->tmp_obj_list);
-        }
-    }
-}
-
-static void gc_scan_incref_child(JSRuntime *rt, JSGCObjectHeader *p)
-{
-    p->ref_count++;
-    if (p->ref_count == 1) {
-        /* ref_count was 0: remove from tmp_obj_list and add at the
-           end of gc_obj_list */
-        list_del(&p->link);
-        list_add_tail(&p->link, &rt->gc_obj_list);
-        p->mark = 0; /* reset the mark for the next GC call */
-    }
-}
-
-static void gc_scan_incref_child2(JSRuntime *rt, JSGCObjectHeader *p)
-{
-    p->ref_count++;
-}
-
-static void gc_scan(JSRuntime *rt)
+/* Mark all objects reachable from roots */
+static void gc_mark_roots(JSRuntime *rt)
 {
     struct list_head *el;
     JSGCObjectHeader *p;
 
-    /* keep the objects with a refcount > 0 and their children. */
+    /* First, clear all marks */
     list_for_each(el, &rt->gc_obj_list) {
         p = list_entry(el, JSGCObjectHeader, link);
-        assert(p->ref_count > 0);
-        p->mark = 0; /* reset the mark for the next GC call */
-        mark_children(rt, p, gc_scan_incref_child);
+        p->mark = 0;
     }
 
-    /* restore the refcount of the objects to be deleted. */
-    list_for_each(el, &rt->tmp_obj_list) {
-        p = list_entry(el, JSGCObjectHeader, link);
-        mark_children(rt, p, gc_scan_incref_child2);
+    /* Mark from contexts (roots) */
+    list_for_each(el, &rt->context_list) {
+        JSContext *ctx = list_entry(el, JSContext, link);
+        gc_mark_recursive(rt, &ctx->header);
+    }
+
+    /* Mark the runtime's current_exception */
+    JS_MarkValue(rt, rt->current_exception, gc_mark_recursive);
+
+    /* Mark jobs in the job list */
+    list_for_each(el, &rt->job_list) {
+        JSJobEntry *job = list_entry(el, JSJobEntry, link);
+        int i;
+        for(i = 0; i < job->argc; i++) {
+            JS_MarkValue(rt, job->argv[i], gc_mark_recursive);
+        }
     }
 }
 
-static void gc_free_cycles(JSRuntime *rt)
+/* Sweep: free all unmarked objects */
+static void gc_sweep(JSRuntime *rt)
 {
     struct list_head *el, *el1;
     JSGCObjectHeader *p;
-#ifdef DUMP_GC_FREE
-    BOOL header_done = FALSE;
-#endif
 
     rt->gc_phase = JS_GC_PHASE_REMOVE_CYCLES;
 
-    for(;;) {
-        el = rt->tmp_obj_list.next;
-        if (el == &rt->tmp_obj_list)
-            break;
+    list_for_each_safe(el, el1, &rt->gc_obj_list) {
         p = list_entry(el, JSGCObjectHeader, link);
-        /* Only need to free the GC object associated with JS values
-           or async functions. The rest will be automatically removed
-           because they must be referenced by them. */
-        switch(p->gc_obj_type) {
-        case JS_GC_OBJ_TYPE_JS_OBJECT:
-        case JS_GC_OBJ_TYPE_FUNCTION_BYTECODE:
-        case JS_GC_OBJ_TYPE_ASYNC_FUNCTION:
-        case JS_GC_OBJ_TYPE_MODULE:
-#ifdef DUMP_GC_FREE
-            if (!header_done) {
-                printf("Freeing cycles:\n");
-                JS_DumpObjectHeader(rt);
-                header_done = TRUE;
+        if (!p->mark) {
+            /* Object is unreachable - free it */
+            switch(p->gc_obj_type) {
+            case JS_GC_OBJ_TYPE_JS_OBJECT:
+            case JS_GC_OBJ_TYPE_FUNCTION_BYTECODE:
+            case JS_GC_OBJ_TYPE_ASYNC_FUNCTION:
+            case JS_GC_OBJ_TYPE_MODULE:
+                free_gc_object(rt, p);
+                break;
+            default:
+                /* For other types, just free directly */
+                js_free_rt(rt, p);
+                break;
             }
-            JS_DumpGCObject(rt, p);
-#endif
-            free_gc_object(rt, p);
-            break;
-        default:
-            list_del(&p->link);
-            list_add_tail(&p->link, &rt->gc_zero_ref_count_list);
-            break;
         }
     }
+
     rt->gc_phase = JS_GC_PHASE_NONE;
-
-    list_for_each_safe(el, el1, &rt->gc_zero_ref_count_list) {
-        p = list_entry(el, JSGCObjectHeader, link);
-        assert(p->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT ||
-               p->gc_obj_type == JS_GC_OBJ_TYPE_FUNCTION_BYTECODE ||
-               p->gc_obj_type == JS_GC_OBJ_TYPE_ASYNC_FUNCTION ||
-               p->gc_obj_type == JS_GC_OBJ_TYPE_MODULE);
-        if (p->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT &&
-            ((JSObject *)p)->weakref_count != 0) {
-            /* keep the object because there are weak references to it */
-            p->mark = 0;
-        } else {
-            js_free_rt(rt, p);
-        }
-    }
-
-    init_list_head(&rt->gc_zero_ref_count_list);
 }
 
 static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
@@ -6490,15 +6292,11 @@ static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
         gc_remove_weak_objects(rt);
     }
     
-    /* decrement the reference of the children of each object. mark =
-       1 after this pass. */
-    gc_decref(rt);
+    /* Mark phase: mark all reachable objects from roots */
+    gc_mark_roots(rt);
 
-    /* keep the GC objects with a non zero refcount and their childs */
-    gc_scan(rt);
-
-    /* free the GC objects in a cycle */
-    gc_free_cycles(rt);
+    /* Sweep phase: free all unmarked objects */
+    gc_sweep(rt);
 }
 
 void JS_RunGC(JSRuntime *rt)
@@ -6536,7 +6334,7 @@ static void compute_value_size(JSValueConst val, JSMemoryUsage_helper *hp);
 static void compute_jsstring_size(JSString *str, JSMemoryUsage_helper *hp)
 {
     if (!str->atom_type) {  /* atoms are handled separately */
-        double s_ref_count = str->header.ref_count;
+        double s_ref_count = 1;
         hp->str_count += 1 / s_ref_count;
         hp->str_size += ((sizeof(*str) + (str->len << str->is_wide_char) +
                           1 - str->is_wide_char) / s_ref_count);
@@ -6744,7 +6542,7 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
                     s->js_func_size += b->closure_var_count * sizeof(*var_refs);
                     for (i = 0; i < b->closure_var_count; i++) {
                         if (var_refs[i]) {
-                            double ref_count = var_refs[i]->header.ref_count;
+                            double ref_count = 1;
                             s->memory_used_count += 1 / ref_count;
                             s->js_func_size += sizeof(*var_refs[i]) / ref_count;
                             /* handle non object closed values */
@@ -7859,7 +7657,7 @@ static int JS_AutoInitProperty(JSContext *ctx, JSObject *p, JSAtom prop,
         /* WARNING: a varref is returned as a string  ! */
         prs->flags |= JS_PROP_VARREF;
         pr->u.var_ref = JS_VALUE_GET_PTR(val);
-        pr->u.var_ref->header.ref_count++;
+        /* ref_count removed - using mark-and-sweep GC */
     } else if (p->class_id == JS_CLASS_GLOBAL_OBJECT) {
         JSVarRef *var_ref;
         /* in the global object we use references */
@@ -8889,7 +8687,7 @@ static JSProperty *add_property(JSContext *ctx,
             p->shape = js_dup_shape(new_sh);
             js_free_shape(ctx->rt, sh);
             return &p->prop[new_sh->prop_count - 1];
-        } else if (sh->header.ref_count != 1) {
+        } else if (0) {
             /* if the shape is shared, clone it */
             new_sh = js_clone_shape(ctx, sh);
             if (!new_sh)
@@ -8901,7 +8699,7 @@ static JSProperty *add_property(JSContext *ctx,
             p->shape = new_sh;
         }
     }
-    assert(p->shape->header.ref_count == 1);
+    /* ref_count check removed - using mark-and-sweep GC */
     if (add_shape_property(ctx, &p->shape, p, prop, prop_flags))
         return NULL;
     return &p->prop[p->shape->prop_count - 1];
@@ -8962,14 +8760,14 @@ static int remove_global_object_property(JSContext *ctx, JSObject *p,
     JSProperty *pr1;
     
     var_ref = pr->u.var_ref;
-    if (var_ref->header.ref_count == 1)
-        return 0;
+    /* ref_count check removed - using mark-and-sweep GC */
+    (void)var_ref;
     p1 = JS_VALUE_GET_OBJ(p->u.global_object.uninitialized_vars);
     pr1 = add_property(ctx, p1, prs->atom, JS_PROP_C_W_E | JS_PROP_VARREF);
     if (!pr1)
         return -1;
     pr1->u.var_ref = var_ref;
-    var_ref->header.ref_count++;
+    /* ref_count removed - using mark-and-sweep GC */
     JS_FreeValue(ctx, var_ref->value);
     var_ref->is_lexical = FALSE;
     var_ref->is_const = FALSE;
@@ -9886,7 +9684,7 @@ static int JS_CreateProperty(JSContext *ctx, JSObject *p,
             if (prs1) {
                 delete_obj = p1;
                 var_ref = pr1->u.var_ref;
-                var_ref->header.ref_count++;
+                /* ref_count removed - using mark-and-sweep GC */
             } else {
                 var_ref = js_create_var_ref(ctx, FALSE);
                 if (!var_ref)
@@ -9971,7 +9769,7 @@ static int js_shape_prepare_update(JSContext *ctx, JSObject *p,
 
     sh = p->shape;
     if (sh->is_hashed) {
-        if (sh->header.ref_count != 1) {
+        if (0) {
             if (pprs)
                 idx = *pprs - get_shape_prop(sh);
             /* clone the shape (the resulting one is no longer hashed) */
@@ -11262,7 +11060,7 @@ static JSBigInt *js_bigint_new(JSContext *ctx, int len)
     r = js_malloc(ctx, sizeof(JSBigInt) + len * sizeof(js_limb_t));
     if (!r)
         return NULL;
-    r->header.ref_count = 1;
+    r/* ref_count removed - using mark-and-sweep GC */
     r->len = len;
     return r;
 }
@@ -11270,7 +11068,7 @@ static JSBigInt *js_bigint_new(JSContext *ctx, int len)
 static JSBigInt *js_bigint_set_si(JSBigIntBuf *buf, js_slimb_t a)
 {
     JSBigInt *r = (JSBigInt *)buf->big_int_buf;
-    r->header.ref_count = 0; /* fail safe */
+    r/* ref_count removed - using mark-and-sweep GC */ /* fail safe */
     r->len = 1;
     r->tab[0] = a;
     return r;
@@ -11282,7 +11080,7 @@ static JSBigInt *js_bigint_set_si64(JSBigIntBuf *buf, int64_t a)
     return js_bigint_set_si(buf, a);
 #else
     JSBigInt *r = (JSBigInt *)buf->big_int_buf;
-    r->header.ref_count = 0; /* fail safe */
+    r/* ref_count removed - using mark-and-sweep GC */ /* fail safe */
     if (a >= INT32_MIN && a <= INT32_MAX) {
         r->len = 1;
         r->tab[0] = a;
@@ -11397,7 +11195,7 @@ static JSBigInt *js_bigint_normalize1(JSContext *ctx, JSBigInt *a, int l)
 {
     js_limb_t v;
 
-    assert(a->header.ref_count == 1);
+    assert(1);
     while (l > 1) {
         v = a->tab[l - 1];
         if ((v != 0 && v != -1) ||
@@ -13488,8 +13286,8 @@ static void js_print_string(JSPrintValueState *s, JSValueConst val)
     int sep;
     if (s->options.raw_dump && JS_VALUE_GET_TAG(val) == JS_TAG_STRING) {
         JSString *p = JS_VALUE_GET_STRING(val);
-        js_printf(s, "%d", p->header.ref_count);
-        sep = (p->header.ref_count == 1) ? '\"' : '\'';
+        js_printf(s, "%d", 0);
+        sep = '\"';  /* ref_count removed - using mark-and-sweep GC */
     } else {
         sep = '\"';
     }
@@ -14171,10 +13969,10 @@ static __maybe_unused void JS_DumpObject(JSRuntime *rt, JSObject *p)
     sh = p->shape; /* the shape can be NULL while freeing an object */
     printf("%14p %4d ",
            (void *)p,
-           p->header.ref_count);
+           0);
     if (sh) {
         printf("%3d%c %14p ",
-               sh->header.ref_count,
+               0,  /* ref_count removed */
                " *"[sh->is_hashed],
                (void *)sh->proto);
     } else {
@@ -14197,7 +13995,7 @@ static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, JSGCObjectHeader *p)
     } else {
         printf("%14p %4d ",
                (void *)p,
-               p->ref_count);
+               0);
         switch(p->gc_obj_type) {
         case JS_GC_OBJ_TYPE_FUNCTION_BYTECODE:
             printf("[function bytecode]");
@@ -16681,7 +16479,7 @@ static JSVarRef *js_create_var_ref(JSContext *ctx, BOOL is_lexical)
     var_ref = js_malloc(ctx, sizeof(JSVarRef));
     if (!var_ref)
         return NULL;
-    var_ref->header.ref_count = 1;
+    /* ref_count removed - using mark-and-sweep GC */
     if (is_lexical)
         var_ref->value = JS_UNINITIALIZED;
     else
@@ -16721,7 +16519,7 @@ static JSVarRef *get_var_ref(JSContext *ctx, JSStackFrame *sf, int var_idx,
     if (var_ref) {
         /* reference to the already created local variable */
         assert(var_ref->pvalue == pvalue);
-        var_ref->header.ref_count++;
+        /* ref_count removed - using mark-and-sweep GC */
         return var_ref;
     }
 
@@ -16729,7 +16527,7 @@ static JSVarRef *get_var_ref(JSContext *ctx, JSStackFrame *sf, int var_idx,
     var_ref = js_malloc(ctx, sizeof(JSVarRef));
     if (!var_ref)
         return NULL;
-    var_ref->header.ref_count = 1;
+    /* ref_count removed - using mark-and-sweep GC */
     add_gc_object(ctx->rt, &var_ref->header, JS_GC_OBJ_TYPE_VAR_REF);
     var_ref->is_detached = FALSE;
     var_ref->is_lexical = FALSE;
@@ -16747,7 +16545,7 @@ static JSVarRef *get_var_ref(JSContext *ctx, JSStackFrame *sf, int var_idx,
            the JSVarRef of async functions during the GC. It would
            have the advantage of allowing the release of unused stack
            frames in a cycle. */
-        async_func->header.ref_count++;
+        /* ref_count removed - using mark-and-sweep GC */
     }
     var_ref->pvalue = pvalue;
     return var_ref;
@@ -16778,7 +16576,7 @@ static JSVarRef *js_global_object_get_uninitialized_var(JSContext *ctx, JSObject
     if (prs) {
         assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
         var_ref = pr->u.var_ref;
-        var_ref->header.ref_count++;
+        /* ref_count removed - using mark-and-sweep GC */
         return var_ref;
     }
 
@@ -16791,7 +16589,7 @@ static JSVarRef *js_global_object_get_uninitialized_var(JSContext *ctx, JSObject
         return NULL;
     }
     pr->u.var_ref = var_ref;
-    var_ref->header.ref_count++;
+    /* ref_count removed - using mark-and-sweep GC */
     return var_ref;
 }
 
@@ -16810,7 +16608,7 @@ static JSVarRef *js_global_object_find_uninitialized_var(JSContext *ctx, JSObjec
     if (prs) {
         assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
         var_ref = pr->u.var_ref;
-        var_ref->header.ref_count++;
+        /* ref_count removed - using mark-and-sweep GC */
         delete_property(ctx, p1, atom);
         if (!is_lexical)
             var_ref->value = JS_UNDEFINED;
@@ -16841,7 +16639,7 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
         if (prs) {
             assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
             var_ref = pr->u.var_ref;
-            var_ref->header.ref_count++;
+            /* ref_count removed - using mark-and-sweep GC */
             return var_ref;
         }
 
@@ -16879,7 +16677,7 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
                     return NULL;
             } else {
                 var_ref = pr->u.var_ref;
-                var_ref->header.ref_count++;
+                /* ref_count removed - using mark-and-sweep GC */
             }
             if (cv->var_kind == JS_VAR_GLOBAL_FUNCTION_DECL &&
                 (prs->flags & JS_PROP_CONFIGURABLE)) {
@@ -16889,7 +16687,7 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
                     free_property(ctx->rt, pr, prs->flags);
                     prs->flags = flags | JS_PROP_VARREF;
                     pr->u.var_ref = var_ref;
-                    var_ref->header.ref_count++;
+                    /* ref_count removed - using mark-and-sweep GC */
                 } else {
                     assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
                     prs->flags = (prs->flags & ~JS_PROP_C_W_E) | flags;
@@ -16921,7 +16719,7 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
         return NULL;
     }
     pr->u.var_ref = var_ref;
-    var_ref->header.ref_count++;
+    /* ref_count removed - using mark-and-sweep GC */
     
     /* bgmdwnldr: sync global var to window object */
     /* forward declaration - function defined in js_quickjs.c */
@@ -16943,7 +16741,7 @@ static JSVarRef *js_closure_global_var(JSContext *ctx, JSClosureVar *cv)
     if (prs) {
         assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
         var_ref = pr->u.var_ref;
-        var_ref->header.ref_count++;
+        /* ref_count removed - using mark-and-sweep GC */
         return var_ref;
     }
     p = JS_VALUE_GET_OBJ(ctx->global_obj);
@@ -16958,7 +16756,7 @@ static JSVarRef *js_closure_global_var(JSContext *ctx, JSClosureVar *cv)
         }
         if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
             var_ref = pr->u.var_ref;
-            var_ref->header.ref_count++;
+            /* ref_count removed - using mark-and-sweep GC */
             return var_ref;
         }
     }
@@ -17027,7 +16825,7 @@ static JSValue js_closure2(JSContext *ctx, JSValue func_obj,
             case JS_CLOSURE_REF:
             case JS_CLOSURE_GLOBAL_REF:
                 var_ref = cur_var_refs[cv->var_idx];
-                var_ref->header.ref_count++;
+                /* ref_count removed - using mark-and-sweep GC */
                 break;
             default:
                 abort();
@@ -18499,7 +18297,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                     goto exception;
                 if (opcode == OP_make_var_ref_ref) {
                     var_ref = var_refs[idx];
-                    var_ref->header.ref_count++;
+                    /* ref_count removed - using mark-and-sweep GC */
                 } else {
                     var_ref = get_var_ref(ctx, sf, idx, opcode == OP_make_arg_ref);
                     if (!var_ref)
@@ -20422,7 +20220,7 @@ static JSAsyncFunctionState *async_func_init(JSContext *ctx,
     if (!s)
         return NULL;
     memset(s, 0, sizeof(*s));
-    s->header.ref_count = 1;
+    s/* ref_count removed - using mark-and-sweep GC */
     add_gc_object(ctx->rt, &s->header, JS_GC_OBJ_TYPE_ASYNC_FUNCTION);
 
     sf = &s->frame;
@@ -20512,7 +20310,7 @@ static void __async_func_free(JSRuntime *rt, JSAsyncFunctionState *s)
     JS_FreeValueRT(rt, s->resolving_funcs[1]);
 
     remove_gc_object(&s->header);
-    if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES && s->header.ref_count != 0) {
+    if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES ) {
         list_add_tail(&s->header.link, &rt->gc_zero_ref_count_list);
     } else {
         js_free_rt(rt, s);
@@ -20521,7 +20319,7 @@ static void __async_func_free(JSRuntime *rt, JSAsyncFunctionState *s)
 
 static void async_func_free(JSRuntime *rt, JSAsyncFunctionState *s)
 {
-    if (--s->header.ref_count == 0) {
+    /* ref_count removed - always free now */ if (1) {
         if (rt->gc_phase != JS_GC_PHASE_REMOVE_CYCLES) {
             list_del(&s->header.link);
             list_add(&s->header.link, &rt->gc_zero_ref_count_list);
@@ -20744,7 +20542,7 @@ static int js_async_function_resolve_create(JSContext *ctx,
             return -1;
         }
         p = JS_VALUE_GET_OBJ(resolving_funcs[i]);
-        s->header.ref_count++;
+        /* ref_count removed - using mark-and-sweep GC */
         p->u.async_function_data = s;
     }
     return 0;
@@ -29346,7 +29144,7 @@ static JSModuleDef *js_new_module_def(JSContext *ctx, JSAtom name)
         JS_FreeAtom(ctx, name);
         return NULL;
     }
-    m->header.ref_count = 1;
+    m/* ref_count removed - using mark-and-sweep GC */
     add_gc_object(ctx->rt, &m->header, JS_GC_OBJ_TYPE_MODULE);
     m->module_name = name;
     m->module_ns = JS_UNDEFINED;
@@ -29434,7 +29232,7 @@ static void js_free_module_def(JSRuntime *rt, JSModuleDef *m)
         list_del(&m->link);
     }
     remove_gc_object(&m->header);
-    if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES && m->header.ref_count != 0) {
+    if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES ) {
         list_add_tail(&m->header.link, &rt->gc_zero_ref_count_list);
     } else {
         js_free_rt(rt, m);
@@ -30154,7 +29952,7 @@ static JSValue js_build_module_ns(JSContext *ctx, JSModuleDef *m)
                                   JS_PROP_VARREF);
                 if (!pr)
                     goto fail;
-                var_ref->header.ref_count++;
+                /* ref_count removed - using mark-and-sweep GC */
                 pr->u.var_ref = var_ref;
             }
             break;
@@ -30445,7 +30243,7 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
                         p1 = JS_VALUE_GET_OBJ(res_m->func_obj);
                         var_ref = p1->u.func.var_refs[res_me->u.local.var_idx];
                     }
-                    var_ref->header.ref_count++;
+                    /* ref_count removed - using mark-and-sweep GC */
                     var_refs[mi->var_idx] = var_ref;
 #ifdef DUMP_MODULE_RESOLVE
                     printf("local export (var_ref=%p)\n", var_ref);
@@ -30461,7 +30259,7 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
             JSExportEntry *me = &m->export_entries[i];
             if (me->export_type == JS_EXPORT_TYPE_LOCAL) {
                 var_ref = var_refs[me->u.local.var_idx];
-                var_ref->header.ref_count++;
+                /* ref_count removed - using mark-and-sweep GC */
                 me->u.local.var_ref = var_ref;
             }
         }
@@ -35818,7 +35616,7 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     b = js_mallocz(ctx, function_size);
     if (!b)
         goto fail;
-    b->header.ref_count = 1;
+    b/* ref_count removed - using mark-and-sweep GC */
 
     b->byte_code_buf = (void *)((uint8_t*)b + byte_code_offset);
     b->byte_code_len = fd->byte_code.size;
@@ -36000,7 +35798,7 @@ static void free_function_bytecode(JSRuntime *rt, JSFunctionBytecode *b)
     }
 
     remove_gc_object(&b->header);
-    if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES && b->header.ref_count != 0) {
+    if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES ) {
         list_add_tail(&b->header.link, &rt->gc_zero_ref_count_list);
     } else {
         js_free_rt(rt, b);
@@ -38434,7 +38232,7 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
     int closure_var_offset, vardefs_offset;
 
     memset(&bc, 0, sizeof(bc));
-    bc.header.ref_count = 1;
+    /* ref_count removed - using mark-and-sweep GC */
     //bc.gc_header.mark = 0;
 
     if (bc_get_u16(s, &v16))
@@ -38497,7 +38295,7 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
         return JS_EXCEPTION;
 
     memcpy(b, &bc, offsetof(JSFunctionBytecode, debug));
-    b->header.ref_count = 1;
+    b/* ref_count removed - using mark-and-sweep GC */
     if (local_count != 0) {
         b->vardefs = (void *)((uint8_t*)b + vardefs_offset);
     }
@@ -50976,7 +50774,7 @@ static void js_weakref_free(JSRuntime *rt, JSValue val)
         /* 'mark' is tested to avoid freeing the object structure when
            it is about to be freed in a cycle or in
            free_zero_refcount() */
-        if (p->weakref_count == 0 && p->header.ref_count == 0 &&
+        if (p->weakref_count == 0  &&
             p->header.mark == 0) {
             js_free_rt(rt, p);
         }
@@ -50984,7 +50782,7 @@ static void js_weakref_free(JSRuntime *rt, JSValue val)
         JSString *p = JS_VALUE_GET_STRING(val);
         assert(p->hash >= 1);
         p->hash--;
-        if (p->hash == 0 && p->header.ref_count == 0) {
+        if (p->hash == 0 ) {
             /* can remove the dummy structure */
             js_free_rt(rt, p);
         }

@@ -136,8 +136,7 @@ JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type) {
         return JS_OBJ_HANDLE_NULL;
     }
     
-    /* Initialize header */
-    obj->ref_count = 1;
+    /* Initialize header - ref_count removed, using mark-and-sweep GC */
     obj->size = total_size;
     obj->gc_obj_type = type;
     obj->mark = 0;
@@ -156,34 +155,23 @@ JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type) {
     return handle;
 }
 
-/* Retain (increment refcount) */
+/* Note: js_handle_retain removed - using mark-and-sweep GC only */
 void js_handle_retain(JSHandleGCState *gc, JSObjHandle handle) {
-    void *data = js_handle_deref(gc, handle);
-    if (data) {
-        js_handle_header(data)->ref_count++;
-    }
+    (void)gc;
+    (void)handle;
+    /* No-op: mark-and-sweep GC handles object lifetime */
 }
 
-/* Release (decrement refcount, free if zero) */
+/* Note: js_handle_release removed - using mark-and-sweep GC only */
 void js_handle_release(JSHandleGCState *gc, JSObjHandle handle) {
-    void *data = js_handle_deref(gc, handle);
-    if (!data) return;
-    
-    JSGCObjectHeader *obj = js_handle_header(data);
-    assert(obj->ref_count > 0);
-    obj->ref_count--;
-    /* Object becomes "zombie" when ref_count reaches 0.
-     * It stays in memory until GC collects it.
-     * Handle stays valid but js_handle_deref returns NULL for zombies.
-     */
+    (void)gc;
+    (void)handle;
+    /* No-op: mark-and-sweep GC handles object lifetime */
 }
 
-/* Add root */
+/* Add root - no refcounting, object is kept alive via mark-and-sweep roots */
 void js_handle_add_root(JSHandleGCState *gc, JSObjHandle handle) {
     if (handle == JS_OBJ_HANDLE_NULL) return;
-    
-    /* Increment refcount to keep object alive */
-    js_handle_retain(gc, handle);
     
     /* Grow if needed */
     if (gc->root_count >= gc->root_capacity) {
@@ -205,8 +193,6 @@ void js_handle_remove_root(JSHandleGCState *gc, JSObjHandle handle) {
         if (gc->roots[i] == handle) {
             /* Swap with last and shrink */
             gc->roots[i] = gc->roots[--gc->root_count];
-            /* Decrement refcount - may become zombie if last reference */
-            js_handle_release(gc, handle);
             return;
         }
     }
@@ -378,10 +364,7 @@ bool js_handle_gc_validate(JSHandleGCState *gc, char *error_buffer, size_t error
             ERROR("Handle %u: size %u not aligned to 8", i, obj->size);
         }
         
-        /* Check refcount valid */
-        if (obj->ref_count < 0) {
-            ERROR("Handle %u: negative refcount %d", i, obj->ref_count);
-        }
+        /* Note: refcount check removed - using mark-and-sweep GC */
     }
     
     /* Check stack consistency */

@@ -14,18 +14,16 @@
 #define JSGCObjectHeader JSGCObjectHeader_HandleGC
 
 /* QuickJS expects these fields in JSGCObjectHeader:
- * - int ref_count (must be first)
  * - gc_obj_type : 4
  * - mark : 1
  * Plus a struct list_head link for the linked list
  * 
  * We'll replace the linked list with handle-based tracking.
+ * Note: ref_count removed - using mark-and-sweep GC only.
  */
 
 /* Redefine the header to include handle field */
 struct JSGCObjectHeader_HandleGC {
-    int ref_count; /* must come first, 32-bit - compatible with QuickJS */
-    
     /* Pack type info into single byte to match QuickJS expectations */
     JSGCObjectTypeEnum gc_obj_type : 4;
     uint8_t mark : 1;

@@ -137,7 +137,7 @@ JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type) {
     }
     
     /* Initialize header */
-    obj->ref_count = 1;
+    /* ref_count removed - using mark-and-sweep GC */
     obj->size = total_size;
     obj->gc_obj_type = type;
     obj->mark = 0;
@@ -160,7 +160,7 @@ JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type) {
 void js_handle_retain(JSHandleGCState *gc, JSObjHandle handle) {
     void *data = js_handle_deref(gc, handle);
     if (data) {
-        js_handle_header(data)->ref_count++;
+        /* ref_count removed - using mark-and-sweep GC */
     }
 }
 
@@ -170,12 +170,7 @@ void js_handle_release(JSHandleGCState *gc, JSObjHandle handle) {
     if (!data) return;
     
     JSGCObjectHeader *obj = js_handle_header(data);
-    assert(obj->ref_count > 0);
-    obj->ref_count--;
-    /* Object becomes "zombie" when ref_count reaches 0.
-     * It stays in memory until GC collects it.
-     * Handle stays valid but js_handle_deref returns NULL for zombies.
-     */
+    /* ref_count removed - using mark-and-sweep GC */
 }
 
 /* Add root */
@@ -230,8 +225,7 @@ static void mark_children(JSHandleGCState *gc, JSGCObjectHeader *obj) {
 /* Mark a single object and its children */
 static void mark_object(JSHandleGCState *gc, JSObjHandle handle) {
     /* Mark from roots.
-     * Note: handle may be "zombie" (ref_count==0) but still in root set.
-     * We mark it anyway - GC will collect it if it's not reachable from live roots.
+     * We mark it - GC will collect it if it's not reachable from live roots.
      */
     if (__builtin_expect(handle == 0 || handle >= gc->handle_count, 0)) {
         return;
@@ -378,10 +372,7 @@ bool js_handle_gc_validate(JSHandleGCState *gc, char *error_buffer, size_t error
             ERROR("Handle %u: size %u not aligned to 8", i, obj->size);
         }
         
-        /* Check refcount valid */
-        if (obj->ref_count < 0) {
-            ERROR("Handle %u: negative refcount %d", i, obj->ref_count);
-        }
+        /* Note: refcount check removed - using mark-and-sweep GC */
     }
     
     /* Check stack consistency */

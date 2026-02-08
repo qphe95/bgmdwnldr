@@ -30,7 +30,6 @@ typedef enum {
 
 /* New object header - embedded at start of every GC object */
 typedef struct JSGCObjectHeader {
-    int ref_count;                    /* Must be first for compatibility */
     JSObjHandle handle;               /* My handle ID - key for compaction */
     uint32_t size;                    /* Total size including header */
     JSGCObjectTypeEnum gc_obj_type : 8;
@@ -99,11 +98,7 @@ static inline void* js_handle_deref(JSHandleGCState *gc, JSObjHandle handle) {
     if (__builtin_expect(!ptr, 0)) {
         return NULL;  /* Free handle or zombie collected by GC */
     }
-    /* Check if ref_count is 0 (zombie object - released but not yet collected) */
-    JSGCObjectHeader *obj = js_handle_header(ptr);
-    if (__builtin_expect(obj->ref_count == 0, 0)) {
-        return NULL;
-    }
+    /* Note: ref_count check removed - using mark-and-sweep GC */
     return ptr;
 }
 
