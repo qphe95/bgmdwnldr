@@ -49,6 +49,11 @@ static JSValue js_true(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     return JS_TRUE;
 }
 
+// Helper to get a prototype from a constructor: Constructor.prototype
+JSValue js_get_prototype(JSContext *ctx, JSValueConst ctor) {
+    return JS_GetPropertyStr(ctx, ctor, "prototype");
+}
+
 static JSValue js_zero(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
     return JS_NewInt32(ctx, 0);
@@ -2626,12 +2631,17 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyFunctionList(ctx, dom_exception_proto, js_dom_exception_proto_funcs,
         sizeof(js_dom_exception_proto_funcs) / sizeof(js_dom_exception_proto_funcs[0]));
     
-    // Set up prototype chain: DOMException.prototype -> Error.prototype
+    // Set up prototype chain: DOMException.prototype -> Error.prototype using Object.setPrototypeOf
     JSValue error_ctor = JS_GetPropertyStr(ctx, global, "Error");
     if (!JS_IsException(error_ctor)) {
         JSValue error_proto = JS_GetPropertyStr(ctx, error_ctor, "prototype");
         if (!JS_IsException(error_proto)) {
-            JS_SetPrototype(ctx, dom_exception_proto, error_proto);
+            JSValue obj_ctor = JS_GetPropertyStr(ctx, global, "Object");
+            JSValue set_proto = JS_GetPropertyStr(ctx, obj_ctor, "setPrototypeOf");
+            JSValue args[2] = { dom_exception_proto, error_proto };
+            JS_FreeValue(ctx, JS_Call(ctx, set_proto, JS_UNDEFINED, 2, args));
+            JS_FreeValue(ctx, set_proto);
+            JS_FreeValue(ctx, obj_ctor);
             JS_FreeValue(ctx, error_proto);
         }
         JS_FreeValue(ctx, error_ctor);
@@ -2735,8 +2745,11 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     // Reference counting rules:
     // - JS_NewCFunction2/JS_NewObject: returns value with refcount 1
     // - JS_SetPropertyStr: duplicates the value (refcount +1)
-    // - JS_SetPrototype: adds reference to prototype (refcount +1)
     // After setting a property, we MUST free the local reference!
+    
+    // Helper to set up prototype chain using Object.setPrototypeOf
+    JSValue object_ctor = JS_GetPropertyStr(ctx, global, "Object");
+    JSValue set_proto_of = JS_GetPropertyStr(ctx, object_ctor, "setPrototypeOf");
     
     // EventTarget constructor (base of all DOM constructors)
     JSValue event_target_ctor = JS_NewCFunction2(ctx, js_dummy_function, "EventTarget", 0, JS_CFUNC_constructor, 0);
@@ -2751,7 +2764,9 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue node_ctor = JS_NewCFunction2(ctx, js_dummy_function, "Node", 0, JS_CFUNC_constructor, 0);
     JSValue node_proto = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, node_proto, "constructor", node_ctor);
-    JS_SetPrototype(ctx, node_proto, event_target_proto);
+    // Node.prototype -> EventTarget.prototype
+    JSValue args_node[2] = { node_proto, event_target_proto };
+    JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args_node));
     JS_SetPropertyStr(ctx, node_ctor, "prototype", node_proto);
     JS_SetPropertyStr(ctx, global, "Node", node_ctor);
     JS_FreeValue(ctx, node_ctor);
@@ -2763,7 +2778,9 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue element_ctor = JS_NewCFunction2(ctx, js_dummy_function, "Element", 0, JS_CFUNC_constructor, 0);
     JSValue element_proto = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, element_proto, "constructor", element_ctor);
-    JS_SetPrototype(ctx, element_proto, node_proto);
+    // Element.prototype -> Node.prototype
+    JSValue args_element[2] = { element_proto, node_proto };
+    JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args_element));
     JS_SetPropertyStr(ctx, element_ctor, "prototype", element_proto);
     JS_SetPropertyStr(ctx, global, "Element", element_ctor);
     // DON'T free element_ctor yet - we need it for document.documentElement below
@@ -2774,7 +2791,9 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue html_element_ctor = JS_NewCFunction2(ctx, js_dummy_function, "HTMLElement", 0, JS_CFUNC_constructor, 0);
     JSValue html_element_proto = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, html_element_proto, "constructor", html_element_ctor);
-    JS_SetPrototype(ctx, html_element_proto, element_proto);
+    // HTMLElement.prototype -> Element.prototype
+    JSValue args_html_element[2] = { html_element_proto, element_proto };
+    JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args_html_element));
     JS_SetPropertyStr(ctx, html_element_ctor, "prototype", html_element_proto);
     JS_SetPropertyStr(ctx, global, "HTMLElement", html_element_ctor);
     // DON'T free html_element_ctor yet - we need it for document.body below
@@ -2785,11 +2804,71 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JSValue doc_fragment_ctor = JS_NewCFunction2(ctx, js_dummy_function, "DocumentFragment", 0, JS_CFUNC_constructor, 0);
     JSValue doc_fragment_proto = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, doc_fragment_proto, "constructor", doc_fragment_ctor);
-    JS_SetPrototype(ctx, doc_fragment_proto, node_proto);  // node_proto still valid here
+    // DocumentFragment.prototype -> Node.prototype
+    JSValue args_doc_frag[2] = { doc_fragment_proto, node_proto };
+    JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args_doc_frag));
     JS_SetPropertyStr(ctx, doc_fragment_ctor, "prototype", doc_fragment_proto);
     JS_SetPropertyStr(ctx, global, "DocumentFragment", doc_fragment_ctor);
     JS_FreeValue(ctx, doc_fragment_ctor);
     JS_FreeValue(ctx, doc_fragment_proto);
+    
+    // ===== Ensure DOM Prototype Chain Integrity =====
+    // Re-fetch prototypes from global to ensure chains are properly linked
+    // This handles cases where JS code may have modified prototypes
+    
+    JSValue event_target_check = JS_GetPropertyStr(ctx, global, "EventTarget");
+    JSValue node_check = JS_GetPropertyStr(ctx, global, "Node");
+    JSValue element_check = JS_GetPropertyStr(ctx, global, "Element");
+    JSValue html_element_check = JS_GetPropertyStr(ctx, global, "HTMLElement");
+    JSValue doc_fragment_check = JS_GetPropertyStr(ctx, global, "DocumentFragment");
+    
+    JSValue event_target_proto_check = js_get_prototype(ctx, event_target_check);
+    JSValue node_proto_check = js_get_prototype(ctx, node_check);
+    JSValue element_proto_check = js_get_prototype(ctx, element_check);
+    JSValue html_element_proto_check = js_get_prototype(ctx, html_element_check);
+    JSValue doc_fragment_proto_check = js_get_prototype(ctx, doc_fragment_check);
+    
+    // Ensure prototype chains using Object.setPrototypeOf
+    if (!JS_IsUndefined(node_proto_check) && !JS_IsNull(node_proto_check) &&
+        !JS_IsUndefined(event_target_proto_check) && !JS_IsNull(event_target_proto_check)) {
+        JSValue args1[2] = { node_proto_check, event_target_proto_check };
+        JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args1));
+    }
+    
+    if (!JS_IsUndefined(element_proto_check) && !JS_IsNull(element_proto_check) &&
+        !JS_IsUndefined(node_proto_check) && !JS_IsNull(node_proto_check)) {
+        JSValue args2[2] = { element_proto_check, node_proto_check };
+        JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args2));
+    }
+    
+    if (!JS_IsUndefined(html_element_proto_check) && !JS_IsNull(html_element_proto_check) &&
+        !JS_IsUndefined(element_proto_check) && !JS_IsNull(element_proto_check)) {
+        JSValue args3[2] = { html_element_proto_check, element_proto_check };
+        JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args3));
+    }
+    
+    if (!JS_IsUndefined(doc_fragment_proto_check) && !JS_IsNull(doc_fragment_proto_check) &&
+        !JS_IsUndefined(node_proto_check) && !JS_IsNull(node_proto_check)) {
+        JSValue args4[2] = { doc_fragment_proto_check, node_proto_check };
+        JS_FreeValue(ctx, JS_Call(ctx, set_proto_of, JS_UNDEFINED, 2, args4));
+    }
+    
+    JS_FreeValue(ctx, event_target_proto_check);
+    JS_FreeValue(ctx, node_proto_check);
+    JS_FreeValue(ctx, element_proto_check);
+    JS_FreeValue(ctx, html_element_proto_check);
+    JS_FreeValue(ctx, doc_fragment_proto_check);
+    
+    JS_FreeValue(ctx, event_target_check);
+    JS_FreeValue(ctx, node_check);
+    JS_FreeValue(ctx, element_check);
+    JS_FreeValue(ctx, html_element_check);
+    JS_FreeValue(ctx, doc_fragment_check);
+    
+    // Clean up Object.setPrototypeOf helper
+    JS_FreeValue(ctx, set_proto_of);
+    JS_FreeValue(ctx, object_ctor);
+    
     // node_proto will be freed after adding methods below
     
     // ===== EventTarget prototype methods =====
@@ -2837,7 +2916,7 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     // Do NOT free the prototypes here!
     // They are still referenced by:
     // 1. The constructor's 'prototype' property (set via JS_SetPropertyStr)
-    // 2. The prototype chain links (set via JS_SetPrototype)
+    // 2. The prototype chain links (set via Object.setPrototypeOf)
     // 3. Each other through parent prototype relationships
     // Freeing them now would create dangling pointers.
     // QuickJS garbage collector will clean them up when the context is freed.

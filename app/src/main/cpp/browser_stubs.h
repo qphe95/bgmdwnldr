@@ -27,4 +27,7 @@ extern JSClassID js_map_class_id;
 // Initialize all browser stubs
 void init_browser_stubs(JSContext *ctx, JSValue global);
 
+// Helper to get a prototype from a constructor: Constructor.prototype
+JSValue js_get_prototype(JSContext *ctx, JSValueConst ctor);
+
 #endif // BROWSER_STUBS_H
