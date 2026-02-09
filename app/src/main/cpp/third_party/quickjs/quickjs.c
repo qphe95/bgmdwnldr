@@ -39015,7 +39015,6 @@ static JSAtom find_atom(JSContext *ctx, const char *name)
 {
     JSAtom atom;
     int len;
-    QJS_LOGD("find_atom: looking up '%s'", name);
     if (*name == '[') {
         name++;
         len = strlen(name) - 1;
@@ -39034,7 +39033,6 @@ static JSAtom find_atom(JSContext *ctx, const char *name)
         }
         /* Instead of aborting, return JS_ATOM_NULL to indicate failure */
         /* This allows the caller to handle the error gracefully */
-        QJS_LOGE("find_atom: symbol not found: [%s]", name);
         return JS_ATOM_NULL;
     } else {
         atom = JS_NewAtom(ctx, name);
@@ -39220,8 +39218,7 @@ int JS_SetPropertyFunctionList(JSContext *ctx, JSValueConst obj,
                                const JSCFunctionListEntry *tab, int len)
 {
     int i, ret;
-    QJS_LOGD("JS_SetPropertyFunctionList: called with %d entries", len);
-    for (i = 0; i < len; i++) {
+    for(i = 0; i < len; i++) {
         const JSCFunctionListEntry *e = &tab[i];
         JSAtom atom = find_atom(ctx, e->name);
         if (atom == JS_ATOM_NULL)
