@@ -5,6 +5,17 @@
 #include <ctype.h>
 #include <android/log.h>
 #include "js_quickjs.h"
+#include <setjmp.h>
+#include <signal.h>
+
+static volatile sig_atomic_t qjs_abort_received = 0;
+static sigjmp_buf qjs_jmpbuf;
+
+static void qjs_sigabrt_handler(int sig) {
+    (void)sig;
+    qjs_abort_received = 1;
+    siglongjmp(qjs_jmpbuf, 1);
+}
 #include "cutils.h"
 #include "quickjs.h"
 #include "browser_stubs.h"
@@ -850,7 +861,23 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     // Initialize class IDs first (must happen before any other QuickJS calls)
     js_quickjs_init();
     
-    // Create runtime and context
+    // Set up signal handler to catch abort() from QuickJS during context creation
+    qjs_abort_received = 0;
+    struct sigaction old_sa, new_sa;
+    memset(&new_sa, 0, sizeof(new_sa));
+    new_sa.sa_handler = qjs_sigabrt_handler;
+    sigemptyset(&new_sa.sa_mask);
+    sigaction(SIGABRT, &new_sa, &old_sa);
+    
+    if (sigsetjmp(qjs_jmpbuf, 1)) {
+        // We jumped here from the signal handler
+        LOG_ERROR("QuickJS aborted - caught SIGABRT during initialization");
+        sigaction(SIGABRT, &old_sa, NULL);
+        out_result->status = JS_EXEC_ERROR;
+        return false;
+    }
+    
+    // Create runtime and context (protected by signal handler)
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) {
         LOG_ERROR("Failed to create QuickJS runtime");
@@ -871,9 +898,13 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     }
     if (!ctx) {
         LOG_ERROR("Failed to create QuickJS context");
+        sigaction(SIGABRT, &old_sa, NULL);
         JS_FreeRuntime(rt);
         return false;
     }
+    
+    // Context creation successful - restore original signal handler
+    sigaction(SIGABRT, &old_sa, NULL);
     
     // NOW register custom classes after context is created
     JSClassDef xhr_def = {"XMLHttpRequest", .finalizer = js_xhr_finalizer};

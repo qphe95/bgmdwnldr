@@ -10116,8 +10116,7 @@ static int JS_DefineAutoInitProperty(JSContext *ctx, JSValueConst this_obj,
     p = JS_VALUE_GET_OBJ(this_obj);
 
     if (find_own_property(&pr, p, prop)) {
-        /* property already exists */
-        abort();
+        /* property already exists - skip instead of aborting */
         return FALSE;
     }
 
@@ -14225,7 +14224,8 @@ static no_inline __exception int js_unary_arith_slow(JSContext *ctx,
                 }
                 break;
             default:
-                abort();
+                /* Unsupported operation */
+                return -1;
             }
             sp[-1] = JS_NewInt64(ctx, v64);
         }
@@ -39114,7 +39114,9 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, JSValueConst obj,
                 val = JS_GetProperty(ctx, ctx->class_proto[JS_CLASS_ARRAY], atom1);
                 break;
             default:
-                abort();
+                /* Invalid base value, free atom and return error */
+                JS_FreeAtom(ctx, atom1);
+                return -1;
             }
             JS_FreeAtom(ctx, atom1);
             if (JS_IsException(val))
