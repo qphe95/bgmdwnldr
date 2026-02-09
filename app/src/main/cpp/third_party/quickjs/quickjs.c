@@ -5983,7 +5983,9 @@ static void free_gc_object(JSRuntime *rt, JSGCObjectHeader *gp)
         js_free_module_def(rt, (JSModuleDef *)gp);
         break;
     default:
-        abort();
+        /* Unknown object type - just free the header */
+        js_free_rt(rt, gp);
+        break;
     }
 }
 
