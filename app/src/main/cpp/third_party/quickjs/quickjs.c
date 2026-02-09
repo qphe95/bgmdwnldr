@@ -357,6 +357,7 @@ typedef enum {
    reference other GC objects. JS Objects are a particular type of GC object.
    Note: ref_count removed - using mark-and-sweep GC only. */
 struct JSGCObjectHeader {
+    int ref_count_unused;
     JSGCObjectTypeEnum gc_obj_type : 4;
     uint8_t mark : 1; /* used by the GC */
     uint8_t dummy0: 3;
@@ -425,7 +426,7 @@ typedef uint128_t js_dlimb_t;
 
 typedef struct JSBigInt {
     JSRefCountHeader header; /* must come first, 32-bit */
-    uint32_t len; /* number of limbs, >= 1 
+    uint32_t len; /* number of limbs, >= 1 */
     js_limb_t tab[]; /* two's complement representation, always
                         normalized so that 'len' is the minimum
                         possible length >= 1 */
@@ -39013,11 +39014,18 @@ static JSAtom find_atom(JSContext *ctx, const char *name)
            symbols */
         for(atom = JS_ATOM_Symbol_toPrimitive; atom < JS_ATOM_END; atom++) {
             JSAtomStruct *p = ctx->rt->atom_array[atom];
+            if (!p) continue;  /* Skip null atoms */
             JSString *str = p;
-            if (str->len == len && !memcmp(str->u.str8, name, len))
-                return JS_DupAtom(ctx, atom);
+            /* Check if 8-bit string and lengths match */
+            if (!str->is_wide_char && str->len == len) {
+                /* Safe to access str8 */
+                if (!memcmp(str->u.str8, name, len))
+                    return JS_DupAtom(ctx, atom);
+            }
         }
-        abort();
+        /* Instead of aborting, return JS_ATOM_NULL to indicate failure */
+        /* This allows the caller to handle the error gracefully */
+        return JS_ATOM_NULL;
     } else {
         atom = JS_NewAtom(ctx, name);
     }
@@ -39052,6 +39060,21 @@ static JSValue JS_InstantiateFunctionListItem2(JSContext *ctx, JSObject *p,
     case JS_DEF_PROP_STRING:
         val = JS_NewAtomString(ctx, e->u.str);
         break;
+    case JS_DEF_PROP_INT32:
+        val = JS_NewInt32(ctx, e->u.i32);
+        break;
+    case JS_DEF_PROP_INT64:
+        val = JS_NewInt64(ctx, e->u.i64);
+        break;
+    case JS_DEF_PROP_DOUBLE:
+        val = JS_NewFloat64(ctx, e->u.f64);
+        break;
+    case JS_DEF_PROP_UNDEFINED:
+        val = JS_UNDEFINED;
+        break;
+    case JS_DEF_PROP_BOOL:
+        val = JS_NewBool(ctx, e->u.i32);
+        break;
     case JS_DEF_OBJECT:
         /* XXX: could add a flag */
         if (atom == JS_ATOM_Symbol_unscopables)
@@ -39062,7 +39085,9 @@ static JSValue JS_InstantiateFunctionListItem2(JSContext *ctx, JSObject *p,
                                     e->u.prop_list.tab, e->u.prop_list.len);
         break;
     default:
-        abort();
+        /* Return undefined for unsupported types instead of aborting */
+        val = JS_UNDEFINED;
+        break;
     }
     return val;
 }
@@ -39171,7 +39196,8 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, JSValueConst obj,
             return -1;
         return 0;
     default:
-        abort();
+        /* Return error for unsupported types instead of aborting */
+        return -1;
     }
     if (JS_DefinePropertyValue(ctx, obj, atom, val, prop_flags) < 0)
         return -1;

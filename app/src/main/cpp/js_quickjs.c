@@ -857,12 +857,18 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         return false;
     }
     
-    JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
-    JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
+    // Note: Don't set memory/stack limits until after context creation
+    // as this may cause issues with internal initialization
     
     // Create context first BEFORE registering custom classes
     // This allows QuickJS to initialize its built-in objects
     JSContext *ctx = JS_NewContext(rt);
+    
+    // Set limits after successful context creation
+    if (ctx) {
+        JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
+        JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
+    }
     if (!ctx) {
         LOG_ERROR("Failed to create QuickJS context");
         JS_FreeRuntime(rt);
