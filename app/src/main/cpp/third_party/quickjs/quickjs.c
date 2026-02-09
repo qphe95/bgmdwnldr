@@ -1944,6 +1944,9 @@ static JSString *js_alloc_string_rt(JSRuntime *rt, int max_len, int is_wide_char
     str = js_malloc_rt(rt, sizeof(JSString) + (max_len << is_wide_char) + 1 - is_wide_char);
     if (unlikely(!str))
         return NULL;
+    /* ASAN fix: Initialize link field before adding to GC list */
+    str->header.link.prev = NULL;
+    str->header.link.next = NULL;
     /* ref_count removed - using mark-and-sweep GC */
     add_gc_object(rt, &str->header, JS_GC_OBJ_TYPE_JS_STRING);
     str->is_wide_char = is_wide_char;
@@ -1974,6 +1977,13 @@ static inline void js_free_string(JSRuntime *rt, JSString *str)
     /* No-op: mark-and-sweep GC handles string lifecycle */
     (void)rt;
     (void)str;
+}
+
+/* ASAN fix: Initialize the link field to prevent false positives */
+static inline void js_string_init_link(JSString *str)
+{
+    str->header.link.prev = NULL;
+    str->header.link.next = NULL;
 }
 
 void JS_SetRuntimeInfo(JSRuntime *rt, const char *s)

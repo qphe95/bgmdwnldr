@@ -37,7 +37,7 @@ adb shell am force-stop $PACKAGE
 
 # Alternative approach: set environment variable and start app
 echo "Starting app with ASAN..."
-adb shell am start -D -n $PACKAGE/$ACTIVITY
+adb shell am start -n $PACKAGE/$ACTIVITY
 
 echo "App started with ASAN enabled"
 echo "Check logcat for ASAN output: adb logcat -d | grep -i asan"
