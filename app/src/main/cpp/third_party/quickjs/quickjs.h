@@ -96,6 +96,9 @@ enum {
 };
 
 /* Note: JSRefCountHeader removed - using mark-and-sweep GC only */
+typedef struct JSRefCountHeader {
+    int ref_count_unused;
+} JSRefCountHeader;
 
 #define JS_FLOAT64_NAN NAN
 

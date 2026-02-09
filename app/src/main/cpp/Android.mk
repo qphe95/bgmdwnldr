@@ -51,7 +51,7 @@ LOCAL_C_INCLUDES := \
     $(TF_PSA_PATH)/core \
     $(QUICKJS_PATH) \
     $(CJSON_PATH)
-LOCAL_CFLAGS := -O2 -DCONFIG_VERSION=\"2024-02-14\" -DCONFIG_BIGNUM -DCONFIG_STACK_CHECK=""
+LOCAL_CFLAGS := -O2 -DCONFIG_VERSION=\"2024-02-14\"
 LOCAL_LDLIBS := -landroid -llog -lvulkan -lmediandk -lm
 LOCAL_STATIC_LIBRARIES := android_native_app_glue
 include $(BUILD_SHARED_LIBRARY)

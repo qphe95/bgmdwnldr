@@ -424,7 +424,8 @@ typedef uint128_t js_dlimb_t;
 #endif
 
 typedef struct JSBigInt {
-    uint32_t len; /* number of limbs, >= 1 */
+    JSRefCountHeader header; /* must come first, 32-bit */
+    uint32_t len; /* number of limbs, >= 1 
     js_limb_t tab[]; /* two's complement representation, always
                         normalized so that 'len' is the minimum
                         possible length >= 1 */
@@ -432,8 +433,7 @@ typedef struct JSBigInt {
 
 /* this bigint structure can hold a 64 bit integer */
 typedef struct {
-    uint32_t len_buf;  /* for JSBigInt.len */
-    js_limb_t big_int_buf[(sizeof(JSBigInt) - sizeof(uint32_t)) / sizeof(js_limb_t)]; /* for JSBigInt padding */
+    js_limb_t big_int_buf[sizeof(JSBigInt) / sizeof(js_limb_t)]; /* for JSBigInt */
     /* must come just after */
     js_limb_t tab[(64 + JS_LIMB_BITS - 1) / JS_LIMB_BITS];
 } JSBigIntBuf;
@@ -518,6 +518,7 @@ typedef enum {
 #define JS_ATOM_HASH_PRIVATE JS_ATOM_HASH_MASK
 
 struct JSString {
+    JSRefCountHeader header; /* must come first, 32-bit */
     uint32_t len : 31;
     uint8_t is_wide_char : 1; /* 0 = 8 bits, 1 = 16 bits characters */
     /* for JS_ATOM_TYPE_SYMBOL: hash = weakref_count, atom_type = 3,
@@ -536,6 +537,7 @@ struct JSString {
 };
 
 typedef struct JSStringRope {
+    JSRefCountHeader header; /* must come first, 32-bit */
     uint32_t len;
     uint8_t is_wide_char; /* 0 = 8 bits, 1 = 16 bits characters */
     uint8_t depth; /* max depth of the rope tree */

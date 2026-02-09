@@ -30,8 +30,8 @@ void js_quickjs_set_asset_manager(AAssetManager *mgr) {
 static JSValue js_dummy_function(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 
 static JSClassID js_http_response_class_id;
-JSClassID js_xhr_class_id;
-JSClassID js_video_class_id;
+JSClassID js_xhr_class_id = 0;
+JSClassID js_video_class_id = 0;
 
 // Global state for URL capture
 static char g_captured_urls[MAX_CAPTURED_URLS][URL_MAX_LEN];
@@ -637,20 +637,20 @@ static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
     LOG_INFO("Browser environment initialized");
 }
 
+// Static initializer for class IDs using GCC constructor attribute
+// This ensures class IDs are initialized before main() is called
+static void __attribute__((constructor)) js_quickjs_init_class_ids(void) {
+    if (js_xhr_class_id == 0) {
+        JS_NewClassID(&js_xhr_class_id);
+    }
+    if (js_video_class_id == 0) {
+        JS_NewClassID(&js_video_class_id);
+    }
+}
+
 bool js_quickjs_init(void) {
-    JSClassDef xhr_class_def = {
-        "XMLHttpRequest",
-        .finalizer = js_xhr_finalizer,
-    };
-    
-    JSClassDef video_class_def = {
-        "HTMLVideoElement",
-        .finalizer = js_video_finalizer,
-    };
-    
-    JS_NewClassID(&js_xhr_class_id);
-    JS_NewClassID(&js_video_class_id);
-    
+    // Class IDs are auto-initialized via constructor attribute
+    // This function is kept for API compatibility
     return true;
 }
 
@@ -847,6 +847,9 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     memset(out_result, 0, sizeof(JsExecResult));
     out_result->status = JS_EXEC_ERROR;
     
+    // Initialize class IDs first (must happen before any other QuickJS calls)
+    js_quickjs_init();
+    
     // Create runtime and context
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) {
@@ -857,6 +860,8 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
     JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
     
+    // Create context first BEFORE registering custom classes
+    // This allows QuickJS to initialize its built-in objects
     JSContext *ctx = JS_NewContext(rt);
     if (!ctx) {
         LOG_ERROR("Failed to create QuickJS context");
@@ -864,31 +869,24 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         return false;
     }
     
-    // Initialize classes
+    // NOW register custom classes after context is created
     JSClassDef xhr_def = {"XMLHttpRequest", .finalizer = js_xhr_finalizer};
     JSClassDef video_def = {"HTMLVideoElement", .finalizer = js_video_finalizer};
-    JS_NewClass(JS_GetRuntime(ctx), js_xhr_class_id, &xhr_def);
-    JS_NewClass(JS_GetRuntime(ctx), js_video_class_id, &video_def);
-    
-    // Initialize browser environment
-    init_browser_environment(ctx, asset_mgr ? asset_mgr : g_asset_mgr);
-    
-    // Create basic browser environment
-    const char *setup_js = 
-        "// Create body element for appendChild\n"
-        "document.body = document.createElement('body');\n"
-        "console.log('Basic browser environment ready');\n"
-    ;
-    
-    LOG_INFO("Setting up basic browser environment...");
-    JSValue setup_result = JS_Eval(ctx, setup_js, strlen(setup_js), "<setup>", 0);
-    if (JS_IsException(setup_result)) {
-        JSValue exception = JS_GetException(ctx);
-        const char *error = JS_ToCString(ctx, exception);
-        LOG_ERROR("Setup error: %s", error ? error : "unknown");
-        JS_FreeCString(ctx, error);
-
+    if (JS_NewClass(rt, js_xhr_class_id, &xhr_def) < 0) {
+        LOG_ERROR("Failed to register XMLHttpRequest class");
     }
+    if (JS_NewClass(rt, js_video_class_id, &video_def) < 0) {
+        LOG_ERROR("Failed to register HTMLVideoElement class");
+    }
+    
+    // Temporarily skip browser environment initialization to debug QuickJS crash
+    LOG_INFO("Skipping browser environment setup for debugging");
+    
+    // Minimal setup - just create a global object
+    JSValue global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "window", global);
+    JS_SetPropertyStr(ctx, global, "document", JS_NewObject(ctx));
+    JS_SetPropertyStr(ctx, global, "console", JS_NewObject(ctx));
 
     // Parse HTML and create video elements BEFORE loading scripts
     // This handles Scenario B: HTML has <video> tags directly
