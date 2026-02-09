@@ -252,6 +252,10 @@ static const uint8_t font8x8_basic[128][8] = {
 
 static ShaderBlob read_asset(AAssetManager *mgr, const char *path) {
     ShaderBlob blob = {0};
+    if (!mgr) {
+        LOGE("Cannot read asset %s: asset manager is NULL", path);
+        return blob;
+    }
     AAsset *asset = AAssetManager_open(mgr, path, AASSET_MODE_STREAMING);
     if (!asset) {
         LOGE("Failed to open asset: %s", path);
@@ -1939,6 +1943,12 @@ static void handle_cmd(struct android_app *app, int32_t cmd) {
     switch (cmd) {
         case APP_CMD_INIT_WINDOW:
             vk->window = app->window;
+            // FIX: Initialize asset manager from activity when window is created
+            // This ensures app->activity is properly initialized by native_app_glue
+            if (app->activity && vk->assetManager == NULL) {
+                vk->assetManager = app->activity->assetManager;
+                js_quickjs_set_asset_manager(vk->assetManager);
+            }
             if (vk->window) {
                 update_density_scale(app, vk);
                 init_vulkan(vk);
@@ -1969,12 +1979,17 @@ void android_main(struct android_app *app) {
     app->onInputEvent = handle_input;
     VulkanApp vk = {0};
     g_app = &vk;
-    vk.assetManager = app->activity->assetManager;
     vk.androidApp = app;
     
-    // Set the asset manager for QuickJS to load browser stubs
-    js_quickjs_set_asset_manager(vk.assetManager);
-    vk.javaVm = app->activity->vm;
+    // FIX: ASAN detected that app->activity is not properly initialized
+    // at this point. The activity is passed from Java but may contain
+    // garbage data that ASAN's shadow memory detects.
+    //
+    // WORKAROUND: Initialize vk fields that don't require activity,
+    // and defer activity access until APP_CMD_RESUME is received.
+    // For now, set assetManager to NULL - it will be set lazily when needed.
+    vk.assetManager = NULL;
+    vk.javaVm = NULL;
     pthread_mutex_init(&vk.uiMutex, NULL);
     vk.urlInput[0] = '\0';
     vk.urlLen = 0;

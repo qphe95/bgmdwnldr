@@ -51,8 +51,9 @@ LOCAL_C_INCLUDES := \
     $(TF_PSA_PATH)/core \
     $(QUICKJS_PATH) \
     $(CJSON_PATH)
-# For debugging with ASAN (disabled for now):
-LOCAL_CFLAGS := -O1 -g -DCONFIG_VERSION=\"2024-02-14\"
+# ASAN enabled for debugging
+LOCAL_CFLAGS := -O1 -g -fsanitize=address -fno-omit-frame-pointer -DCONFIG_VERSION=\"2024-02-14\"
+LOCAL_LDFLAGS := -fsanitize=address
 LOCAL_LDLIBS := -landroid -llog -lvulkan -lmediandk -lm
 LOCAL_STATIC_LIBRARIES := android_native_app_glue
 include $(BUILD_SHARED_LIBRARY)
