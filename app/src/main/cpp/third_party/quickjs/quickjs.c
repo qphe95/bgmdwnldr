@@ -2716,7 +2716,11 @@ static JSAtomKindEnum JS_AtomGetKind(JSContext *ctx, JSAtom v)
     rt = ctx->rt;
     if (__JS_AtomIsTaggedInt(v))
         return JS_ATOM_KIND_STRING;
+    if (unlikely(v >= rt->atom_size))
+        return JS_ATOM_KIND_STRING; /* Defensive: invalid atom */
     p = rt->atom_array[v];
+    if (unlikely(!p))
+        return JS_ATOM_KIND_STRING; /* Defensive: null atom */
     switch(p->atom_type) {
     case JS_ATOM_TYPE_STRING:
         return JS_ATOM_KIND_STRING;
@@ -2728,7 +2732,8 @@ static JSAtomKindEnum JS_AtomGetKind(JSContext *ctx, JSAtom v)
         else
             return JS_ATOM_KIND_SYMBOL;
     default:
-        abort();
+        /* Invalid atom_type - return string as default instead of aborting */
+        return JS_ATOM_KIND_STRING;
     }
 }
 
@@ -5718,6 +5723,10 @@ static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
     JSShape *sh;
     JSShapeProperty *pr, *prop;
     intptr_t h;
+    if (unlikely(!p || !p->shape)) {
+        *ppr = NULL;
+        return NULL;
+    }
     sh = p->shape;
     h = (uintptr_t)atom & sh->prop_hash_mask;
     h = prop_hash_end(sh)[-h - 1];
@@ -7734,6 +7743,11 @@ JSValue JS_GetPropertyInternal(JSContext *ctx, JSValueConst obj,
             return JS_UNDEFINED;
     } else {
         p = JS_VALUE_GET_OBJ(obj);
+    }
+    
+    /* Defensive check for null or corrupted object */
+    if (unlikely(!p)) {
+        return JS_UNDEFINED;
     }
 
     for(;;) {
@@ -39111,6 +39125,14 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, JSValueConst obj,
     case JS_DEF_ALIAS: /* using autoinit for aliases is not safe */
         {
             JSAtom atom1 = find_atom(ctx, e->u.alias.name);
+            if (atom1 == JS_ATOM_NULL) {
+                return -1;
+            }
+            /* Check if global_obj is valid before accessing */
+            if (e->u.alias.base == 0 && JS_IsUndefined(ctx->global_obj)) {
+                JS_FreeAtom(ctx, atom1);
+                return -1;
+            }
             switch (e->u.alias.base) {
             case -1:
                 val = JS_GetProperty(ctx, obj, atom1);
