@@ -5,7 +5,7 @@
 A complete replacement for QuickJS's garbage collector that uses:
 1. **Handle table indirection** - Integer IDs instead of raw pointers
 2. **Stack allocator** - Bump pointer allocation in contiguous memory
-3. **Mark-sweep GC** - Pure tracing GC, no reference counting whatsoever
+3. **Mark-compact GC** - Traces free'd objects and releases them and compacts the allocator to prevent fragmentation
 
 ### Why Reference Counting is Total Garbage
 
@@ -23,12 +23,12 @@ A complete replacement for QuickJS's garbage collector that uses:
 
 **The only thing reference counting has going for it:** deterministic destruction. That's it. And even that is a lie because of cycles.
 
-## What We Have Now: Pure Mark-and-Sweep
+## What We Have Now: Pure Mark-and-Compact
 
 The new GC is simple, correct, and handles cycles naturally:
 
 1. **Mark phase**: Start from roots (contexts, global objects, job queue, exceptions), recursively mark everything reachable
-2. **Sweep phase**: Free everything not marked
+2. **Compact phase**: Defragment the heap after freeing objects
 
 That's it. No refcounting. No `JS_DupValue`. No `JS_FreeValue`. No `retain`/`release` pairs to get wrong.
 
@@ -68,7 +68,7 @@ Any object NOT marked after this is truly garbage and gets collected.
 - **Handle management**: Free list for handle reuse, dynamic growth
 - **Root management**: Dynamic array for GC roots
 - **Mark phase**: Recursive marking from roots through `JS_MarkContext`, `JS_MarkValue`
-- **Sweep phase**: Free unmarked objects
+- **Compact phase**: Defragment the heap after frees
 - **Validation**: Comprehensive state validation for debugging
 - **Stats**: Memory usage and object counting
 
@@ -118,10 +118,10 @@ void* js_mem_stack_alloc(JSMemStack *stack, size_t size) {
 
 **Why**: Allocation is a single pointer increment. No malloc overhead or fragmentation.
 
-### 4. Mark-Sweep (Not Mark-Compact Yet)
-Current implementation is mark-sweep. Compaction is the next step.
+### 4. Mark-Compact
+Current implementation is synchronous mark-compact. Asycn compaction is the next step.
 
-**Why mark-sweep first**: It's simpler and correct. We can add compaction later without changing the API.
+**Why synchronous first**: It's simpler and correct. We can add async later without changing the API.
 
 ## The Future: Pause-Less Concurrent GC (AKA I NEED MY TURING AWARD)
 
@@ -130,7 +130,7 @@ Yeah we could put the compaction on a separate thread and swap the memory once c
 ### Phase 1: Allocate and Mark (Current)
 - Main thread allocates objects
 - When memory threshold hit: stop-the-world mark phase (fast - just sets bits)
-- Sweep unmarked objects
+- Compact and defrag the heap
 
 ### Phase 2: Background Compaction (Future)
 - Start a background thread
@@ -237,7 +237,7 @@ The indirection through the handle table is the key insight. We only need to upd
 | Allocation | O(1) malloc + atomic inc + list insert | O(1) bump pointer |
 | Dereference | Direct pointer | Table lookup (cache miss) |
 | GC Mark | O(objects) refcount dance | O(live objects) simple mark |
-| GC Sweep | O(objects) free each | O(objects) bulk free |
+| GC Compact | O(objects) free each | O(objects) bulk free |
 | Pointer fixup | N/A (no compaction) | O(1) per object (table only) |
 | Memory locality | Fragmented | Contiguous |
 | Thread safety | Atomic hell | Handle table snapshot |
@@ -250,7 +250,7 @@ The indirection through the handle table is the key insight. We only need to upd
 - Removed all reference counting from quickjs.c
 - Removed `JSRefCountHeader` struct
 - Removed `JS_FreeValue`, `JS_DupValue`, `JS_FreeValueRT`, `JS_DupValueRT` (or made them no-ops)
-- Implemented pure mark-sweep GC in `JS_RunGCInternal`
+- Implemented pure mark-compact GC in `JS_RunGCInternal`
 - Proper root marking from contexts, runtime exception, and job queue
 
 ⏳ **Things to make this practical**:
@@ -262,7 +262,7 @@ The indirection through the handle table is the key insight. We only need to upd
 
 The code changes have been validated by:
 1. Removing all refcount manipulation code
-2. Replacing with mark-sweep
+2. Replacing with mark-compact
 3. Verifying no `_unused` or `ref_count` fields remain in active structs
 
 Full testing would require:

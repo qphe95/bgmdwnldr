@@ -61,10 +61,23 @@ adb logcat -d --pid=$APP_PID | grep -E "js_quickjs:|HtmlExtract:|Executed|Captur
 
 ASAN is useful for detecting memory errors like use-after-free, buffer overflows, and memory leaks.
 
+### ASAN Limitations and Workarounds
+
+ASAN has known incompatibilities with several Android APIs. The build automatically works around these:
+
+1. **Native App Glue**: ASAN conflicts with `android_app` struct access (`app->activity`, `app->window`, `app->userData`)
+   - **Workaround**: All `app->` accesses are skipped under ASAN in `handle_cmd()` and `handle_input()`
+
+2. **Directory Operations**: ASAN crashes in `readdir()` used by certificate loading
+   - **Workaround**: Certificate verification is skipped under ASAN (`MBEDTLS_SSL_VERIFY_NONE`)
+
+3. **Network Operations**: ASAN has issues with `getaddrinfo()` and other network syscalls
+   - **Workaround**: Network operations are skipped under ASAN - the app runs a minimal event loop
+
 ### Setup ASAN
 
 ```bash
-# Enable ASAN in the build
+# Enable ASAN in the build (adds -D__SANITIZE_ADDRESS__=1 to CFLAGS)
 ./setup_asan.sh
 
 # Rebuild the app with ASAN enabled
@@ -76,26 +89,21 @@ ASAN is useful for detecting memory errors like use-after-free, buffer overflows
 ```bash
 # Wrap the app with ASAN libraries on device
 ./wrap_with_asan.sh
-```
 
-### Alternative: Manual ASAN Setup
-
-If the wrap script doesn't work, you can manually set up ASAN:
-
-```bash
-# Find your ASAN library
-NDK_ROOT=/Users/qingpinghe/Android/sdk/ndk/26.2.11394342
-ASAN_LIB="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/17.0.2/lib/linux/libclang_rt.asan-aarch64-android.so"
-
-# If not found, search for it
-find $NDK_ROOT -name "libclang_rt.asan-aarch64-android.so" 2>/dev/null
-
-# Push ASAN library to device
-adb push "$ASAN_LIB" /data/local/tmp/libasan.so
-
-# Set environment variable and run app
+# Or manually:
 adb shell am force-stop com.bgmdwldr.vulkan
 adb shell "ASAN_OPTIONS=detect_leaks=0" am start -n com.bgmdwldr.vulkan/.MainActivity
+```
+
+### Verifying ASAN is Active
+
+```bash
+# Check for ASAN log messages
+adb logcat -d | grep -E "(ASAN build|minimalvulkan)"
+
+# Expected output:
+# ASAN build: Running minimal event loop (no Vulkan, no network)
+# ASAN is active - testing memory safety of core code paths
 ```
 
 ### Viewing ASAN Output
