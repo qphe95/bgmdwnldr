@@ -26,6 +26,9 @@ typedef enum {
     JS_GC_OBJ_TYPE_VAR_REF,
     JS_GC_OBJ_TYPE_SHAPE,
     JS_GC_OBJ_TYPE_MODULE,
+    JS_GC_OBJ_TYPE_JS_STRING,
+    JS_GC_OBJ_TYPE_JS_BIGINT,
+    JS_GC_OBJ_TYPE_JS_STRING_ROPE,
 } JSGCObjectTypeEnum;
 
 /* New object header - embedded at start of every GC object */

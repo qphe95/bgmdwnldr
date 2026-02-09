@@ -33,6 +33,9 @@
 extern "C" {
 #endif
 
+/* Forward declaration of GC object header - defined in quickjs_gc_integration.h */
+struct JSGCObjectHeader;
+
 #if defined(__GNUC__) || defined(__clang__)
 #define js_likely(x)          __builtin_expect(!!(x), 1)
 #define js_unlikely(x)        __builtin_expect(!!(x), 0)
@@ -95,10 +98,8 @@ enum {
     /* any larger tag is FLOAT64 if JS_NAN_BOXING */
 };
 
-/* Note: JSRefCountHeader removed - using mark-and-sweep GC only */
-typedef struct JSRefCountHeader {
-    int ref_count_unused;
-} JSRefCountHeader;
+/* Note: JSRefCountHeader is now an alias for JSGCObjectHeader for GC integration */
+typedef struct JSGCObjectHeader JSRefCountHeader;
 
 #define JS_FLOAT64_NAN NAN
 

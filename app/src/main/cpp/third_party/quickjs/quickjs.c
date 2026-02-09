@@ -360,6 +360,9 @@ typedef enum {
     JS_GC_OBJ_TYPE_ASYNC_FUNCTION,
     JS_GC_OBJ_TYPE_JS_CONTEXT,
     JS_GC_OBJ_TYPE_MODULE,
+    JS_GC_OBJ_TYPE_JS_STRING,
+    JS_GC_OBJ_TYPE_JS_BIGINT,
+    JS_GC_OBJ_TYPE_JS_STRING_ROPE,
 } JSGCObjectTypeEnum;
 
 /* header for GC objects. GC objects are C data structures that can
@@ -1942,6 +1945,7 @@ static JSString *js_alloc_string_rt(JSRuntime *rt, int max_len, int is_wide_char
     if (unlikely(!str))
         return NULL;
     /* ref_count removed - using mark-and-sweep GC */
+    add_gc_object(rt, &str->header, JS_GC_OBJ_TYPE_JS_STRING);
     str->is_wide_char = is_wide_char;
     str->len = max_len;
     str->atom_type = 0;
@@ -2867,6 +2871,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             if (unlikely(!p))
                 goto fail;
             /* ref_count removed - using mark-and-sweep GC */
+            add_gc_object(rt, &p->header, JS_GC_OBJ_TYPE_JS_STRING);
             p->is_wide_char = str->is_wide_char;
             p->len = str->len;
 #ifdef DUMP_LEAKS
@@ -2881,6 +2886,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         if (!p)
             return JS_ATOM_NULL;
         /* ref_count removed - using mark-and-sweep GC */
+        add_gc_object(rt, &p->header, JS_GC_OBJ_TYPE_JS_STRING);
         p->is_wide_char = 1;    /* Hack to represent NULL as a JSString */
         p->len = 0;
 #ifdef DUMP_LEAKS
@@ -4485,7 +4491,7 @@ static JSValue js_new_string_rope(JSContext *ctx, JSValue op1, JSValue op2)
     r = js_malloc(ctx, sizeof(*r));
     if (!r)
         goto fail;
-    
+    add_gc_object(ctx->rt, &r->header, JS_GC_OBJ_TYPE_JS_STRING_ROPE);
     r->len = len;
     r->is_wide_char = is_wide_char;
     r->depth = depth + 1;
@@ -5971,6 +5977,28 @@ static void free_object(JSRuntime *rt, JSObject *p)
     }
 }
 
+static void free_string(JSRuntime *rt, JSString *str)
+{
+    remove_gc_object(&str->header);
+#ifdef DUMP_LEAKS
+    list_del(&str->link);
+#endif
+    js_free_rt(rt, str);
+}
+
+static void free_bigint(JSRuntime *rt, JSBigInt *p)
+{
+    remove_gc_object(&p->header);
+    js_free_rt(rt, p);
+}
+
+static void free_string_rope(JSRuntime *rt, JSStringRope *r)
+{
+    remove_gc_object(&r->header);
+    /* left and right values are freed by GC when unreachable */
+    js_free_rt(rt, r);
+}
+
 static void free_gc_object(JSRuntime *rt, JSGCObjectHeader *gp)
 {
     switch(gp->gc_obj_type) {
@@ -5985,6 +6013,15 @@ static void free_gc_object(JSRuntime *rt, JSGCObjectHeader *gp)
         break;
     case JS_GC_OBJ_TYPE_MODULE:
         js_free_module_def(rt, (JSModuleDef *)gp);
+        break;
+    case JS_GC_OBJ_TYPE_JS_STRING:
+        free_string(rt, (JSString *)gp);
+        break;
+    case JS_GC_OBJ_TYPE_JS_BIGINT:
+        free_bigint(rt, (JSBigInt *)gp);
+        break;
+    case JS_GC_OBJ_TYPE_JS_STRING_ROPE:
+        free_string_rope(rt, (JSStringRope *)gp);
         break;
     default:
         /* Unknown object type - just free the header */
@@ -6106,6 +6143,8 @@ void JS_MarkValue(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
         case JS_TAG_OBJECT:
         case JS_TAG_FUNCTION_BYTECODE:
         case JS_TAG_MODULE:
+        case JS_TAG_STRING:
+        case JS_TAG_STRING_ROPE:
             mark_func(rt, JS_VALUE_GET_PTR(val));
             break;
         default:
@@ -6226,6 +6265,17 @@ static void mark_children(JSRuntime *rt, JSGCObjectHeader *gp,
         {
             JSModuleDef *m = (JSModuleDef *)gp;
             js_mark_module_def(rt, m, mark_func);
+        }
+        break;
+    case JS_GC_OBJ_TYPE_JS_STRING:
+    case JS_GC_OBJ_TYPE_JS_BIGINT:
+        /* No children to mark */
+        break;
+    case JS_GC_OBJ_TYPE_JS_STRING_ROPE:
+        {
+            JSStringRope *r = (JSStringRope *)gp;
+            JS_MarkValue(rt, r->left, mark_func);
+            JS_MarkValue(rt, r->right, mark_func);
         }
         break;
     default:
@@ -11084,7 +11134,7 @@ static JSBigInt *js_bigint_new(JSContext *ctx, int len)
     r = js_malloc(ctx, sizeof(JSBigInt) + len * sizeof(js_limb_t));
     if (!r)
         return NULL;
-    
+    add_gc_object(ctx->rt, &r->header, JS_GC_OBJ_TYPE_JS_BIGINT);
     r->len = len;
     return r;
 }
