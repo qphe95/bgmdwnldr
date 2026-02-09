@@ -98,8 +98,8 @@ enum {
     /* any larger tag is FLOAT64 if JS_NAN_BOXING */
 };
 
-/* Note: JSRefCountHeader is now an alias for JSGCObjectHeader for GC integration */
-typedef struct JSGCObjectHeader JSRefCountHeader;
+/* Note: JSGCObjectHeader is defined in quickjs.c - forward declaration for structures */
+struct JSGCObjectHeader;
 
 #define JS_FLOAT64_NAN NAN
 
