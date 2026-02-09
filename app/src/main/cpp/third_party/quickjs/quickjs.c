@@ -2786,6 +2786,10 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         i = rt->atom_hash[h1];
         while (i != 0) {
             p = rt->atom_array[i];
+            if (unlikely(!p)) {
+                /* Defensive: null atom entry, skip */
+                break;
+            }
             if (p->hash == h &&
                 p->atom_type == atom_type &&
                 p->len == len &&
