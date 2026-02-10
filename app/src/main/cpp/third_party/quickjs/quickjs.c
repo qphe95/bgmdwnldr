@@ -1392,6 +1392,10 @@ static JSClassID js_class_id_alloc = JS_CLASS_INIT_COUNT;
 static void js_trigger_gc(JSRuntime *rt, size_t size)
 {
     BOOL force_gc;
+    /* Skip GC during early initialization (no contexts yet) */
+    if (rt->context_handles.count == 0) {
+        return;
+    }
 #ifdef FORCE_GC_AT_MALLOC
     force_gc = TRUE;
 #else
@@ -2710,9 +2714,6 @@ static void js_handle_array_free(JSRuntime *rt, JSHandleArray *arr)
 static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
 {
     if (arr->count >= arr->capacity) {
-        fprintf(stderr, "FATAL: %s handle array exceeded maximum capacity of %d. "
-                "This indicates a resource leak or excessive allocation.\n",
-                rt->rt_info ? rt->rt_info : "JSRuntime", JS_MAX_HANDLE_ARRAY_SIZE);
         abort();  /* Crash to make the error obvious */
         return -1;
     }
@@ -6274,10 +6275,7 @@ static void add_gc_object(JSRuntime *rt, JSGCObjectHeader *h,
     h->mark = 0;
     h->gc_obj_type = type;
     /* Add to handle array for ASAN-safe tracking */
-    if (js_handle_array_add(rt, &rt->gc_handles, h) < 0) {
-        /* Out of space - this is a fatal error, but we can't abort here */
-        fprintf(stderr, "FATAL: GC handle array full\n");
-    }
+    js_handle_array_add(rt, &rt->gc_handles, h);
     
     /* Assign handle for handle-based GC */
     h->handle = g_next_handle++;
