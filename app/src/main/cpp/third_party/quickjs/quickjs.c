@@ -1768,7 +1768,12 @@ void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque)
 /* default memory allocation functions with memory limitation */
 static size_t js_def_malloc_usable_size(const void *ptr)
 {
-#if defined(__APPLE__)
+#if defined(__ANDROID__)
+    /* On Android with Scudo allocator, malloc_usable_size can fail
+     * on certain pointers. Return 0 to disable the optimization safely.
+     * QuickJS handles usable_size == 0 gracefully. */
+    return 0;
+#elif defined(__APPLE__)
     return malloc_size(ptr);
 #elif defined(_WIN32)
     return _msize((void *)ptr);
