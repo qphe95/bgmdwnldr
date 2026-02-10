@@ -77,13 +77,15 @@ TEST(basic_allocation) {
     JSGCObjectHeader *obj2 = js_handle_header(data2);
     JSGCObjectHeader *obj3 = js_handle_header(data3);
     
-    ASSERT_EQ(obj1->ref_count, 1);
-    ASSERT_EQ(obj2->ref_count, 1);
-    ASSERT_EQ(obj3->ref_count, 1);
-    
+    /* Verify handle in object header matches */
     ASSERT_EQ(obj1->handle, h1);
     ASSERT_EQ(obj2->handle, h2);
     ASSERT_EQ(obj3->handle, h3);
+    
+    /* Verify generation is current (objects are live) */
+    ASSERT_EQ(gc.handles[h1].generation, gc.generation);
+    ASSERT_EQ(gc.handles[h2].generation, gc.generation);
+    ASSERT_EQ(gc.handles[h3].generation, gc.generation);
     
     js_handle_gc_free(&gc);
 }
@@ -94,25 +96,31 @@ TEST(refcounting) {
     
     JSObjHandle h = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
     ASSERT_NOT_NULL(js_handle_deref(&gc, h));
-    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 1);
     
-    /* Retain multiple times */
+    /* Verify handle is valid by checking object on stack */
+    JSGCObjectHeader *obj = js_handle_header(js_handle_deref(&gc, h));
+    ASSERT_EQ(obj->handle, h);
+    
+    /* Retain/release are no-ops in mark-and-sweep GC, but shouldn't crash */
     js_handle_retain(&gc, h);
-    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 2);
-    
     js_handle_retain(&gc, h);
-    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 3);
-    
-    /* Release */
     js_handle_release(&gc, h);
-    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 2);
-    
     js_handle_release(&gc, h);
-    ASSERT_EQ(js_handle_header(js_handle_deref(&gc, h))->ref_count, 1);
     
-    /* Final release - object should be freed (but memory not reclaimed until GC) */
-    js_handle_release(&gc, h);
-    /* After release with ref_count 0, handle ptr becomes NULL */
+    /* Handle still valid until GC collects unreachable objects */
+    ASSERT_NOT_NULL(js_handle_deref(&gc, h));
+    
+    /* Root the object so it survives GC */
+    js_handle_add_root(&gc, h);
+    js_handle_gc_run(&gc);
+    ASSERT_NOT_NULL(js_handle_deref(&gc, h));
+    
+    /* Remove root and run GC - object will be collected */
+    js_handle_remove_root(&gc, h);
+    js_handle_release(&gc, h);  /* Release root reference */
+    js_handle_gc_run(&gc);
+    
+    /* Handle is now invalid (stale generation) */
     ASSERT_NULL(js_handle_deref(&gc, h));
     
     js_handle_gc_free(&gc);
@@ -122,26 +130,42 @@ TEST(handle_reuse) {
     JSHandleGCState gc;
     js_handle_gc_init(&gc, 1024 * 1024);
     
-    /* Allocate and free some objects */
+    /* Allocate some objects */
     JSObjHandle h1 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
     JSObjHandle h2 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
     
-    js_handle_release(&gc, h1);  /* Free h1 - becomes zombie */
-    js_handle_release(&gc, h2);  /* Free h2 - becomes zombie */
+    uint32_t gen_before = gc.generation;
     
-    /* Before GC: handles not reused (zombie state) */
-    JSObjHandle h3 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
-    ASSERT_NE(h3, h1);  /* Should NOT reuse zombie handle yet */
-    ASSERT_NE(h3, h2);
+    /* Release references (objects become unreachable but handles still valid
+     * until GC runs - they have stale generation after GC) */
+    js_handle_release(&gc, h1);
+    js_handle_release(&gc, h2);
     
-    /* Run GC to collect dead objects */
+    /* Before GC: handles still point to objects on stack */
+    ASSERT_NOT_NULL(js_handle_deref(&gc, h1));
+    ASSERT_NOT_NULL(js_handle_deref(&gc, h2));
+    
+    /* Run GC to collect dead objects and increment generation */
     js_handle_gc_run(&gc);
     
-    /* After GC: handles with ptr==NULL are reused (scan from low index) */
+    /* Generation should have been incremented */
+    ASSERT_EQ(gc.generation, gen_before + 1);
+    
+    /* After GC: old handles are invalid (stale generation) */
+    ASSERT_NULL(js_handle_deref(&gc, h1));
+    ASSERT_NULL(js_handle_deref(&gc, h2));
+    
+    /* Allocate new objects - should reuse freed handle slots */
     JSObjHandle h4 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
     JSObjHandle h5 = js_handle_alloc(&gc, 64, JS_GC_OBJ_TYPE_JS_OBJECT);
-    ASSERT_EQ(h4, h1);  /* Lowest free index reused first */
-    ASSERT_EQ(h5, h2);
+    
+    /* Handles should be reused from freed slots (lowest index first) */
+    ASSERT_EQ(h4, h1);  /* h1's slot reused */
+    ASSERT_EQ(h5, h2);  /* h2's slot reused */
+    
+    /* New handles should have current generation */
+    ASSERT_EQ(gc.handles[h4].generation, gc.generation);
+    ASSERT_EQ(gc.handles[h5].generation, gc.generation);
     
     js_handle_gc_free(&gc);
 }
@@ -284,7 +308,7 @@ TEST(gc_compact_basic) {
     /* Get pointer before GC */
     void *data_before = js_handle_deref(&gc, h1);
     JSGCObjectHeader *obj_before = js_handle_header(data_before);
-    uintptr_t ptr_before = (uintptr_t)obj_before;
+    (void)obj_before;  /* Used for debugging if needed */
     
     /* Run GC */
     js_handle_gc_run(&gc);

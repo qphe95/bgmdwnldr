@@ -41,7 +41,7 @@ typedef struct JSGCObjectHeader {
 /* Handle table entry - stores pointer to USER DATA (past header) */
 typedef struct JSHandleEntry {
     void *ptr;                        /* Pointer to user data (past header) */
-    uint32_t generation;              /* For debugging/validation */
+    uint32_t generation;              /* GC generation when handle was allocated */
 } JSHandleEntry;
 
 /* Stack region for bump allocation */
@@ -89,6 +89,32 @@ JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type);
 void js_handle_release(JSHandleGCState *gc, JSObjHandle handle);
 void js_handle_retain(JSHandleGCState *gc, JSObjHandle handle);
 
+/* Check if object is live by examining actual object on stack */
+static inline bool js_handle_is_live(JSHandleGCState *gc, JSObjHandle handle) {
+    if (handle == 0 || handle >= gc->handle_count) {
+        return false;
+    }
+    void *ptr = gc->handles[handle].ptr;
+    if (!ptr) {
+        return false;  /* Handle has been freed */
+    }
+    
+    /* Validate by checking the actual object header on the stack */
+    JSGCObjectHeader *obj = js_handle_header(ptr);
+    
+    /* Object is live if:
+     * 1. Its handle field matches the handle we're checking
+     * 2. Its generation matches the handle's generation (not stale)
+     */
+    if (obj->handle != handle) {
+        return false;  /* Object was overwritten or corrupted */
+    }
+    if (gc->handles[handle].generation != gc->generation) {
+        return false;  /* Stale handle from previous GC cycle */
+    }
+    return true;
+}
+
 /* Dereference handle to user data pointer */
 static inline void* js_handle_deref(JSHandleGCState *gc, JSObjHandle handle) {
     if (__builtin_expect(handle == 0 || handle >= gc->handle_count, 0)) {
@@ -96,9 +122,22 @@ static inline void* js_handle_deref(JSHandleGCState *gc, JSObjHandle handle) {
     }
     void *ptr = gc->handles[handle].ptr;
     if (__builtin_expect(!ptr, 0)) {
-        return NULL;  /* Free handle or zombie collected by GC */
+        return NULL;  /* Free handle */
     }
-    /* Note: ref_count check removed - using mark-and-sweep GC */
+    
+    /* Validate by checking the actual object on the stack */
+    JSGCObjectHeader *obj = js_handle_header(ptr);
+    
+    /* Check that object points back to this handle */
+    if (__builtin_expect(obj->handle != handle, 0)) {
+        return NULL;  /* Object was overwritten or handle is stale */
+    }
+    
+    /* Check generation to detect freed handles */
+    if (__builtin_expect(gc->handles[handle].generation != gc->generation, 0)) {
+        return NULL;  /* Handle was freed in a previous GC cycle */
+    }
+    
     return ptr;
 }
 

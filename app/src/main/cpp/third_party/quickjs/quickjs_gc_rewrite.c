@@ -94,11 +94,15 @@ void js_mem_stack_reset(JSMemStack *stack) {
     stack->top = stack->base;
 }
 
-/* Allocate a handle ID - scan for free slots or grow table */
+/* Allocate a handle ID - scan for free slots or grow table
+ * Free handles are identified by: ptr == NULL OR generation < gc->generation
+ * This means the handle's object was freed in a previous GC cycle.
+ */
 static JSObjHandle alloc_handle_id(JSHandleGCState *gc) {
-    /* Scan for free handle (ptr == NULL and not handle 0) */
+    /* Scan for free handle (ptr == NULL means explicitly freed) */
     for (uint32_t i = 1; i < gc->handle_count; i++) {
         if (gc->handles[i].ptr == NULL) {
+            /* Reusing a freed handle - set generation to current */
             gc->handles[i].generation = gc->generation;
             return i;
         }
@@ -259,11 +263,25 @@ void js_handle_gc_mark(JSHandleGCState *gc) {
 
 }
 
-/* Compact phase - move live objects, update handle table only */
+/* Compact phase - move live objects, update handle table only
+ * 
+ * Key insight: The free state is NOT stored in the handle table.
+ * Instead, we determine if a handle is valid by:
+ * 1. Looking up the object on the stack via handles[handle].ptr
+ * 2. Checking if handles[handle].generation == gc->generation
+ * 
+ * Dead objects have stale generations (< gc->generation after increment).
+ */
 void js_handle_gc_compact(JSHandleGCState *gc) {
     uint8_t *read = gc->stack.base;
     uint8_t *write = gc->stack.base;
     uint8_t *end = gc->stack.top;
+    
+    /* Increment generation at start of compaction.
+     * Live objects will be updated to this new generation.
+     * Dead objects will retain their old (stale) generation.
+     */
+    gc->generation++;
     
     while (read < end) {
         JSGCObjectHeader *obj = (JSGCObjectHeader*)read;
@@ -278,15 +296,20 @@ void js_handle_gc_compact(JSHandleGCState *gc) {
                 /* Update handle table with pointer to USER DATA (past header) */
                 gc->handles[handle].ptr = (void*)(write + sizeof(JSGCObjectHeader));
             }
-            gc->handles[handle].generation = ++gc->generation;
+            /* Update generation to mark as live for this GC cycle */
+            gc->handles[handle].generation = gc->generation;
             write += size;
         } else if (obj->mark && obj->pinned) {
             /* Live but pinned - don't move */
-            gc->handles[handle].generation = ++gc->generation;
+            gc->handles[handle].generation = gc->generation;
             write = read + size;
         } else {
-            /* Dead object - clear handle ptr (will be reused by scan) */
+            /* Dead object - clear handle ptr
+             * The generation is NOT updated, making it stale.
+             * js_handle_deref will detect this via generation mismatch.
+             */
             gc->handles[handle].ptr = NULL;
+            /* Generation remains unchanged - will be < gc->generation */
         }
         
         read += size;
@@ -318,14 +341,17 @@ void js_handle_gc_stats(JSHandleGCState *gc, JSHandleGCStats *stats) {
     stats->capacity_bytes = gc->stack.capacity;
     stats->available_bytes = gc->stack.capacity - (gc->stack.top - gc->stack.base);
     
-    /* Count free handles (ptr == NULL) */
+    /* Count free handles (ptr == NULL - not yet reused) */
     for (uint32_t h = 1; h < gc->handle_count; h++) {
         if (gc->handles[h].ptr == NULL) {
             stats->free_handles++;
         }
     }
     
-    /* Count objects in stack */
+    /* Count objects in stack by iterating through the actual objects
+     * (not the handle table). This gives accurate counts of live vs dead
+     * objects currently on the stack before compaction.
+     */
     for (uint8_t *p = gc->stack.base; p < gc->stack.top; ) {
         JSGCObjectHeader *obj = (JSGCObjectHeader*)p;
         stats->total_objects++;
@@ -346,17 +372,20 @@ bool js_handle_gc_validate(JSHandleGCState *gc, char *error_buffer, size_t error
         return false; \
     } while(0)
     
-    /* Check handle table consistency */
+    /* Check handle table consistency - for active handles, validate
+     * by looking at the actual object on the stack */
     for (uint32_t i = 1; i < gc->handle_count; i++) {
         void *data = gc->handles[i].ptr;
         
-        /* Skip freed handles (in free list) */
+        /* Skip freed handles (ptr == NULL) */
         if (!data) continue;
         
         /* Get header from data pointer */
         JSGCObjectHeader *obj = js_handle_header(data);
         
-        /* Check that object points back to this handle */
+        /* Check that object points back to this handle.
+         * This validates that the handle -> object -> handle chain is consistent.
+         */
         if (obj->handle != i) {
             ERROR("Handle %u: object has wrong handle %u", i, obj->handle);
         }
@@ -372,10 +401,14 @@ bool js_handle_gc_validate(JSHandleGCState *gc, char *error_buffer, size_t error
             ERROR("Handle %u: size %u not aligned to 8", i, obj->size);
         }
         
-        /* Note: refcount check removed - using mark-and-sweep GC */
+        /* Check generation - valid handles should have current generation */
+        if (gc->handles[i].generation != gc->generation) {
+            ERROR("Handle %u: stale generation %u (current %u)", 
+                  i, gc->handles[i].generation, gc->generation);
+        }
     }
     
-    /* Check stack consistency */
+    /* Check stack consistency by iterating through actual objects */
     size_t total_size = 0;
     for (uint8_t *p = gc->stack.base; p < gc->stack.top; ) {
         JSGCObjectHeader *obj = (JSGCObjectHeader*)p;
@@ -386,6 +419,12 @@ bool js_handle_gc_validate(JSHandleGCState *gc, char *error_buffer, size_t error
         
         if (obj->size % 8 != 0) {
             ERROR("Stack corruption at %p: size %u not aligned", (void*)p, obj->size);
+        }
+        
+        /* Validate handle in object header points to valid handle entry */
+        JSObjHandle h = obj->handle;
+        if (h == 0 || h >= gc->handle_count) {
+            ERROR("Stack corruption at %p: invalid handle %u", (void*)p, h);
         }
         
         total_size += obj->size;
