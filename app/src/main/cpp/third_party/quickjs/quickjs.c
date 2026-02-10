@@ -6474,6 +6474,14 @@ static void gc_mark_roots(JSRuntime *rt)
             JS_MarkValue(rt, job->argv[j], gc_mark_recursive);
         }
     }
+    
+    /* Mark all atoms - they are roots referenced by atom_array */
+    for (i = 1; i < rt->atom_size; i++) {
+        JSAtomStruct *p = rt->atom_array[i];
+        if (p && !atom_is_free(p)) {
+            gc_mark_recursive(rt, &p->header);
+        }
+    }
 }
 
 /* Sweep: free all unmarked objects */
