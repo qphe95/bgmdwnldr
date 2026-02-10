@@ -885,6 +885,7 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     
     // Create runtime and context (protected by signal handler)
     LOG_INFO("Creating QuickJS runtime...");
+    
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) {
         LOG_ERROR("Failed to create QuickJS runtime");
@@ -892,8 +893,12 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     }
     LOG_INFO("QuickJS runtime created successfully");
     
-    // Create context first BEFORE registering custom classes
-    // This allows QuickJS to initialize its built-in objects
+    // Set limits after successful runtime creation
+    LOG_INFO("Setting memory limits...");
+    JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
+    JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
+    
+    // Create context - this initializes built-in objects
     LOG_INFO("Creating QuickJS context...");
     JSContext *ctx = JS_NewContext(rt);
     LOG_INFO("JS_NewContext returned: %p", (void*)ctx);
@@ -907,11 +912,6 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     
     // Context creation successful - restore original signal handler
     sigaction(SIGABRT, &old_sa, NULL);
-    
-    // Set limits after successful context creation
-    LOG_INFO("Setting memory limits...");
-    JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
-    JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
     
     LOG_INFO("Registering custom classes...");
     // NOW register custom classes after context is created
