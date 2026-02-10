@@ -635,16 +635,22 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
 
 // Initialize browser environment
 static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
+    LOG_INFO("Getting global object...");
     JSValue global = JS_GetGlobalObject(ctx);
     
     // Register native logging function
+    LOG_INFO("Registering native logging...");
     JS_SetPropertyStr(ctx, global, "__bgmdwnldr_log", 
         JS_NewCFunction(ctx, js_bgmdwnldr_log, "__bgmdwnldr_log", 1));
     
     // Initialize all browser stubs (DOM, window, document, XMLHttpRequest, etc.)
     // This sets up constructors, prototype chains, and document.body
+    LOG_INFO("Initializing browser stubs...");
     init_browser_stubs(ctx, global);
-
+    
+    // Note: This QuickJS uses garbage collection, no need to free values explicitly
+    (void)global;  // Suppress unused warning
+    
     LOG_INFO("Browser environment initialized");
 }
 
@@ -886,20 +892,12 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     }
     LOG_INFO("QuickJS runtime created successfully");
     
-    // Note: Don't set memory/stack limits until after context creation
-    // as this may cause issues with internal initialization
-    
     // Create context first BEFORE registering custom classes
     // This allows QuickJS to initialize its built-in objects
     LOG_INFO("Creating QuickJS context...");
     JSContext *ctx = JS_NewContext(rt);
     LOG_INFO("JS_NewContext returned: %p", (void*)ctx);
     
-    // Set limits after successful context creation
-    if (ctx) {
-        JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
-        JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
-    }
     if (!ctx) {
         LOG_ERROR("Failed to create QuickJS context");
         sigaction(SIGABRT, &old_sa, NULL);
@@ -910,6 +908,12 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     // Context creation successful - restore original signal handler
     sigaction(SIGABRT, &old_sa, NULL);
     
+    // Set limits after successful context creation
+    LOG_INFO("Setting memory limits...");
+    JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
+    JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
+    
+    LOG_INFO("Registering custom classes...");
     // NOW register custom classes after context is created
     JSClassDef xhr_def = {"XMLHttpRequest", .finalizer = js_xhr_finalizer};
     JSClassDef video_def = {"HTMLVideoElement", .finalizer = js_video_finalizer};
@@ -920,14 +924,10 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         LOG_ERROR("Failed to register HTMLVideoElement class");
     }
     
-    // Temporarily skip browser environment initialization to debug QuickJS crash
-    LOG_INFO("Skipping browser environment setup for debugging");
-    
-    // Minimal setup - just create a global object
-    JSValue global = JS_GetGlobalObject(ctx);
-    JS_SetPropertyStr(ctx, global, "window", global);
-    JS_SetPropertyStr(ctx, global, "document", JS_NewObject(ctx));
-    JS_SetPropertyStr(ctx, global, "console", JS_NewObject(ctx));
+    // Initialize full browser environment with all necessary APIs
+    LOG_INFO("Initializing browser environment...");
+    init_browser_environment(ctx, asset_mgr);
+    LOG_INFO("Browser environment done");
 
     // Parse HTML and create video elements BEFORE loading scripts
     // This handles Scenario B: HTML has <video> tags directly
