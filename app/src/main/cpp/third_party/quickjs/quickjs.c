@@ -281,6 +281,7 @@ struct JSRuntime {
     JSHandleArray job_handles;      /* Replaces job_list */
     JSHandleArray weakref_handles;  /* Replaces weakref_list */
     JSHandleArray gc_handles;       /* Replaces gc_obj_list */
+    JSHandleArray atom_handles;     /* Atom root set - atoms are GC roots */
     
     /* list of JSGCObjectHeader.link. */
     struct list_head gc_zero_ref_count_list;
@@ -1714,6 +1715,8 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
         goto fail;
     if (js_handle_array_init(rt, &rt->gc_handles) < 0)
         goto fail;
+    if (js_handle_array_init(rt, &rt->atom_handles) < 0)
+        goto fail;
     
     init_list_head(&rt->gc_zero_ref_count_list);
     rt->gc_phase = JS_GC_PHASE_NONE;
@@ -2085,6 +2088,7 @@ void JS_FreeRuntime(JSRuntime *rt)
     js_handle_array_free(rt, &rt->job_handles);
     js_handle_array_free(rt, &rt->weakref_handles);
     js_handle_array_free(rt, &rt->gc_handles);
+    js_handle_array_free(rt, &rt->atom_handles);
 
     /* free the classes */
     for(i = 0; i < rt->class_count; i++) {
@@ -2803,6 +2807,7 @@ static void js_compact_all_handle_arrays(JSRuntime *rt)
     js_handle_array_compact(&rt->context_handles);
     js_handle_array_compact(&rt->job_handles);
     js_handle_array_compact(&rt->weakref_handles);
+    js_handle_array_compact(&rt->atom_handles);
 }
 
 static int JS_InitAtoms(JSRuntime *rt)
@@ -3038,6 +3043,9 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
     rt->atom_free_index = atom_get_free(rt->atom_array[i]);
     rt->atom_array[i] = p;
 
+    /* Add atom to root set - atoms are GC roots */
+    js_handle_array_add(rt, &rt->atom_handles, p);
+
     p->hash = h;
     p->hash_next = i;   /* atom_index */
     p->atom_type = atom_type;
@@ -3111,6 +3119,9 @@ static void JS_FreeAtomStruct(JSRuntime *rt, JSAtomStruct *p)
     }
 #endif
     uint32_t i = p->hash_next;  /* atom_index */
+    
+    /* Remove atom from root set */
+    js_handle_array_mark_freed(&rt->atom_handles, p);
     if (p->atom_type != JS_ATOM_TYPE_SYMBOL) {
         JSAtomStruct *p0, *p1;
         uint32_t h0;
@@ -6475,10 +6486,10 @@ static void gc_mark_roots(JSRuntime *rt)
         }
     }
     
-    /* Mark all atoms - they are roots referenced by atom_array */
-    for (i = 1; i < rt->atom_size; i++) {
-        JSAtomStruct *p = rt->atom_array[i];
-        if (p && !atom_is_free(p)) {
+    /* Mark all atoms - they are roots referenced by atom_handles */
+    for (i = 0; i < rt->atom_handles.count; i++) {
+        JSAtomStruct *p = rt->atom_handles.handles[i];
+        if (js_handle_array_entry_is_valid(p)) {
             gc_mark_recursive(rt, &p->header);
         }
     }
