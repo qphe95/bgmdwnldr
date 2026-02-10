@@ -280,11 +280,9 @@ struct JSRuntime {
     JSHandleArray context_handles;  /* Replaces context_list */
     JSHandleArray job_handles;      /* Replaces job_list */
     JSHandleArray weakref_handles;  /* Replaces weakref_list */
+    JSHandleArray gc_handles;       /* Replaces gc_obj_list */
     
-    /* list of JSGCObjectHeader.link. List of allocated GC objects (used
-       by the garbage collector) */
-    struct list_head gc_obj_list;
-    /* list of JSGCObjectHeader.link */
+    /* list of JSGCObjectHeader.link. */
     struct list_head gc_zero_ref_count_list;
     struct list_head tmp_obj_list; /* used during GC */
     JSGCPhaseEnum gc_phase : 8;
@@ -1710,8 +1708,9 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
         goto fail;
     if (js_handle_array_init(rt, &rt->weakref_handles) < 0)
         goto fail;
+    if (js_handle_array_init(rt, &rt->gc_handles) < 0)
+        goto fail;
     
-    init_list_head(&rt->gc_obj_list);
     init_list_head(&rt->gc_zero_ref_count_list);
     rt->gc_phase = JS_GC_PHASE_NONE;
 
@@ -2056,9 +2055,9 @@ void JS_FreeRuntime(JSRuntime *rt)
         gc_mark_roots(rt);
 
         header_done = FALSE;
-        list_for_each(el, &rt->gc_obj_list) {
-            p = list_entry(el, JSGCObjectHeader, link);
-            if (p->mark) {
+        for (i = 0; i < rt->gc_handles.count; i++) {
+            p = rt->gc_handles.handles[i];
+            if (js_handle_array_entry_is_valid(p) && p->mark) {
                 if (!header_done) {
                     printf("Object leaks:\n");
                     JS_DumpObjectHeader(rt);
@@ -2071,22 +2070,8 @@ void JS_FreeRuntime(JSRuntime *rt)
         /* No secondary object leaks tracking needed with mark-and-sweep */
     }
 #endif
-    /* Clean up any remaining GC objects before asserting */
-    {
-        struct list_head *el, *el1;
-        JSGCObjectHeader *p;
-        int remaining = 0;
-        list_for_each_safe(el, el1, &rt->gc_obj_list) {
-            p = list_entry(el, JSGCObjectHeader, link);
-            list_del(&p->link);
-            /* Don't try to free - just remove from list to prevent assertion failure */
-            remaining++;
-        }
-        if (remaining > 0) {
-            /* Log but don't crash - some objects may be leaked during handle GC transition */
-        }
-    }
-    /* assert(list_empty(&rt->gc_obj_list)); -- temp disabled during GC transition */
+    /* Clean up any remaining GC objects - just clear the handle array */
+    rt->gc_handles.count = 0;
     
     /* Clean up weak references - just clear the handle array */
     rt->weakref_handles.count = 0;
@@ -2095,6 +2080,7 @@ void JS_FreeRuntime(JSRuntime *rt)
     js_handle_array_free(rt, &rt->context_handles);
     js_handle_array_free(rt, &rt->job_handles);
     js_handle_array_free(rt, &rt->weakref_handles);
+    js_handle_array_free(rt, &rt->gc_handles);
 
     /* free the classes */
     for(i = 0; i < rt->class_count; i++) {
@@ -2265,22 +2251,11 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
 JSContext *JS_NewContext(JSRuntime *rt)
 {
     JSContext *ctx;
-
+    
     ctx = JS_NewContextRaw(rt);
     if (!ctx)
         return NULL;
-
-    if (JS_AddIntrinsicBaseObjects(ctx) ||
-        JS_AddIntrinsicDate(ctx) ||
-        JS_AddIntrinsicEval(ctx) ||
-        JS_AddIntrinsicStringNormalize(ctx) ||
-        JS_AddIntrinsicRegExp(ctx) ||
-        JS_AddIntrinsicJSON(ctx) ||
-        JS_AddIntrinsicProxy(ctx) ||
-        JS_AddIntrinsicMapSet(ctx) ||
-        JS_AddIntrinsicTypedArrays(ctx) ||
-        JS_AddIntrinsicPromise(ctx) ||
-        JS_AddIntrinsicWeakRef(ctx)) {
+    if (JS_AddIntrinsicBaseObjects(ctx)) {
         JS_FreeContext(ctx);
         return NULL;
     }
@@ -2415,13 +2390,14 @@ void JS_FreeContext(JSContext *ctx)
 #endif
 #ifdef DUMP_OBJECTS
     {
-        struct list_head *el;
+        int i;
         JSGCObjectHeader *p;
         printf("JSObjects: {\n");
         JS_DumpObjectHeader(ctx->rt);
-        list_for_each(el, &rt->gc_obj_list) {
-            p = list_entry(el, JSGCObjectHeader, link);
-            JS_DumpGCObject(rt, p);
+        for (i = 0; i < rt->gc_handles.count; i++) {
+            p = rt->gc_handles.handles[i];
+            if (js_handle_array_entry_is_valid(p))
+                JS_DumpGCObject(rt, p);
         }
         printf("}\n");
     }
@@ -2737,6 +2713,7 @@ static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
         fprintf(stderr, "FATAL: %s handle array exceeded maximum capacity of %d. "
                 "This indicates a resource leak or excessive allocation.\n",
                 rt->rt_info ? rt->rt_info : "JSRuntime", JS_MAX_HANDLE_ARRAY_SIZE);
+        abort();  /* Crash to make the error obvious */
         return -1;
     }
     arr->handles[arr->count++] = handle;
@@ -5362,9 +5339,9 @@ static __maybe_unused void JS_DumpShapes(JSRuntime *rt)
         }
     }
     /* dump non-hashed shapes */
-    list_for_each(el, &rt->gc_obj_list) {
-        gp = list_entry(el, JSGCObjectHeader, link);
-        if (gp->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
+    for (i = 0; i < rt->gc_handles.count; i++) {
+        gp = rt->gc_handles.handles[i];
+        if (js_handle_array_entry_is_valid(gp) && gp->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
             p = (JSObject *)gp;
             if (!p->shape->is_hashed) {
                 JS_DumpShape(rt, -1, p->shape);
@@ -5381,7 +5358,7 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
 {
     JSObject *p;
     int i;
-    
+
     js_trigger_gc(ctx->rt, sizeof(JSObject));
     p = js_malloc(ctx, sizeof(JSObject));
     if (unlikely(!p))
@@ -5532,7 +5509,7 @@ static JSValue JS_NewObjectProtoClassAlloc(JSContext *ctx, JSValueConst proto_va
     JSShape *sh;
     JSObject *proto;
     int hash_size, hash_bits;
-    
+
     if (n_alloc_props <= JS_PROP_INITIAL_SIZE) {
         n_alloc_props = JS_PROP_INITIAL_SIZE;
         hash_size = JS_PROP_INITIAL_HASH_SIZE;
@@ -6188,6 +6165,13 @@ static void free_gc_object(JSRuntime *rt, JSGCObjectHeader *gp)
     case JS_GC_OBJ_TYPE_JS_STRING_ROPE:
         free_string_rope(rt, (JSStringRope *)gp);
         break;
+    case JS_GC_OBJ_TYPE_SHAPE:
+        js_free_shape(rt, (JSShape *)gp);
+        break;
+    case JS_GC_OBJ_TYPE_VAR_REF:
+        /* Var refs are freed when their containing object is freed */
+        js_free_rt(rt, gp);
+        break;
     default:
         /* Unknown object type - just free the header */
         js_free_rt(rt, gp);
@@ -6289,8 +6273,11 @@ static void add_gc_object(JSRuntime *rt, JSGCObjectHeader *h,
 {
     h->mark = 0;
     h->gc_obj_type = type;
-    /* ASAN fix: Skip linked list - objects tracked by stack allocator */
-    /* list_add_tail(&h->link, &rt->gc_obj_list); */
+    /* Add to handle array for ASAN-safe tracking */
+    if (js_handle_array_add(rt, &rt->gc_handles, h) < 0) {
+        /* Out of space - this is a fatal error, but we can't abort here */
+        fprintf(stderr, "FATAL: GC handle array full\n");
+    }
     
     /* Assign handle for handle-based GC */
     h->handle = g_next_handle++;
@@ -6298,8 +6285,8 @@ static void add_gc_object(JSRuntime *rt, JSGCObjectHeader *h,
 
 static void remove_gc_object(JSGCObjectHeader *h)
 {
-    /* ASAN fix: Skip linked list removal - objects tracked by stack allocator */
-    /* list_del(&h->link); */
+    /* Mark as freed - will be compacted during GC */
+    /* Note: We can't easily find which array to use here without rt pointer */
     h->handle = 0;  /* Clear handle */
 }
 
@@ -6462,14 +6449,14 @@ static void gc_mark_recursive(JSRuntime *rt, JSGCObjectHeader *p)
 /* Mark all objects reachable from roots */
 static void gc_mark_roots(JSRuntime *rt)
 {
-    struct list_head *el;
-    JSGCObjectHeader *p;
     int i;
+    JSGCObjectHeader *p;
 
     /* First, clear all marks */
-    list_for_each(el, &rt->gc_obj_list) {
-        p = list_entry(el, JSGCObjectHeader, link);
-        p->mark = 0;
+    for (i = 0; i < rt->gc_handles.count; i++) {
+        p = rt->gc_handles.handles[i];
+        if (js_handle_array_entry_is_valid(p))
+            p->mark = 0;
     }
 
     /* Mark from contexts (roots) */
@@ -6494,27 +6481,21 @@ static void gc_mark_roots(JSRuntime *rt)
 /* Sweep: free all unmarked objects */
 static void gc_sweep(JSRuntime *rt)
 {
-    struct list_head *el, *el1;
+    int i;
     JSGCObjectHeader *p;
 
     rt->gc_phase = JS_GC_PHASE_REMOVE_CYCLES;
 
-    list_for_each_safe(el, el1, &rt->gc_obj_list) {
-        p = list_entry(el, JSGCObjectHeader, link);
+    /* Iterate over gc_handles and free unmarked objects */
+    for (i = 0; i < rt->gc_handles.count; i++) {
+        p = rt->gc_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(p)) {
+            continue;
+        }
         if (!p->mark) {
-            /* Object is unreachable - free it */
-            switch(p->gc_obj_type) {
-            case JS_GC_OBJ_TYPE_JS_OBJECT:
-            case JS_GC_OBJ_TYPE_FUNCTION_BYTECODE:
-            case JS_GC_OBJ_TYPE_ASYNC_FUNCTION:
-            case JS_GC_OBJ_TYPE_MODULE:
-                free_gc_object(rt, p);
-                break;
-            default:
-                /* For other types, just free directly */
-                js_free_rt(rt, p);
-                break;
-            }
+            /* Object is unreachable - free it and mark entry as freed */
+            free_gc_object(rt, p);
+            rt->gc_handles.handles[i] = JS_HANDLE_FREED;
         }
     }
 
@@ -6529,13 +6510,13 @@ static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
            registry callbacks. */
         gc_remove_weak_objects(rt);
     }
-    
+
     /* Mark phase: mark all reachable objects from roots */
     gc_mark_roots(rt);
 
     /* Sweep phase: free all unmarked objects */
     gc_sweep(rt);
-    
+
     /* Compact handle arrays to remove NULL entries (like stack allocator) */
     js_compact_all_handle_arrays(rt);
 }
@@ -6695,11 +6676,14 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
         }
     }
 
-    list_for_each(el, &rt->gc_obj_list) {
-        JSGCObjectHeader *gp = list_entry(el, JSGCObjectHeader, link);
+    for (i = 0; i < rt->gc_handles.count; i++) {
+        JSGCObjectHeader *gp = rt->gc_handles.handles[i];
         JSObject *p;
         JSShape *sh;
         JSShapeProperty *prs;
+
+        if (!js_handle_array_entry_is_valid(gp))
+            continue;
 
         /* XXX: could count the other GC object types too */
         if (gp->gc_obj_type == JS_GC_OBJ_TYPE_FUNCTION_BYTECODE) {
@@ -6965,11 +6949,10 @@ void JS_DumpMemoryUsage(FILE *fp, const JSMemoryUsage *s, JSRuntime *rt)
         {
             int obj_classes[JS_CLASS_INIT_COUNT + 1] = { 0 };
             int class_id;
-            struct list_head *el;
-            list_for_each(el, &rt->gc_obj_list) {
-                JSGCObjectHeader *gp = list_entry(el, JSGCObjectHeader, link);
+            for (i = 0; i < rt->gc_handles.count; i++) {
+                JSGCObjectHeader *gp = rt->gc_handles.handles[i];
                 JSObject *p;
-                if (gp->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
+                if (js_handle_array_entry_is_valid(gp) && gp->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
                     p = (JSObject *)gp;
                     obj_classes[min_uint32(p->class_id, JS_CLASS_INIT_COUNT)]++;
                 }
@@ -55699,8 +55682,9 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
                                            JS_CFUNC_generic, 0,
                                            ctx->class_proto[JS_CLASS_OBJECT],
                                            countof(js_function_proto_funcs) + 3 + 2);
-    if (JS_IsException(ctx->function_proto))
+    if (JS_IsException(ctx->function_proto)) {
         return -1;
+    }
     ctx->class_proto[JS_CLASS_BYTECODE_FUNCTION] = ctx->function_proto;
 
     ctx->global_obj = JS_NewObjectProtoClassAlloc(ctx, ctx->class_proto[JS_CLASS_OBJECT],
