@@ -2740,14 +2740,50 @@ static int JS_InitAtoms(JSRuntime *rt)
 {
     int i, len, atom_type;
     const char *p;
+    JSAtomStruct *atom_null;
+    uint32_t init_size;
 
     rt->atom_hash_size = 0;
     rt->atom_hash = NULL;
     rt->atom_count = 0;
     rt->atom_size = 0;
     rt->atom_free_index = 0;
+    rt->atom_array = NULL;
     if (JS_ResizeAtomHash(rt, 512))     /* there are at least 504 predefined atoms */
         return -1;
+
+    /* Allocate atom_array upfront to avoid NULL pointer dereference
+       when find_atom() is called during context creation */
+    init_size = 711;  /* Enough for predefined atoms (at least 504) */
+    rt->atom_array = js_mallocz_rt(rt, sizeof(JSAtomStruct *) * init_size);
+    if (!rt->atom_array)
+        return -1;
+    rt->atom_size = init_size;
+
+    /* Initialize atom 0 (JS_ATOM_NULL) - not used but needs to exist */
+    atom_null = js_mallocz_rt(rt, sizeof(JSAtomStruct));
+    if (!atom_null) {
+        js_free_rt(rt, rt->atom_array);
+        rt->atom_array = NULL;
+        return -1;
+    }
+    atom_null->atom_type = JS_ATOM_TYPE_SYMBOL;
+#ifdef DUMP_LEAKS
+    list_add_tail(&atom_null->link, &rt->string_list);
+#endif
+    rt->atom_array[0] = atom_null;
+    rt->atom_count = 1;
+
+    /* Initialize free list: indices 1 to init_size-1 are free */
+    rt->atom_free_index = 1;
+    for(i = 1; i < init_size; i++) {
+        uint32_t next;
+        if (i == (init_size - 1))
+            next = 0;
+        else
+            next = i + 1;
+        rt->atom_array[i] = atom_set_free(next);
+    }
 
     p = js_atom_init;
     for(i = 1; i < JS_ATOM_END; i++) {
@@ -2902,7 +2938,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         /* Note: the atom 0 is not used */
         start = rt->atom_size;
         if (start == 0) {
-            /* JS_ATOM_NULL entry */
+            /* JS_ATOM_NULL entry - only when atom_array wasn't pre-allocated */
             p = js_mallocz_rt(rt, sizeof(JSAtomStruct));
             if (!p) {
                 js_free_rt(rt, new_array);
@@ -39178,6 +39214,9 @@ static JSAtom find_atom(JSContext *ctx, const char *name)
         len = strlen(name) - 1;
         /* We assume 8 bit non null strings, which is the case for these
            symbols */
+        /* Defensive: atom_array may not be initialized yet */
+        if (unlikely(!ctx->rt->atom_array))
+            return JS_ATOM_NULL;
         for(atom = JS_ATOM_Symbol_toPrimitive; atom < JS_ATOM_END; atom++) {
             JSAtomStruct *p = ctx->rt->atom_array[atom];
             if (!p) continue;  /* Skip null atoms */
