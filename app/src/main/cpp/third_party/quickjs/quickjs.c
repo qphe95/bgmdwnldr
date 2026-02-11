@@ -1705,7 +1705,7 @@ static inline BOOL js_check_stack_overflow(JSRuntime *rt, size_t alloca_size)
 }
 #endif
 
-JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
+JSRuntime *JS_NewRuntime(void)
 {
     JSRuntime *rt;
     JSMallocState ms;
@@ -1717,18 +1717,20 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
     gc_reset();
 
     memset(&ms, 0, sizeof(ms));
-    ms.opaque = opaque;
     ms.malloc_limit = -1;
 
-    rt = mf->js_malloc(&ms, sizeof(JSRuntime));
+    /* Allocate from unified GC */
+    rt = gc_alloc_raw(sizeof(JSRuntime));
     if (!rt)
         return NULL;
     memset(rt, 0, sizeof(*rt));
-    rt->mf = *mf;
-    if (!rt->mf.js_malloc_usable_size) {
-        /* use dummy function if none provided */
-        rt->mf.js_malloc_usable_size = js_malloc_usable_size_unknown;
-    }
+    
+    /* Dummy malloc functions - not used but kept for compatibility */
+    rt->mf.js_malloc = NULL;
+    rt->mf.js_free = NULL;
+    rt->mf.js_realloc = NULL;
+    rt->mf.js_malloc_usable_size = NULL;
+    
     rt->malloc_state = ms;
     rt->malloc_gc_threshold = 256 * 1024;
 
@@ -1791,95 +1793,6 @@ void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque)
     rt->user_opaque = opaque;
 }
 
-/* default memory allocation functions with memory limitation */
-static size_t js_def_malloc_usable_size(const void *ptr)
-{
-#if defined(__ANDROID__)
-    /* On Android with Scudo allocator, malloc_usable_size can fail
-     * on certain pointers. Return 0 to disable the optimization safely.
-     * QuickJS handles usable_size == 0 gracefully. */
-    return 0;
-#elif defined(__APPLE__)
-    return malloc_size(ptr);
-#elif defined(_WIN32)
-    return _msize((void *)ptr);
-#elif defined(EMSCRIPTEN)
-    return 0;
-#elif defined(__linux__) || defined(__GLIBC__)
-    return malloc_usable_size((void *)ptr);
-#else
-    /* change this to `return 0;` if compilation fails */
-    return malloc_usable_size((void *)ptr);
-#endif
-}
-
-static void *js_def_malloc(JSMallocState *s, size_t size)
-{
-    void *ptr;
-
-    /* Do not allocate zero bytes: behavior is platform dependent */
-    assert(size != 0);
-
-    if (unlikely(s->malloc_size + size > s->malloc_limit))
-        return NULL;
-
-    ptr = malloc(size);
-    if (!ptr)
-        return NULL;
-
-    s->malloc_count++;
-    s->malloc_size += js_def_malloc_usable_size(ptr) + MALLOC_OVERHEAD;
-    return ptr;
-}
-
-static void js_def_free(JSMallocState *s, void *ptr)
-{
-    if (!ptr)
-        return;
-
-    s->malloc_count--;
-    s->malloc_size -= js_def_malloc_usable_size(ptr) + MALLOC_OVERHEAD;
-    free(ptr);
-}
-
-static void *js_def_realloc(JSMallocState *s, void *ptr, size_t size)
-{
-    size_t old_size;
-
-    if (!ptr) {
-        if (size == 0)
-            return NULL;
-        return js_def_malloc(s, size);
-    }
-    old_size = js_def_malloc_usable_size(ptr);
-    if (size == 0) {
-        s->malloc_count--;
-        s->malloc_size -= old_size + MALLOC_OVERHEAD;
-        free(ptr);
-        return NULL;
-    }
-    if (s->malloc_size + size - old_size > s->malloc_limit)
-        return NULL;
-
-    ptr = realloc(ptr, size);
-    if (!ptr)
-        return NULL;
-
-    s->malloc_size += js_def_malloc_usable_size(ptr) - old_size;
-    return ptr;
-}
-
-static const JSMallocFunctions def_malloc_funcs = {
-    js_def_malloc,
-    js_def_free,
-    js_def_realloc,
-    js_def_malloc_usable_size,
-};
-
-JSRuntime *JS_NewRuntime(void)
-{
-    return JS_NewRuntime2(&def_malloc_funcs, NULL);
-}
 
 void JS_SetMemoryLimit(JSRuntime *rt, size_t limit)
 {
