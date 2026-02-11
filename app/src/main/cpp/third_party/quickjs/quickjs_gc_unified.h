@@ -1,0 +1,158 @@
+/*
+ * Unified GC Allocator for QuickJS
+ * 
+ * All memory (interpreter structs, handle tables, JS objects) lives in
+ * a single GC-managed heap. No system malloc/free during operation.
+ */
+
+#ifndef QUICKJS_GC_UNIFIED_H
+#define QUICKJS_GC_UNIFIED_H
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdatomic.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Total GC heap size - 512MB */
+#define GC_HEAP_SIZE (512 * 1024 * 1024)
+
+/* Initial handle table capacity */
+#define GC_INITIAL_HANDLES 8192
+
+/* Handle type - 0 is reserved as null */
+typedef uint32_t GCHandle;
+#define GC_HANDLE_NULL 0
+
+/* Object types */
+typedef enum {
+    GC_TYPE_RAW = 0,        /* Raw memory (not a GC object) */
+    GC_TYPE_JS_OBJECT,
+    GC_TYPE_JS_STRING,
+    GC_TYPE_JS_SHAPE,
+    GC_TYPE_JS_CONTEXT,
+    GC_TYPE_JS_RUNTIME,
+    GC_TYPE_ATOM_ARRAY,
+    GC_TYPE_CLASS_ARRAY,
+    GC_TYPE_PROP_ARRAY,
+    GC_TYPE_HASH_TABLE,
+    GC_TYPE_OTHER,
+} GCType;
+
+/* Object header - embedded at start of every allocation */
+typedef struct GCHeader {
+    uint32_t size;          /* Total size including header */
+    GCType type : 8;
+    uint8_t mark;           /* GC mark bit */
+    uint8_t pinned;         /* Don't move during compaction */
+    uint8_t flags;          /* Reserved */
+    GCHandle handle;        /* Handle for this object (0 for raw) */
+} GCHeader;
+
+/* Handle table entry */
+typedef struct GCHandleEntry {
+    void *ptr;              /* Pointer to user data (past header) */
+    uint32_t gen;           /* Generation for debugging */
+} GCHandleEntry;
+
+/* Bump allocator region */
+typedef struct GCBumpRegion {
+    uint8_t *base;
+    _Atomic size_t offset;
+    size_t capacity;
+} GCBumpRegion;
+
+/* Unified GC state - lives in static space */
+typedef struct GCState {
+    /* The heap */
+    uint8_t *heap;
+    size_t heap_size;
+    
+    /* Bump allocator for new allocations */
+    GCBumpRegion bump;
+    
+    /* Handle table - stored IN the GC heap itself! */
+    GCHandleEntry *handles;     /* Pointer into GC heap */
+    uint32_t handle_count;
+    uint32_t handle_capacity;   /* Current max handles */
+    
+    /* Root set - handles that are always reachable */
+    GCHandle *roots;
+    uint32_t root_count;
+    uint32_t root_capacity;
+    
+    /* Stats */
+    uint64_t total_allocs;
+    uint64_t total_bytes;
+    uint32_t gc_count;
+    
+    /* Initialized? */
+    bool initialized;
+} GCState;
+
+/* Global GC instance - lives in static BSS */
+extern GCState g_gc;
+
+/* Initialize the unified GC - MUST be called before any QuickJS operations */
+bool gc_init(void);
+
+/* Check if GC is initialized */
+bool gc_is_initialized(void);
+
+/* Cleanup */
+void gc_cleanup(void);
+
+/* 
+ * Core allocation - everything goes through this
+ * Returns pointer to USER DATA (past header)
+ */
+void *gc_alloc(size_t size, GCType type);
+
+/* Raw allocation (no handle, for internal structures) */
+static inline void *gc_alloc_raw(size_t size) {
+    return gc_alloc(size, GC_TYPE_RAW);
+}
+
+/* Realloc - allocates new, copies, old becomes garbage */
+void *gc_realloc(void *ptr, size_t new_size);
+
+/* Free - just marks as free, actual reclaim during GC */
+void gc_free(void *ptr);
+
+/* Get size of allocation */
+size_t gc_size(void *ptr);
+
+/* Handle-based allocation for GC objects */
+GCHandle gc_alloc_handle(size_t size, GCType type);
+
+/* Get pointer from handle */
+void *gc_deref(GCHandle handle);
+
+/* Add/remove roots */
+void gc_add_root(GCHandle handle);
+void gc_remove_root(GCHandle handle);
+
+/* Run GC cycle (mark-compact) */
+void gc_run(void);
+
+/* Reset everything (nuclear option) */
+void gc_reset(void);
+
+/* Stats */
+size_t gc_used(void);
+size_t gc_available(void);
+
+/* Helper: get header from user pointer */
+static inline GCHeader *gc_header(void *ptr) {
+    if (!ptr) return NULL;
+    return (GCHeader*)((uint8_t*)ptr - sizeof(GCHeader));
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* QUICKJS_GC_UNIFIED_H */

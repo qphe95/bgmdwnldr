@@ -32,6 +32,7 @@
 #include <time.h>
 #include <fenv.h>
 #include <math.h>
+#include <android/log.h>
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
 #elif defined(__linux__) || defined(__GLIBC__)
@@ -43,6 +44,16 @@
 #include "cutils.h"
 #include "list.h"
 #include "quickjs.h"
+#include "quickjs_gc_unified.h"
+
+/* Ensure GC is initialized before any allocation */
+static inline void gc_assert_initialized(void) {
+    if (__builtin_expect(!g_gc.initialized, 0)) {
+        __android_log_print(ANDROID_LOG_ERROR, "QuickJS", 
+            "FATAL: GC not initialized! Call gc_init() before any QuickJS operations.");
+        __builtin_trap();  /* Hard crash in debug builds */
+    }
+}
 #include "libregexp.h"
 #include "libunicode.h"
 #include "dtoa.h"
@@ -1419,24 +1430,33 @@ static size_t js_malloc_usable_size_unknown(const void *ptr)
     return 0;
 }
 
+/* GC-only allocation - NO system allocator fallback */
 void *js_malloc_rt(JSRuntime *rt, size_t size)
 {
-    return rt->mf.js_malloc(&rt->malloc_state, size);
+    (void)rt;
+    gc_assert_initialized();
+    return gc_alloc_raw(size);
 }
 
 void js_free_rt(JSRuntime *rt, void *ptr)
 {
-    rt->mf.js_free(&rt->malloc_state, ptr);
+    (void)rt;
+    gc_assert_initialized();
+    gc_free(ptr);
 }
 
 void *js_realloc_rt(JSRuntime *rt, void *ptr, size_t size)
 {
-    return rt->mf.js_realloc(&rt->malloc_state, ptr, size);
+    (void)rt;
+    gc_assert_initialized();
+    return gc_realloc(ptr, size);
 }
 
 size_t js_malloc_usable_size_rt(JSRuntime *rt, const void *ptr)
 {
-    return rt->mf.js_malloc_usable_size(ptr);
+    (void)rt;
+    gc_assert_initialized();
+    return gc_size((void*)ptr);
 }
 
 void *js_mallocz_rt(JSRuntime *rt, size_t size)
@@ -1689,6 +1709,12 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
 {
     JSRuntime *rt;
     JSMallocState ms;
+
+    /* GC must be initialized BEFORE calling this function */
+    gc_assert_initialized();
+    
+    /* Reset GC for fresh runtime - all previous state cleared */
+    gc_reset();
 
     memset(&ms, 0, sizeof(ms));
     ms.opaque = opaque;

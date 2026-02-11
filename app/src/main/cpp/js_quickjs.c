@@ -7,9 +7,10 @@
 #include "js_quickjs.h"
 #include "cutils.h"
 #include "quickjs.h"
+#include "quickjs_gc_unified.h"
 #include "browser_stubs.h"
 #include "html_dom.h"
-#include "stack_allocator.h"
+/* Using unified GC allocator from quickjs_gc_unified.h */
 
 #define LOG_TAG "js_quickjs"
 #define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -656,8 +657,13 @@ static void __attribute__((constructor)) js_quickjs_init_class_ids(void) {
 }
 
 bool js_quickjs_init(void) {
-    // Class IDs are auto-initialized via constructor attribute
-    // This function is kept for API compatibility
+    // Initialize unified GC first - all memory comes from here
+    if (!gc_is_initialized()) {
+        if (!gc_init()) {
+            LOG_ERROR("Failed to initialize unified GC");
+            return false;
+        }
+    }
     return true;
 }
 
@@ -665,6 +671,9 @@ void js_quickjs_cleanup(void) {
     pthread_mutex_lock(&g_url_mutex);
     g_captured_url_count = 0;
     pthread_mutex_unlock(&g_url_mutex);
+    
+    // Cleanup unified GC
+    gc_cleanup();
 }
 
 // Helper to extract attribute value from HTML tag
@@ -686,7 +695,7 @@ static char* extract_attr(const char *html, const char *tag_end, const char *att
     if (!end || end > tag_end) return NULL;
     
     size_t len = end - attr;
-    char *value = stack_alloc(len + 1);
+    char *value = gc_alloc_raw(len + 1);
     if (value) {
         strncpy(value, attr, len);
         value[len] = '\0';
@@ -854,22 +863,16 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     memset(out_result, 0, sizeof(JsExecResult));
     out_result->status = JS_EXEC_ERROR;
     
-    // Initialize class IDs first (must happen before any other QuickJS calls)
-    js_quickjs_init();
-    
-    // Initialize stack allocator
-    if (!stack_allocator_init()) {
-        LOG_ERROR("Failed to initialize stack allocator");
+    // Initialize GC first (must happen before any other QuickJS calls)
+    if (!js_quickjs_init()) {
+        LOG_ERROR("Failed to initialize QuickJS (GC init failed)");
         return false;
     }
     
-    // Reset stack allocator for fresh start
-    stack_allocator_reset();
+    // Create runtime using unified GC allocator
+    LOG_INFO("Creating QuickJS runtime with unified GC...");
     
-    // Create runtime and context using stack allocator
-    LOG_INFO("Creating QuickJS runtime with stack allocator...");
-    
-    JSRuntime *rt = JS_NewRuntime2(stack_allocator_get_js_funcs(), NULL);
+    JSRuntime *rt = JS_NewRuntime();
     if (!rt) {
         LOG_ERROR("Failed to create QuickJS runtime");
         return false;
@@ -966,14 +969,14 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
             strstr(scripts[i], "web-animations") != NULL || script_lens[i] > 50000) {
             // Wrap large scripts and known problematic scripts in try-catch
             size_t wrapped_size = script_lens[i] + 100;
-            char *wrapped = stack_alloc(wrapped_size);
+            char *wrapped = gc_alloc_raw(wrapped_size);
             if (wrapped) {
                 int header_len = snprintf(wrapped, wrapped_size, "try{");
                 memcpy(wrapped + header_len, scripts[i], script_lens[i]);
                 int footer_len = snprintf(wrapped + header_len + script_lens[i], wrapped_size - header_len - script_lens[i], "}catch(e){}");
                 size_t total_len = header_len + script_lens[i] + footer_len;
                 result = JS_Eval(ctx, wrapped, total_len, filename, JS_EVAL_TYPE_GLOBAL);
-                /* Stack allocator doesn't need individual free - memory reset all at once */
+                /* GC will reclaim memory on reset - no individual free needed */
             } else {
                 result = JS_Eval(ctx, scripts[i], script_lens[i], filename, JS_EVAL_TYPE_GLOBAL);
             }

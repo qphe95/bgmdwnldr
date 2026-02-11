@@ -28,13 +28,13 @@ LOCAL_SRC_FILES := \
     url_analyzer.c \
     js_quickjs.c \
     browser_stubs.c \
-    stack_allocator.c \
     third_party/quickjs/quickjs.c \
     third_party/quickjs/libregexp.c \
     third_party/quickjs/libunicode.c \
     third_party/quickjs/cutils.c \
     third_party/quickjs/quickjs-libc.c \
     third_party/quickjs/dtoa.c \
+    third_party/quickjs/quickjs_gc_unified.c \
     $(MBEDTLS_SRC) \
     $(TF_PSA_CORE) \
     $(TF_PSA_DRIVERS) \
