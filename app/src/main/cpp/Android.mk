@@ -29,6 +29,7 @@ LOCAL_SRC_FILES := \
     url_analyzer.c \
     js_quickjs.c \
     browser_stubs.c \
+    stack_allocator.c \
     third_party/quickjs/quickjs.c \
     third_party/quickjs/libregexp.c \
     third_party/quickjs/libunicode.c \

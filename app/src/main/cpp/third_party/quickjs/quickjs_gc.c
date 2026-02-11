@@ -169,6 +169,64 @@ void js_handle_release(JSHandleGCState *gc, JSObjHandle handle) {
     /* No-op: mark-and-sweep GC handles object lifetime */
 }
 
+/* Realloc - allocates new object, copies data, marks old as dead
+ * Returns the same handle (now pointing to new location), or 0 on failure */
+JSObjHandle js_handle_realloc(JSHandleGCState *gc, JSObjHandle handle, size_t new_size) {
+    if (handle == JS_OBJ_HANDLE_NULL) {
+        /* realloc(NULL, size) behaves like malloc(size) */
+        return js_handle_alloc(gc, new_size, JS_GC_OBJ_TYPE_JS_OBJECT);
+    }
+    
+    if (new_size == 0) {
+        /* realloc(ptr, 0) behaves like free(ptr) */
+        /* Just clear the handle entry - GC will collect the object */
+        if (handle < gc->handle_count) {
+            gc->handles[handle].ptr = NULL;
+        }
+        return JS_OBJ_HANDLE_NULL;
+    }
+    
+    /* Validate handle */
+    if (handle >= gc->handle_count || !gc->handles[handle].ptr) {
+        return JS_OBJ_HANDLE_NULL;  /* Invalid or freed handle */
+    }
+    
+    /* Get old object info */
+    void *old_data = gc->handles[handle].ptr;
+    JSGCObjectHeader *old_obj = js_handle_header(old_data);
+    size_t old_size = old_obj->size - sizeof(JSGCObjectHeader);
+    int old_type = old_obj->gc_obj_type;
+    
+    /* Allocate new object */
+    size_t total_new_size = ALIGN8(sizeof(JSGCObjectHeader) + new_size);
+    JSGCObjectHeader *new_obj = js_mem_stack_alloc(&gc->stack, total_new_size);
+    if (!new_obj) {
+        return JS_OBJ_HANDLE_NULL;  /* Out of memory */
+    }
+    
+    /* Initialize new header */
+    new_obj->size = total_new_size;
+    new_obj->gc_obj_type = old_type;
+    new_obj->mark = 0;
+    new_obj->pinned = 0;
+    new_obj->flags = 0;
+    new_obj->handle = handle;  /* Reuse the same handle */
+    
+    /* Copy old data */
+    void *new_data = (uint8_t*)new_obj + sizeof(JSGCObjectHeader);
+    size_t copy_size = old_size < new_size ? old_size : new_size;
+    memcpy(new_data, old_data, copy_size);
+    
+    /* Update handle table to point to new location */
+    gc->handles[handle].ptr = new_data;
+    gc->handles[handle].generation = ++gc->generation;
+    
+    /* Old object becomes "dead" - GC compaction will reclaim it
+     * We don't explicitly free it; mark-compact will handle it */
+    
+    return handle;
+}
+
 /* Add root - no refcounting, object is kept alive via mark-and-sweep roots */
 void js_handle_add_root(JSHandleGCState *gc, JSObjHandle handle) {
     if (handle == JS_OBJ_HANDLE_NULL) return;

@@ -92,6 +92,10 @@ JSObjHandle js_handle_alloc(JSHandleGCState *gc, size_t size, int type);
 void js_handle_release(JSHandleGCState *gc, JSObjHandle handle);
 void js_handle_retain(JSHandleGCState *gc, JSObjHandle handle);
 
+/* Realloc - allocates new object, copies data, marks old as dead
+ * Returns the same handle (now pointing to new location), or 0 on failure */
+JSObjHandle js_handle_realloc(JSHandleGCState *gc, JSObjHandle handle, size_t new_size);
+
 /* Dereference handle to user data pointer */
 static inline void* js_handle_deref(JSHandleGCState *gc, JSObjHandle handle) {
     if (__builtin_expect(handle == 0 || handle >= gc->handle_count, 0)) {
