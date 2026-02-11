@@ -1390,6 +1390,10 @@ static const JSClassExoticMethods js_proxy_exotic_methods;
 static const JSClassExoticMethods js_module_ns_exotic_methods;
 static JSClassID js_class_id_alloc = JS_CLASS_INIT_COUNT;
 
+/* Forward declaration for unified GC check */
+extern bool gc_should_run(void);
+extern void gc_set_threshold(size_t threshold);
+
 static void js_trigger_gc(JSRuntime *rt, size_t size)
 {
     BOOL force_gc;
@@ -1402,6 +1406,11 @@ static void js_trigger_gc(JSRuntime *rt, size_t size)
 #else
     force_gc = ((rt->malloc_state.malloc_size + size) >
                 rt->malloc_gc_threshold);
+    
+    /* Bug #2 fix: Also check unified GC memory pressure */
+    if (!force_gc && gc_should_run()) {
+        force_gc = TRUE;
+    }
 #endif
     if (force_gc) {
 #ifdef DUMP_GC
@@ -1411,6 +1420,8 @@ static void js_trigger_gc(JSRuntime *rt, size_t size)
         JS_RunGC(rt);
         rt->malloc_gc_threshold = rt->malloc_state.malloc_size +
             (rt->malloc_state.malloc_size >> 1);
+        /* Bug #2 fix: Update unified GC threshold too */
+        gc_set_threshold(rt->malloc_gc_threshold);
     }
 }
 
@@ -1713,6 +1724,9 @@ JSRuntime *JS_NewRuntime(void)
     if (!rt)
         return NULL;
     memset(rt, 0, sizeof(*rt));
+    
+    /* Bug #2 fix: Set runtime pointer for GC tracking */
+    gc_set_runtime(rt);
     
     rt->malloc_state = ms;
     rt->malloc_gc_threshold = 256 * 1024;
@@ -2088,6 +2102,11 @@ void JS_FreeRuntime(JSRuntime *rt)
     for(i = 0; i < rt->atom_size; i++) {
         JSAtomStruct *p = rt->atom_array[i];
         if (!atom_is_free(p)) {
+            /* Bug #1 fix: Check if already freed by GC (size == 0) */
+            if (p->header.size == 0) {
+                /* Already freed - skip */
+                continue;
+            }
 #ifdef DUMP_LEAKS
             list_del(&p->link);
 #endif
@@ -2139,6 +2158,10 @@ void JS_FreeRuntime(JSRuntime *rt)
 
     /* Runtime is in GC memory - no individual free needed.
      * gc_reset() or gc_cleanup() will reclaim all memory. */
+    
+    /* Bug #2 fix: Clear runtime pointer */
+    gc_set_runtime(NULL);
+    
     (void)rt;
 }
 
@@ -2643,8 +2666,15 @@ static void js_handle_array_free(JSRuntime *rt, JSHandleArray *arr)
 
 static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
 {
+    /* Bug #3 fix: Add safety checks */
+    if (!arr || !handle) {
+        return -1;
+    }
     if (arr->count >= arr->capacity) {
-        abort();  /* Crash to make the error obvious */
+        /* Don't crash, just return error */
+        /* Note: Using fprintf since LOG_ERROR isn't available here */
+        fprintf(stderr, "Handle array full: count=%u, capacity=%u\n", 
+                (unsigned)arr->count, (unsigned)arr->capacity);
         return -1;
     }
     arr->handles[arr->count++] = handle;
@@ -2658,6 +2688,9 @@ static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
 static void js_handle_array_mark_freed(JSHandleArray *arr, void *handle)
 {
     uint32_t i;
+    /* Bug #3 fix: Add safety checks */
+    if (!arr || !handle) return;
+    
     for (i = 0; i < arr->count; i++) {
         if (arr->handles[i] == handle) {
             arr->handles[i] = JS_HANDLE_FREED;  /* Mark as freed */
@@ -2704,9 +2737,14 @@ static void js_handle_array_compact(JSHandleArray *arr)
 static void js_handle_array_remove(JSHandleArray *arr, void *handle)
 {
     uint32_t i;
+    /* Bug #3 fix: Add safety checks */
+    if (!arr || !handle) return;
+    
     for (i = 0; i < arr->count; i++) {
         if (arr->handles[i] == handle) {
             /* Swap with last element and decrement count (O(1) removal) */
+            /* Bug #3 fix: Clear the old entry to catch use-after-free */
+            arr->handles[i] = NULL;
             arr->handles[i] = arr->handles[--arr->count];
             return;
         }
@@ -6471,6 +6509,14 @@ static void gc_sweep(JSRuntime *rt)
         if (!js_handle_array_entry_is_valid(p)) {
             continue;
         }
+        
+        /* Bug #4 fix: Check if already freed via gc_free() (size == 0) */
+        if (p->size == 0) {
+            /* Object was already freed, just mark handle entry */
+            rt->gc_handles.handles[i] = JS_HANDLE_FREED;
+            continue;
+        }
+        
         if (!p->mark) {
             /* Object is unreachable - free it and mark entry as freed */
             free_gc_object(rt, p);

@@ -95,6 +95,9 @@ typedef struct GCBumpRegion {
     size_t capacity;
 } GCBumpRegion;
 
+/* Forward declaration */
+struct JSRuntime;
+
 /* Unified GC state - lives in static space */
 typedef struct GCState {
     /* The heap */
@@ -118,6 +121,11 @@ typedef struct GCState {
     uint64_t total_allocs;
     uint64_t total_bytes;
     uint32_t gc_count;
+    
+    /* Memory tracking for GC trigger (Bug #2 fix) */
+    size_t bytes_allocated;     /* Current allocated bytes (for GC trigger) */
+    size_t gc_threshold;        /* Threshold for triggering GC */
+    struct JSRuntime *rt;       /* Pointer to runtime for updating malloc_state */
     
     /* Initialized? */
     bool initialized;
@@ -174,6 +182,15 @@ void gc_reset(void);
 /* Stats */
 size_t gc_used(void);
 size_t gc_available(void);
+
+/* Check if GC should run based on memory pressure (Bug #2 fix) */
+bool gc_should_run(void);
+
+/* Set the runtime pointer for malloc_state updates (Bug #2 fix) */
+void gc_set_runtime(struct JSRuntime *rt);
+
+/* Update GC threshold (like JS_SetGCThreshold) */
+void gc_set_threshold(size_t threshold);
 
 /* Helper: get header from user pointer */
 static inline GCHeader *gc_header(void *ptr) {
