@@ -33,8 +33,8 @@
 extern "C" {
 #endif
 
-/* Forward declaration of GC object header - defined in quickjs_gc_integration.h */
-struct JSGCObjectHeader;
+/* Forward declaration of GC object header - defined in quickjs_gc_unified.h */
+struct GCHeader;
 
 #if defined(__GNUC__) || defined(__clang__)
 #define js_likely(x)          __builtin_expect(!!(x), 1)
@@ -98,8 +98,8 @@ enum {
     /* any larger tag is FLOAT64 if JS_NAN_BOXING */
 };
 
-/* Note: JSGCObjectHeader is defined in quickjs.c - forward declaration for structures */
-struct JSGCObjectHeader;
+/* Note: GCHeader is defined in quickjs_gc_unified.h */
+struct GCHeader;
 
 #define JS_FLOAT64_NAN NAN
 
@@ -356,7 +356,7 @@ typedef struct JSMallocState {
     void *opaque; /* user opaque */
 } JSMallocState;
 
-typedef struct JSGCObjectHeader JSGCObjectHeader;
+typedef struct GCHeader GCHeader;
 
 /* 
  * Create a new JS runtime.
@@ -376,7 +376,7 @@ void JS_UpdateStackTop(JSRuntime *rt);
 void JS_FreeRuntime(JSRuntime *rt);
 void *JS_GetRuntimeOpaque(JSRuntime *rt);
 void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque);
-typedef void JS_MarkFunc(JSRuntime *rt, JSGCObjectHeader *gp);
+typedef void JS_MarkFunc(JSRuntime *rt, GCHeader *gp);
 void JS_MarkValue(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func);
 void JS_RunGC(JSRuntime *rt);
 JS_BOOL JS_IsLiveObject(JSRuntime *rt, JSValueConst obj);

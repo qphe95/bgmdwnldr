@@ -43,8 +43,11 @@
 
 #include "cutils.h"
 #include "list.h"
-#include "quickjs.h"
+
+/* Include unified GC header before quickjs.h to ensure GCHeader is defined */
 #include "quickjs_gc_unified.h"
+
+#include "quickjs.h"
 
 /* Ensure GC is initialized before any allocation */
 static inline void gc_assert_initialized(void) {
@@ -66,10 +69,6 @@ static inline void gc_assert_initialized(void) {
 #define QJS_LOGD(...) do {} while(0)
 #define QJS_LOGE(...) do {} while(0)
 #endif
-
-/* Handle-based GC additions */
-typedef uint32_t JSObjHandle;
-#define JS_OBJ_HANDLE_NULL 0
 
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
@@ -293,7 +292,7 @@ struct JSRuntime {
     JSHandleArray gc_handles;       /* Replaces gc_obj_list */
     JSHandleArray atom_handles;     /* Atom root set - atoms are GC roots */
     
-    /* list of JSGCObjectHeader.link. */
+    /* list of GCHeader.link. */
     struct list_head gc_zero_ref_count_list;
     struct list_head tmp_obj_list; /* used during GC */
     JSGCPhaseEnum gc_phase : 8;
@@ -390,16 +389,7 @@ typedef enum {
 /* header for GC objects. GC objects are C data structures that can
    reference other GC objects. JS Objects are a particular type of GC object.
    Note: ref_count removed - using mark-and-sweep GC only. */
-struct JSGCObjectHeader {
-    int ref_count_unused;
-    JSGCObjectTypeEnum gc_obj_type : 4;
-    uint8_t mark : 1; /* used by the GC */
-    uint8_t dummy0: 3;
-    uint8_t dummy1; /* not used by the GC */
-    uint16_t dummy2; /* not used by the GC */
-    struct list_head link;
-    JSObjHandle handle; /* Handle ID for handle-based GC */
-};
+/* GCHeader is defined in quickjs_gc_unified.h (included above) */
 
 typedef enum {
     JS_WEAKREF_TYPE_MAP,
@@ -414,7 +404,7 @@ typedef struct {
 
 typedef struct JSVarRef {
     union {
-        JSGCObjectHeader header; /* must come first */
+        GCHeader header; /* must come first */
         struct {
             int __gc_ref_count; /* corresponds to unused header field */
             uint8_t __gc_mark; /* corresponds to header.mark/gc_obj_type */
@@ -459,7 +449,7 @@ typedef uint128_t js_dlimb_t;
 #endif
 
 typedef struct JSBigInt {
-    JSGCObjectHeader header; /* must come first, 32-bit */
+    GCHeader header; /* must come first, 32-bit */
     uint32_t len; /* number of limbs, >= 1 */
     js_limb_t tab[]; /* two's complement representation, always
                         normalized so that 'len' is the minimum
@@ -484,7 +474,7 @@ typedef enum {
 #define JS_INTERRUPT_COUNTER_INIT 10000
 
 struct JSContext {
-    JSGCObjectHeader header; /* must come first */
+    GCHeader header; /* must come first */
     JSRuntime *rt;
     struct list_head link;
 
@@ -553,7 +543,7 @@ typedef enum {
 #define JS_ATOM_HASH_PRIVATE JS_ATOM_HASH_MASK
 
 struct JSString {
-    JSGCObjectHeader header; /* must come first, 32-bit */
+    GCHeader header; /* must come first, 32-bit */
     uint32_t len : 31;
     uint8_t is_wide_char : 1; /* 0 = 8 bits, 1 = 16 bits characters */
     /* for JS_ATOM_TYPE_SYMBOL: hash = weakref_count, atom_type = 3,
@@ -572,7 +562,7 @@ struct JSString {
 };
 
 typedef struct JSStringRope {
-    JSGCObjectHeader header; /* must come first, 32-bit */
+    GCHeader header; /* must come first, 32-bit */
     uint32_t len;
     uint8_t is_wide_char; /* 0 = 8 bits, 1 = 16 bits characters */
     uint8_t depth; /* max depth of the rope tree */
@@ -657,7 +647,7 @@ typedef enum JSFunctionKindEnum {
 } JSFunctionKindEnum;
 
 typedef struct JSFunctionBytecode {
-    JSGCObjectHeader header; /* must come first */
+    GCHeader header; /* must come first */
     uint8_t js_mode;
     uint8_t has_prototype : 1; /* true if a prototype field is necessary */
     uint8_t has_simple_parameter_list : 1;
@@ -756,7 +746,7 @@ typedef struct JSGlobalObject {
 } JSGlobalObject;
 
 typedef struct JSAsyncFunctionState {
-    JSGCObjectHeader header;
+    GCHeader header;
     JSValue this_val; /* 'this' argument */
     int argc; /* number of function arguments */
     BOOL throw_flag; /* used to throw an exception in JS_CallInternal() */
@@ -860,7 +850,7 @@ typedef enum {
 } JSModuleStatus;
 
 struct JSModuleDef {
-    JSGCObjectHeader header; /* must come first */
+    GCHeader header; /* must come first */
     JSAtom module_name;
     struct list_head link;
 
@@ -948,7 +938,7 @@ typedef struct JSShapeProperty {
 struct JSShape {
     /* hash table of size hash_mask + 1 before the start of the
        structure (see prop_hash_end()). */
-    JSGCObjectHeader header;
+    GCHeader header;
     /* true if the shape is inserted in the shape hash table. If not,
        JSShape.hash is not valid */
     uint8_t is_hashed;
@@ -964,7 +954,7 @@ struct JSShape {
 
 struct JSObject {
     union {
-        JSGCObjectHeader header;
+        GCHeader header;
         struct {
             int __gc_ref_count; /* corresponds to unused header field */
             uint8_t __gc_mark : 7; /* corresponds to header.mark/gc_obj_type */
@@ -1154,7 +1144,7 @@ static __maybe_unused void JS_DumpAtoms(JSRuntime *rt);
 static __maybe_unused void JS_DumpString(JSRuntime *rt, const JSString *p);
 static __maybe_unused void JS_DumpObjectHeader(JSRuntime *rt);
 static __maybe_unused void JS_DumpObject(JSRuntime *rt, JSObject *p);
-static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, JSGCObjectHeader *p);
+static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, GCHeader *p);
 static __maybe_unused void JS_DumpAtom(JSContext *ctx, const char *str, JSAtom atom);
 static __maybe_unused void JS_DumpValueRT(JSRuntime *rt, const char *str, JSValueConst val);
 static __maybe_unused void JS_DumpValue(JSContext *ctx, const char *str, JSValueConst val);
@@ -1357,9 +1347,9 @@ static JSValue js_c_function_data_call(JSContext *ctx, JSValueConst func_obj,
                                        JSValueConst this_val,
                                        int argc, JSValueConst *argv, int flags);
 static JSAtom js_symbol_to_atom(JSContext *ctx, JSValue val);
-static void add_gc_object(JSRuntime *rt, JSGCObjectHeader *h,
+static void add_gc_object(JSRuntime *rt, GCHeader *h,
                           JSGCObjectTypeEnum type);
-static void remove_gc_object(JSGCObjectHeader *h);
+static void remove_gc_object(GCHeader *h);
 
 /* Handle array forward declarations */
 static int js_handle_array_init(JSRuntime *rt, JSHandleArray *arr);
@@ -1992,7 +1982,7 @@ void JS_FreeRuntime(JSRuntime *rt)
     /* leaking objects */
     {
         BOOL header_done;
-        JSGCObjectHeader *p;
+        GCHeader *p;
         int count;
 
         /* Mark all reachable objects from roots */
@@ -2335,7 +2325,7 @@ void JS_FreeContext(JSContext *ctx)
 #ifdef DUMP_OBJECTS
     {
         int i;
-        JSGCObjectHeader *p;
+        GCHeader *p;
         printf("JSObjects: {\n");
         JS_DumpObjectHeader(ctx->rt);
         for (i = 0; i < rt->gc_handles.count; i++) {
@@ -5276,7 +5266,7 @@ static __maybe_unused void JS_DumpShapes(JSRuntime *rt)
     JSShape *sh;
     struct list_head *el;
     JSObject *p;
-    JSGCObjectHeader *gp;
+    GCHeader *gp;
 
     printf("JSShapes: {\n");
     printf("%5s %4s %14s %5s %5s %s\n", "SLOT", "REFS", "PROTO", "SIZE", "COUNT", "PROPS");
@@ -6089,7 +6079,7 @@ static void free_string_rope(JSRuntime *rt, JSStringRope *r)
     js_free_rt(rt, r);
 }
 
-static void free_gc_object(JSRuntime *rt, JSGCObjectHeader *gp)
+static void free_gc_object(JSRuntime *rt, GCHeader *gp)
 {
     switch(gp->gc_obj_type) {
     case JS_GC_OBJ_TYPE_JS_OBJECT:
@@ -6167,7 +6157,7 @@ static void gc_remove_weak_objects(JSRuntime *rt)
 }
 
 /* Handle-based GC integration */
-static JSObjHandle g_next_handle = 1;
+static GCHandle g_next_handle = 1;
 
 /* Stack bump allocator for handle-based GC */
 typedef struct {
@@ -6212,11 +6202,11 @@ static void js_gc_stack_reset(JSGCStack *stack)
 
 /* Handle table entry */
 typedef struct {
-    JSGCObjectHeader *ptr;
+    GCHeader *ptr;
     uint32_t generation;
 } JSGCHandleEntry;
 
-static void add_gc_object(JSRuntime *rt, JSGCObjectHeader *h,
+static void add_gc_object(JSRuntime *rt, GCHeader *h,
                           JSGCObjectTypeEnum type)
 {
     h->mark = 0;
@@ -6228,7 +6218,7 @@ static void add_gc_object(JSRuntime *rt, JSGCObjectHeader *h,
     h->handle = g_next_handle++;
 }
 
-static void remove_gc_object(JSGCObjectHeader *h)
+static void remove_gc_object(GCHeader *h)
 {
     /* Mark as freed - will be compacted during GC */
     /* Note: We can't easily find which array to use here without rt pointer */
@@ -6252,7 +6242,7 @@ void JS_MarkValue(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
     }
 }
 
-static void mark_children(JSRuntime *rt, JSGCObjectHeader *gp,
+static void mark_children(JSRuntime *rt, GCHeader *gp,
                           JS_MarkFunc *mark_func)
 {
     switch(gp->gc_obj_type) {
@@ -6383,7 +6373,7 @@ static void mark_children(JSRuntime *rt, JSGCObjectHeader *gp,
 }
 
 /* Mark an object and all its children as reachable */
-static void gc_mark_recursive(JSRuntime *rt, JSGCObjectHeader *p)
+static void gc_mark_recursive(JSRuntime *rt, GCHeader *p)
 {
     if (p->mark)
         return;  /* Already marked */
@@ -6395,7 +6385,7 @@ static void gc_mark_recursive(JSRuntime *rt, JSGCObjectHeader *p)
 static void gc_mark_roots(JSRuntime *rt)
 {
     int i;
-    JSGCObjectHeader *p;
+    GCHeader *p;
 
     /* First, clear all marks */
     for (i = 0; i < rt->gc_handles.count; i++) {
@@ -6435,7 +6425,7 @@ static void gc_mark_roots(JSRuntime *rt)
 static void gc_sweep(JSRuntime *rt)
 {
     int i;
-    JSGCObjectHeader *p;
+    GCHeader *p;
 
     rt->gc_phase = JS_GC_PHASE_REMOVE_CYCLES;
 
@@ -6630,7 +6620,7 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
     }
 
     for (i = 0; i < rt->gc_handles.count; i++) {
-        JSGCObjectHeader *gp = rt->gc_handles.handles[i];
+        GCHeader *gp = rt->gc_handles.handles[i];
         JSObject *p;
         JSShape *sh;
         JSShapeProperty *prs;
@@ -6903,7 +6893,7 @@ void JS_DumpMemoryUsage(FILE *fp, const JSMemoryUsage *s, JSRuntime *rt)
             int obj_classes[JS_CLASS_INIT_COUNT + 1] = { 0 };
             int class_id;
             for (i = 0; i < rt->gc_handles.count; i++) {
-                JSGCObjectHeader *gp = rt->gc_handles.handles[i];
+                GCHeader *gp = rt->gc_handles.handles[i];
                 JSObject *p;
                 if (js_handle_array_entry_is_valid(gp) && gp->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
                     p = (JSObject *)gp;
@@ -14169,7 +14159,7 @@ static __maybe_unused void JS_DumpObject(JSRuntime *rt, JSObject *p)
     printf("\n");
 }
 
-static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, JSGCObjectHeader *p)
+static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, GCHeader *p)
 {
     if (p->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
         JS_DumpObject(rt, (JSObject *)p);

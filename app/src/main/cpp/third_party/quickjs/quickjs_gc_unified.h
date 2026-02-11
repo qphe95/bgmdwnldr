@@ -24,6 +24,9 @@ extern "C" {
 #define GC_INITIAL_HANDLES 8192
 
 /* Handle type - 0 is reserved as null */
+/* Handle type - 0 is reserved as null
+ * Note: QuickJS code uses JSObjHandle (typedef'd to same type)
+ */
 typedef uint32_t GCHandle;
 #define GC_HANDLE_NULL 0
 
@@ -42,15 +45,42 @@ typedef enum {
     GC_TYPE_OTHER,
 } GCType;
 
-/* Object header - embedded at start of every allocation */
+/* Object header - embedded at start of every allocation
+ * This is THE single source of truth for GC object headers.
+ * Used by both the unified GC allocator and QuickJS internals.
+ */
 typedef struct GCHeader {
-    uint32_t size;          /* Total size including header */
-    GCType type : 8;
-    uint8_t mark;           /* GC mark bit */
+    /* QuickJS compatibility fields */
+    int ref_count_unused;   /* Not used - kept for compatibility */
+    
+    /* Bit fields - QuickJS expects these at specific offsets */
+    unsigned int gc_obj_type : 4;
+    unsigned int mark : 1;
+    unsigned int dummy0 : 3;
+    
+    uint8_t dummy1;         /* padding - not used by GC */
+    uint16_t dummy2;        /* padding - not used by GC */
+    
+    /* Linked list - QuickJS uses this in some places */
+    struct {
+        void *next;
+        void *prev;
+    } link;
+    
+    /* Handle ID - key for handle-based GC */
+    uint32_t handle;
+    
+    /* Unified GC specific fields */
+    uint32_t size;          /* Total allocation size including header */
+    GCType type;            /* Unified GC object type */
     uint8_t pinned;         /* Don't move during compaction */
-    uint8_t flags;          /* Reserved */
-    GCHandle handle;        /* Handle for this object (0 for raw) */
+    uint8_t flags;          /* Reserved for future use */
+    uint16_t pad;           /* Padding to maintain alignment */
 } GCHeader;
+
+/* Handle type - 0 is reserved as null */
+typedef uint32_t GCHandle;
+#define GC_HANDLE_NULL 0
 
 /* Handle table entry */
 typedef struct GCHandleEntry {
@@ -149,6 +179,13 @@ size_t gc_available(void);
 static inline GCHeader *gc_header(void *ptr) {
     if (!ptr) return NULL;
     return (GCHeader*)((uint8_t*)ptr - sizeof(GCHeader));
+}
+
+/* Helper: get total allocation size from user pointer */
+static inline size_t gc_alloc_size(void *ptr) {
+    if (!ptr) return 0;
+    GCHeader *hdr = gc_header(ptr);
+    return hdr->size;
 }
 
 #ifdef __cplusplus

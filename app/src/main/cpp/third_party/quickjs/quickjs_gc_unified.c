@@ -118,13 +118,21 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
     uint8_t *ptr = g_gc.heap + old_offset;
     GCHeader *hdr = (GCHeader*)ptr;
     
-    /* Initialize header */
+    /* Initialize header - GCHeader is the single source of truth */
+    hdr->ref_count_unused = 0;
+    hdr->gc_obj_type = 0;  /* Will be set by add_gc_object */
+    hdr->mark = 0;
+    hdr->dummy0 = 0;
+    hdr->dummy1 = 0;
+    hdr->dummy2 = 0;
+    hdr->link.next = NULL;
+    hdr->link.prev = NULL;
+    hdr->handle = GC_HANDLE_NULL;
     hdr->size = total_size;
     hdr->type = type;
-    hdr->mark = 0;
     hdr->pinned = 0;
     hdr->flags = 0;
-    hdr->handle = GC_HANDLE_NULL;
+    hdr->pad = 0;
     
     void *user_ptr = ptr + sizeof(GCHeader);
     
@@ -248,6 +256,13 @@ size_t gc_size(void *ptr) {
     GCHeader *hdr = gc_header(ptr);
     if (hdr->size == 0) return 0;  /* Dead object */
     return hdr->size - sizeof(GCHeader);
+}
+
+/* Get total allocation size including header */
+size_t gc_total_size(void *ptr) {
+    if (!ptr) return 0;
+    GCHeader *hdr = gc_header(ptr);
+    return hdr->size;
 }
 
 void gc_add_root(GCHandle handle) {
