@@ -664,6 +664,7 @@ bool js_quickjs_init(void) {
             return false;
         }
     }
+    LOG_INFO("QuickJS GC subsystem initialized, used: %zu bytes", gc_used());
     return true;
 }
 

@@ -1716,7 +1716,7 @@ JSRuntime *JS_NewRuntime(void)
     gc_reset();
 
     memset(&ms, 0, sizeof(ms));
-    ms.malloc_limit = -1;
+    ms.malloc_limit = (size_t)-1;  /* Use max size_t value */
 
     /* Allocate from unified GC */
     rt = gc_alloc_raw(sizeof(JSRuntime));

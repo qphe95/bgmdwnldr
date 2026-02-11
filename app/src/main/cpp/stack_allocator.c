@@ -19,14 +19,11 @@ StackAllocator g_stack_allocator = {
 /* 
  * Atomic bump allocation
  * 
- * Uses atomic_fetch_add to reserve space atomically:
- * 1. Atomically add aligned_size to offset
- * 2. The return value is the OLD offset (our allocation start)
- * 3. If offset + size exceeds buffer, we have a problem - but we already reserved it
- *    so we need to handle this case
- * 
- * For simplicity, we check bounds after reservation and return NULL if overcommitted.
- * This wastes a bit of space but keeps the code simple and lock-free.
+ * Uses compare-exchange loop to reserve space atomically:
+ * 1. Load current offset
+ * 2. Calculate new offset and check bounds
+ * 3. Try to CAS - if succeeds, we reserved space; if fails, retry with updated offset
+ * This prevents offset corruption when allocation fails.
  */
 static void *stack_js_malloc(JSMallocState *s, size_t size)
 {
@@ -38,19 +35,24 @@ static void *stack_js_malloc(JSMallocState *s, size_t size)
     /* Align to 16 bytes for proper memory alignment */
     size_t aligned_size = (size + 15) & ~15;
     
-    /* Atomically reserve space by bumping the offset */
-    size_t old_offset = atomic_fetch_add(&g_stack_allocator.offset, aligned_size);
-    size_t new_offset = old_offset + aligned_size;
+    /* Check bounds BEFORE atomically reserving space */
+    size_t old_offset = atomic_load(&g_stack_allocator.offset);
+    size_t new_offset;
     
-    /* Check if we exceeded the buffer size */
-    if (!g_stack_allocator.initialized || new_offset > g_stack_allocator.size) {
-        /* We've overcommitted - this allocation fails */
-        LOG_ERROR("Stack allocator out of memory! Requested: %zu, Total would be: %zu", 
-                  aligned_size, new_offset);
-        return NULL;
-    }
+    do {
+        new_offset = old_offset + aligned_size;
+        
+        /* Check if we exceeded the buffer size */
+        if (!g_stack_allocator.initialized || new_offset > g_stack_allocator.size) {
+            /* Out of memory - offset not bumped yet, no corruption */
+            LOG_ERROR("Stack allocator out of memory! Requested: %zu, Total would be: %zu", 
+                      aligned_size, new_offset);
+            return NULL;
+        }
+        /* Try to reserve space - only succeeds if offset hasn't changed */
+    } while (!atomic_compare_exchange_weak(&g_stack_allocator.offset, &old_offset, new_offset));
     
-    /* Return pointer to reserved space */
+    /* Space successfully reserved from old_offset to new_offset */
     return g_stack_allocator.buffer + old_offset;
 }
 

@@ -97,17 +97,23 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
     size_t aligned_size = ALIGN16(size);
     size_t total_size = sizeof(GCHeader) + aligned_size;
     
-    /* Atomically reserve space */
-    size_t old_offset = atomic_fetch_add(&g_gc.bump.offset, total_size);
-    size_t new_offset = old_offset + total_size;
+    /* Check space availability BEFORE atomically reserving */
+    size_t old_offset = atomic_load(&g_gc.bump.offset);
+    size_t new_offset;
     
-    if (new_offset > g_gc.heap_size) {
-        /* Out of memory - this allocation fails */
-        /* Note: we already bumped the offset, so this "leaks" the reserved space */
-        LOG_ERROR("GC heap exhausted! Need %zu, have %zu", 
-                  total_size, g_gc.heap_size - old_offset);
-        return NULL;
-    }
+    do {
+        new_offset = old_offset + total_size;
+        
+        if (new_offset > g_gc.heap_size) {
+            /* Out of memory - offset not bumped yet, no corruption */
+            LOG_ERROR("GC heap exhausted! Need %zu, have %zu", 
+                      total_size, g_gc.heap_size - old_offset);
+            return NULL;
+        }
+        /* Try to reserve space - only succeeds if offset hasn't changed */
+    } while (!atomic_compare_exchange_weak(&g_gc.bump.offset, &old_offset, new_offset));
+    
+    /* Space successfully reserved from old_offset to new_offset */
     
     uint8_t *ptr = g_gc.heap + old_offset;
     GCHeader *hdr = (GCHeader*)ptr;
