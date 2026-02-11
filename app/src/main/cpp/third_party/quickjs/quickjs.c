@@ -272,7 +272,6 @@ typedef struct {
 } JSHandleArray;
 
 struct JSRuntime {
-    JSMallocFunctions mf;
     JSMallocState malloc_state;
     const char *rt_info;
 
@@ -1581,13 +1580,13 @@ static inline void js_dbuf_init(JSContext *ctx, DynBuf *s)
 
 static void *js_realloc_bytecode_rt(void *opaque, void *ptr, size_t size)
 {
-    JSRuntime *rt = opaque;
+    (void)opaque;
     if (size > (INT32_MAX / 2)) {
         /* the bytecode cannot be larger than 2G. Leave some slack to 
            avoid some overflows. */
         return NULL;
     } else {
-        return rt->mf.js_realloc(&rt->malloc_state, ptr, size);
+        return gc_realloc(ptr, size);
     }
 }
 
@@ -1724,12 +1723,6 @@ JSRuntime *JS_NewRuntime(void)
     if (!rt)
         return NULL;
     memset(rt, 0, sizeof(*rt));
-    
-    /* Dummy malloc functions - not used but kept for compatibility */
-    rt->mf.js_malloc = NULL;
-    rt->mf.js_free = NULL;
-    rt->mf.js_realloc = NULL;
-    rt->mf.js_malloc_usable_size = NULL;
     
     rt->malloc_state = ms;
     rt->malloc_gc_threshold = 256 * 1024;
@@ -2154,10 +2147,9 @@ void JS_FreeRuntime(JSRuntime *rt)
     }
 #endif
 
-    {
-        JSMallocState ms = rt->malloc_state;
-        rt->mf.js_free(&ms, rt);
-    }
+    /* Runtime is in GC memory - no individual free needed.
+     * gc_reset() or gc_cleanup() will reclaim all memory. */
+    (void)rt;
 }
 
 JSContext *JS_NewContextRaw(JSRuntime *rt)

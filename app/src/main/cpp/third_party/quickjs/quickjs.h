@@ -356,13 +356,6 @@ typedef struct JSMallocState {
     void *opaque; /* user opaque */
 } JSMallocState;
 
-typedef struct JSMallocFunctions {
-    void *(*js_malloc)(JSMallocState *s, size_t size);
-    void (*js_free)(JSMallocState *s, void *ptr);
-    void *(*js_realloc)(JSMallocState *s, void *ptr, size_t size);
-    size_t (*js_malloc_usable_size)(const void *ptr);
-} JSMallocFunctions;
-
 typedef struct JSGCObjectHeader JSGCObjectHeader;
 
 /* 
