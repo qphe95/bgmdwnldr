@@ -16,7 +16,6 @@ TF_PSA_BUILTIN := $(patsubst $(LOCAL_PATH)/%,%,$(TF_PSA_BUILTIN))
 TF_PSA_BUILTIN_SRC := $(wildcard $(TF_PSA_PATH)/drivers/builtin/src/*.c)
 TF_PSA_BUILTIN_SRC := $(patsubst $(LOCAL_PATH)/%,%,$(TF_PSA_BUILTIN_SRC))
 QUICKJS_PATH := $(LOCAL_PATH)/third_party/quickjs
-CJSON_PATH := $(LOCAL_PATH)/third_party/cjson
 LOCAL_SRC_FILES := \
     main.c \
     audio_extract.c \
@@ -36,7 +35,6 @@ LOCAL_SRC_FILES := \
     third_party/quickjs/cutils.c \
     third_party/quickjs/quickjs-libc.c \
     third_party/quickjs/dtoa.c \
-    third_party/cjson/cJSON.c \
     $(MBEDTLS_SRC) \
     $(TF_PSA_CORE) \
     $(TF_PSA_DRIVERS) \
@@ -50,8 +48,7 @@ LOCAL_C_INCLUDES := \
     $(TF_PSA_PATH)/drivers/builtin/include \
     $(TF_PSA_PATH)/drivers/builtin/src \
     $(TF_PSA_PATH)/core \
-    $(QUICKJS_PATH) \
-    $(CJSON_PATH)
+    $(QUICKJS_PATH)
 # ASAN disabled for production builds
 LOCAL_CFLAGS := -O2 -g -DCONFIG_VERSION=\"2024-02-14\"
 LOCAL_LDFLAGS := 

@@ -18,13 +18,14 @@
 typedef uint32_t JSObjHandle;
 #define JS_OBJ_HANDLE_NULL 0
 
-/* Object type enum */
+/* Object type enum - must match QuickJS internal enum */
 typedef enum {
     JS_GC_OBJ_TYPE_JS_OBJECT = 0,
     JS_GC_OBJ_TYPE_FUNCTION_BYTECODE,
-    JS_GC_OBJ_TYPE_ASYNC_FUNCTION,
-    JS_GC_OBJ_TYPE_VAR_REF,
     JS_GC_OBJ_TYPE_SHAPE,
+    JS_GC_OBJ_TYPE_VAR_REF,
+    JS_GC_OBJ_TYPE_ASYNC_FUNCTION,
+    JS_GC_OBJ_TYPE_JS_CONTEXT,
     JS_GC_OBJ_TYPE_MODULE,
     JS_GC_OBJ_TYPE_JS_STRING,
     JS_GC_OBJ_TYPE_JS_BIGINT,
