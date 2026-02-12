@@ -2200,15 +2200,10 @@ void android_main(struct android_app *app) {
         JSRuntime *rt = JS_NewRuntime();
         if (rt) {
             LOGI("QuickJS runtime created successfully! rt=%p", rt);
-            LOGI("About to call JS_FreeRuntime...");
-            JS_FreeRuntime(rt);
-            LOGI("QuickJS runtime freed successfully!");
         } else {
             LOGI("QuickJS runtime creation failed!");
+            abort();
         }
-        
-        js_quickjs_cleanup();
-        LOGI("QuickJS cleanup complete.");
     } else {
         LOGI("QuickJS initialization failed!");
     }
