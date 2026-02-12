@@ -64,9 +64,13 @@ static inline void gc_assert_initialized(void) {
 #ifdef __ANDROID__
 #include <android/log.h>
 #define QJS_LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "QuickJS", __VA_ARGS__)
+#define QJS_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "QuickJS", __VA_ARGS__)
+#define QJS_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "QuickJS", __VA_ARGS__)
 #define QJS_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "QuickJS", __VA_ARGS__)
 #else
 #define QJS_LOGD(...) do {} while(0)
+#define QJS_LOGI(...) do {} while(0)
+#define QJS_LOGW(...) do {} while(0)
 #define QJS_LOGE(...) do {} while(0)
 #endif
 
@@ -1728,8 +1732,10 @@ JSRuntime *JS_NewRuntime(void)
 
     /* Allocate from unified GC */
     rt = gc_alloc_raw(sizeof(JSRuntime));
-    if (!rt)
+    if (!rt) {
+        QJS_LOGE("JS_NewRuntime: Failed to allocate JSRuntime");
         return NULL;
+    }
     memset(rt, 0, sizeof(*rt));
     
     /* Bug #2 fix: Set runtime pointer for GC tracking */
@@ -1738,17 +1744,38 @@ JSRuntime *JS_NewRuntime(void)
     rt->malloc_state = ms;
     rt->malloc_gc_threshold = 256 * 1024;
 
+    QJS_LOGI("JS_NewRuntime: Starting initialization...");
+
     /* Initialize handle arrays (replacing linked lists for ASAN safety) */
-    if (js_handle_array_init(rt, &rt->context_handles) < 0)
+    if (js_handle_array_init(rt, &rt->context_handles) < 0) {
+        QJS_LOGE("JS_NewRuntime: context_handles init failed");
         goto fail;
-    if (js_handle_array_init(rt, &rt->job_handles) < 0)
+    }
+    QJS_LOGI("JS_NewRuntime: context_handles initialized");
+    
+    if (js_handle_array_init(rt, &rt->job_handles) < 0) {
+        QJS_LOGE("JS_NewRuntime: job_handles init failed");
         goto fail;
-    if (js_handle_array_init(rt, &rt->weakref_handles) < 0)
+    }
+    QJS_LOGI("JS_NewRuntime: job_handles initialized");
+    
+    if (js_handle_array_init(rt, &rt->weakref_handles) < 0) {
+        QJS_LOGE("JS_NewRuntime: weakref_handles init failed");
         goto fail;
-    if (js_handle_array_init(rt, &rt->gc_handles) < 0)
+    }
+    QJS_LOGI("JS_NewRuntime: weakref_handles initialized");
+    
+    if (js_handle_array_init(rt, &rt->gc_handles) < 0) {
+        QJS_LOGE("JS_NewRuntime: gc_handles init failed");
         goto fail;
-    if (js_handle_array_init(rt, &rt->atom_handles) < 0)
+    }
+    QJS_LOGI("JS_NewRuntime: gc_handles initialized");
+    
+    if (js_handle_array_init(rt, &rt->atom_handles) < 0) {
+        QJS_LOGE("JS_NewRuntime: atom_handles init failed");
         goto fail;
+    }
+    QJS_LOGI("JS_NewRuntime: atom_handles initialized");
     
     init_list_head(&rt->gc_zero_ref_count_list);
     rt->gc_phase = JS_GC_PHASE_NONE;
@@ -1757,13 +1784,22 @@ JSRuntime *JS_NewRuntime(void)
     init_list_head(&rt->string_list);
 #endif
 
-    if (JS_InitAtoms(rt))
+    QJS_LOGI("JS_NewRuntime: Calling JS_InitAtoms...");
+    if (JS_InitAtoms(rt)) {
+        QJS_LOGE("JS_NewRuntime: JS_InitAtoms failed");
         goto fail;
+    }
+    QJS_LOGI("JS_NewRuntime: JS_InitAtoms succeeded");
 
     /* create the object, array and function classes */
+    QJS_LOGI("JS_NewRuntime: Calling init_class_range...");
     if (init_class_range(rt, js_std_class_def, JS_CLASS_OBJECT,
-                         countof(js_std_class_def)) < 0)
+                         countof(js_std_class_def)) < 0) {
+        QJS_LOGE("JS_NewRuntime: init_class_range failed");
         goto fail;
+    }
+    QJS_LOGI("JS_NewRuntime: init_class_range succeeded");
+    
     rt->class_array[JS_CLASS_ARGUMENTS].exotic = &js_arguments_exotic_methods;
     rt->class_array[JS_CLASS_MAPPED_ARGUMENTS].exotic = &js_arguments_exotic_methods;
     rt->class_array[JS_CLASS_STRING].exotic = &js_string_exotic_methods;
@@ -1773,18 +1809,25 @@ JSRuntime *JS_NewRuntime(void)
     rt->class_array[JS_CLASS_C_FUNCTION_DATA].call = js_c_function_data_call;
     rt->class_array[JS_CLASS_BOUND_FUNCTION].call = js_call_bound_function;
     rt->class_array[JS_CLASS_GENERATOR_FUNCTION].call = js_generator_function_call;
-    if (init_shape_hash(rt))
+    
+    QJS_LOGI("JS_NewRuntime: Calling init_shape_hash...");
+    if (init_shape_hash(rt)) {
+        QJS_LOGE("JS_NewRuntime: init_shape_hash failed");
         goto fail;
+    }
+    QJS_LOGI("JS_NewRuntime: init_shape_hash succeeded");
 
     rt->stack_size = JS_DEFAULT_STACK_SIZE;
     JS_UpdateStackTop(rt);
 
     rt->current_exception = JS_UNINITIALIZED;
 
+    QJS_LOGI("JS_NewRuntime: Initialization complete!");
     return rt;
  fail:
-    JS_FreeRuntime(rt);
-    return NULL;
+    QJS_LOGE("JS_NewRuntime: FAILED at initialization step (see above). Aborting.");
+    /* Don't call JS_FreeRuntime on partial initialization - just crash */
+    abort();
 }
 
 void *JS_GetRuntimeOpaque(JSRuntime *rt)
@@ -2678,8 +2721,13 @@ static int JS_ResizeAtomHash(JSRuntime *rt, int new_hash_size)
 
 static int js_handle_array_init(JSRuntime *rt, JSHandleArray *arr)
 {
-    arr->handles = js_malloc_rt(rt, sizeof(void*) * JS_MAX_HANDLE_ARRAY_SIZE);
-    if (!arr->handles) return -1;
+    size_t alloc_size = sizeof(void*) * JS_MAX_HANDLE_ARRAY_SIZE;
+    arr->handles = js_malloc_rt(rt, alloc_size);
+    QJS_LOGI("js_handle_array_init: handles=%p, size=%zu", arr->handles, alloc_size);
+    if (!arr->handles) {
+        QJS_LOGE("js_handle_array_init: malloc failed for size %zu", alloc_size);
+        return -1;
+    }
     arr->count = 0;
     arr->capacity = JS_MAX_HANDLE_ARRAY_SIZE;
     return 0;
@@ -2716,15 +2764,19 @@ static uint32_t js_handle_array_add_with_index(JSRuntime *rt, JSHandleArray *arr
     uint32_t index;
     /* Bug #3 fix: Add safety checks */
     if (!arr || !handle) {
-        return 0;  /* 0 is invalid handle */
+        QJS_LOGE("js_handle_array_add_with_index: NULL arr=%p or handle=%p", arr, handle);
+        return UINT32_MAX;  /* UINT32_MAX is invalid handle (0 is valid index 0) */
     }
+    QJS_LOGI("js_handle_array_add_with_index: arr=%p, count=%u, capacity=%u, handle=%p",
+             arr, (unsigned)arr->count, (unsigned)arr->capacity, handle);
     if (arr->count >= arr->capacity) {
-        fprintf(stderr, "Handle array full: count=%u, capacity=%u\n", 
+        QJS_LOGE("js_handle_array_add_with_index: array full! count=%u, capacity=%u", 
                 (unsigned)arr->count, (unsigned)arr->capacity);
-        return 0;  /* 0 is invalid handle */
+        return UINT32_MAX;  /* UINT32_MAX is invalid handle */
     }
     index = arr->count++;
     arr->handles[index] = handle;
+    QJS_LOGI("js_handle_array_add_with_index: added at index %u", (unsigned)index);
     return index;
 }
 
@@ -2828,27 +2880,38 @@ static int JS_InitAtoms(JSRuntime *rt)
     JSAtomStruct *atom_null;
     uint32_t init_size;
 
+    QJS_LOGI("JS_InitAtoms: Starting...");
+
     rt->atom_hash_size = 0;
     rt->atom_hash = NULL;
     rt->atom_count = 0;
     rt->atom_size = 0;
     rt->atom_free_index = 0;
     rt->atom_array = NULL;
-    if (JS_ResizeAtomHash(rt, 512))     /* there are at least 504 predefined atoms */
+    
+    QJS_LOGI("JS_InitAtoms: Resizing atom hash...");
+    if (JS_ResizeAtomHash(rt, 512)) {     /* there are at least 504 predefined atoms */
+        QJS_LOGE("JS_InitAtoms: JS_ResizeAtomHash failed");
         return -1;
+    }
 
     /* Allocate atom_array upfront to avoid NULL pointer dereference
        when find_atom() is called during context creation */
     init_size = 711;  /* Enough for predefined atoms (at least 504) */
+    QJS_LOGI("JS_InitAtoms: Allocating atom_array (size=%u)...", init_size);
     rt->atom_array = js_mallocz_rt(rt, sizeof(uint32_t) * init_size);
-    QJS_LOGE("JS_InitAtoms: atom_array=%p size=%u", rt->atom_array, init_size);
-    if (!rt->atom_array)
+    QJS_LOGI("JS_InitAtoms: atom_array=%p", rt->atom_array);
+    if (!rt->atom_array) {
+        QJS_LOGE("JS_InitAtoms: atom_array allocation failed");
         return -1;
+    }
     rt->atom_size = init_size;
 
     /* Initialize atom 0 (JS_ATOM_NULL) - not used but needs to exist */
+    QJS_LOGI("JS_InitAtoms: Allocating atom_null...");
     atom_null = js_mallocz_rt(rt, sizeof(JSAtomStruct));
     if (!atom_null) {
+        QJS_LOGE("JS_InitAtoms: atom_null allocation failed");
         js_free_rt(rt, rt->atom_array);
         rt->atom_array = NULL;
         return -1;
@@ -2858,8 +2921,10 @@ static int JS_InitAtoms(JSRuntime *rt)
     list_add_tail(&atom_null->link, &rt->string_list);
 #endif
     /* Add atom_null to atom_handles and store the handle in atom_array[0] */
+    QJS_LOGI("JS_InitAtoms: Adding atom_null to handles...");
     uint32_t handle0 = js_handle_array_add_with_index(rt, &rt->atom_handles, atom_null);
-    if (handle0 == 0) {
+    if (handle0 == UINT32_MAX) {
+        QJS_LOGE("JS_InitAtoms: js_handle_array_add_with_index failed");
         js_free_rt(rt, atom_null);
         js_free_rt(rt, rt->atom_array);
         rt->atom_array = NULL;
@@ -2869,6 +2934,7 @@ static int JS_InitAtoms(JSRuntime *rt)
     rt->atom_count = 1;
 
     /* Initialize free list: indices 1 to init_size-1 are free */
+    QJS_LOGI("JS_InitAtoms: Initializing free list...");
     rt->atom_free_index = 1;
     for(i = 1; i < init_size; i++) {
         uint32_t next;
@@ -2879,6 +2945,7 @@ static int JS_InitAtoms(JSRuntime *rt)
         rt->atom_array[i] = atom_set_free(next);
     }
 
+    QJS_LOGI("JS_InitAtoms: Creating %d predefined atoms...", JS_ATOM_END - 1);
     p = js_atom_init;
     for(i = 1; i < JS_ATOM_END; i++) {
         if (i == JS_ATOM_Private_brand)
@@ -2888,10 +2955,13 @@ static int JS_InitAtoms(JSRuntime *rt)
         else
             atom_type = JS_ATOM_TYPE_STRING;
         len = strlen(p);
-        if (__JS_NewAtomInit(rt, p, len, atom_type) == JS_ATOM_NULL)
+        if (__JS_NewAtomInit(rt, p, len, atom_type) == JS_ATOM_NULL) {
+            QJS_LOGE("JS_InitAtoms: __JS_NewAtomInit failed at atom %d", i);
             return -1;
+        }
         p = p + len + 1;
     }
+    QJS_LOGI("JS_InitAtoms: All %d atoms created successfully!", JS_ATOM_END - 1);
     return 0;
 }
 
@@ -3045,7 +3115,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
 #endif
             /* Add to atom_handles and store handle */
             uint32_t handle0 = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
-            if (handle0 == 0) {
+            if (handle0 == UINT32_MAX) {
                 js_free_rt(rt, p);
                 js_free_rt(rt, new_array);
                 goto fail;
@@ -3081,7 +3151,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             
             /* Add to atom_handles first to get handle, then store handle */
             uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
-            if (handle == 0)
+            if (handle == UINT32_MAX)
                 goto fail;
             rt->atom_array[i] = handle;
         } else {
@@ -3107,7 +3177,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             /* Add atom to root set BEFORE adding to gc_handles.
              * Store handle in atom_array. */
             uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
-            if (handle == 0)
+            if (handle == UINT32_MAX)
                 goto fail;
             rt->atom_array[i] = handle;
             
@@ -3134,7 +3204,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         /* Add atom to root set BEFORE adding to gc_handles.
          * Store handle in atom_array. */
         uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
-        if (handle == 0)
+        if (handle == UINT32_MAX)
             return JS_ATOM_NULL;
         rt->atom_array[i] = handle;
         

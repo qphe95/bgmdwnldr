@@ -314,13 +314,32 @@ static bool http_request_with_cookies(const char *url, HttpBuffer *outBuffer,
                         }
                         
                         if (!duplicate) {
+                            /* Bug #2 fix: Prevent buffer overflow by checking space remaining.
+                             * Calculate remaining space once and ensure we don't overflow.
+                             */
+                            size_t current_len = strlen(g_youtube_cookies);
+                            size_t remaining = sizeof(g_youtube_cookies) - current_len - 1;
+                            
+                            /* Check if there's room for "; name=value" */
+                            size_t needed = strlen(cookie_name) + strlen(cookie_value) + 3; /* ; = \0 */
                             if (g_youtube_cookies[0]) {
-                                strncat(g_youtube_cookies, "; ", sizeof(g_youtube_cookies) - strlen(g_youtube_cookies) - 1);
+                                needed += 2; /* ; and space */
                             }
-                            strncat(g_youtube_cookies, cookie_name, sizeof(g_youtube_cookies) - strlen(g_youtube_cookies) - 1);
-                            strncat(g_youtube_cookies, "=", sizeof(g_youtube_cookies) - strlen(g_youtube_cookies) - 1);
-                            strncat(g_youtube_cookies, cookie_value, sizeof(g_youtube_cookies) - strlen(g_youtube_cookies) - 1);
-                            LOGI("Captured cookie: %s=...", cookie_name);
+                            
+                            if (remaining >= needed) {
+                                if (g_youtube_cookies[0]) {
+                                    strncat(g_youtube_cookies, "; ", remaining);
+                                    remaining -= 2;
+                                }
+                                strncat(g_youtube_cookies, cookie_name, remaining);
+                                remaining -= strlen(cookie_name);
+                                strncat(g_youtube_cookies, "=", remaining);
+                                remaining -= 1;
+                                strncat(g_youtube_cookies, cookie_value, remaining);
+                                LOGI("Captured cookie: %s=...", cookie_name);
+                            } else {
+                                LOGE("Cookie buffer full, skipping: %s", cookie_name);
+                            }
                         }
                     }
                 }
