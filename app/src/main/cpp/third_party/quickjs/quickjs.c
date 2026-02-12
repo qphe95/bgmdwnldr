@@ -3006,16 +3006,27 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
 
     if (str) {
         if (str->atom_type == 0) {
+            /* Reuse existing string as atom. It's already in gc_handles
+             * from when it was created, but needs to be added to atom_handles
+             * as a root to prevent GC from freeing it. */
             p = str;
             p->atom_type = atom_type;
+            
+            /* use an already free entry */
+            i = rt->atom_free_index;
+            rt->atom_free_index = atom_get_free(rt->atom_array[i]);
+            rt->atom_array[i] = p;
+            
+            /* Add to root set BEFORE setting hash fields.
+             * This ensures atom is protected as a root immediately. */
+            js_handle_array_add(rt, &rt->atom_handles, p);
         } else {
+            /* Duplicate string as new atom */
             p = js_malloc_rt(rt, sizeof(JSString) +
                              (str->len << str->is_wide_char) +
                              1 - str->is_wide_char);
             if (unlikely(!p))
                 goto fail;
-            /* ref_count removed - using mark-and-sweep GC */
-            add_gc_object(rt, &p->header, JS_GC_OBJ_TYPE_JS_STRING);
             p->is_wide_char = str->is_wide_char;
             p->len = str->len;
 #ifdef DUMP_LEAKS
@@ -3024,27 +3035,50 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             memcpy(p->u.str8, str->u.str8, (str->len << str->is_wide_char) +
                    1 - str->is_wide_char);
             js_free_string(rt, str);
+            
+            /* use an already free entry */
+            i = rt->atom_free_index;
+            rt->atom_free_index = atom_get_free(rt->atom_array[i]);
+            rt->atom_array[i] = p;
+            
+            /* Add atom to root set BEFORE adding to gc_handles.
+             * This prevents a race where GC runs between adding to gc_handles
+             * and adding to atom_handles, causing the atom to be freed
+             * before it's marked as a root. */
+            js_handle_array_add(rt, &rt->atom_handles, p);
+            
+            /* ref_count removed - using mark-and-sweep GC.
+             * Add to gc_handles AFTER atom_handles to ensure atom is
+             * marked as a root before it can be collected. */
+            add_gc_object(rt, &p->header, JS_GC_OBJ_TYPE_JS_STRING);
         }
     } else {
+        /* Create empty atom */
         p = js_malloc_rt(rt, sizeof(JSAtomStruct)); /* empty wide string */
         if (!p)
             return JS_ATOM_NULL;
-        /* ref_count removed - using mark-and-sweep GC */
-        add_gc_object(rt, &p->header, JS_GC_OBJ_TYPE_JS_STRING);
         p->is_wide_char = 1;    /* Hack to represent NULL as a JSString */
         p->len = 0;
 #ifdef DUMP_LEAKS
         list_add_tail(&p->link, &rt->string_list);
 #endif
+        
+        /* use an already free entry */
+        i = rt->atom_free_index;
+        rt->atom_free_index = atom_get_free(rt->atom_array[i]);
+        rt->atom_array[i] = p;
+        
+        /* Add atom to root set BEFORE adding to gc_handles.
+         * This prevents a race where GC runs between adding to gc_handles
+         * and adding to atom_handles, causing the atom to be freed
+         * before it's marked as a root. */
+        js_handle_array_add(rt, &rt->atom_handles, p);
+        
+        /* ref_count removed - using mark-and-sweep GC.
+         * Add to gc_handles AFTER atom_handles to ensure atom is
+         * marked as a root before it can be collected. */
+        add_gc_object(rt, &p->header, JS_GC_OBJ_TYPE_JS_STRING);
     }
-
-    /* use an already free entry */
-    i = rt->atom_free_index;
-    rt->atom_free_index = atom_get_free(rt->atom_array[i]);
-    rt->atom_array[i] = p;
-
-    /* Add atom to root set - atoms are GC roots */
-    js_handle_array_add(rt, &rt->atom_handles, p);
 
     p->hash = h;
     p->hash_next = i;   /* atom_index */
