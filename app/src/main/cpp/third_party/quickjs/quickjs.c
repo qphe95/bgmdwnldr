@@ -1120,7 +1120,7 @@ enum OPCodeEnum {
 static int JS_InitAtoms(JSRuntime *rt);
 static JSAtom __JS_NewAtomInit(JSRuntime *rt, const char *str, int len,
                                int atom_type);
-static void JS_FreeAtomStruct(JSRuntime *rt, JSAtomStruct *p);
+static void JS_FreeAtomStruct(JSRuntime *rt, uint32_t i, JSAtomStruct *p);
 static void free_function_bytecode(JSRuntime *rt, JSFunctionBytecode *b);
 static JSValue js_call_c_function(JSContext *ctx, JSValueConst func_obj,
                                   JSValueConst this_obj,
@@ -1955,39 +1955,31 @@ int JS_ExecutePendingJob(JSRuntime *rt, JSContext **pctx)
     return ret;
 }
 
-/* Encoding for handle-based atom_array:
- * - Odd values (1, 3, 5, ...): free slot markers encoding next free index
- *   - atom_set_free(v) = (v << 1) | 1
- *   - atom_get_free(p) = p >> 1
- * - Even values (0, 2, 4, ...): valid handles (0 means invalid/end)
- *   - Handle stored as-is: atom_array[i] = handle
- *   - atom_is_free(p) checks if (p & 1)
+/* Handle-based atom_array encoding (1-based handles):
+ * - 0: Empty/free slot (invalid handle)
+ * - Non-zero: 1-based handle index (handle N stored as N, refers to handles[N-1])
+ * 
+ * Handles are 1-indexed: valid handles are 1, 2, 3, ...
+ * Handle 0 is reserved as invalid (same as empty slot value).
+ * Array access: ptr = handles[handle - 1]
  */
-static inline uint32_t atom_get_free(uint32_t slot_value)
-{
-    return slot_value >> 1;
-}
 
 static inline BOOL atom_is_free(uint32_t slot_value)
 {
-    return slot_value & 1;
+    return slot_value == 0;  /* 0 means empty/free */
 }
 
-static inline uint32_t atom_set_free(uint32_t next_index)
-{
-    return (next_index << 1) | 1;
-}
-
-/* Helper to get atom pointer from atom_array slot */
+/* Helper to get atom pointer from atom_array slot using 1-based handle */
 static inline JSAtomStruct *js_atom_array_get(JSRuntime *rt, uint32_t atom_index)
 {
-    uint32_t slot_value = rt->atom_array[atom_index];
-    if (atom_is_free(slot_value))
+    uint32_t handle = rt->atom_array[atom_index];
+    if (handle == 0)  /* 0 = empty slot */
         return NULL;
-    /* slot_value is the handle, look it up in atom_handles */
-    if (slot_value == 0 || slot_value >= rt->atom_handles.count)
+    /* handle is 1-based, convert to 0-based array index */
+    uint32_t array_idx = handle - 1;
+    if (array_idx >= rt->atom_handles.count)
         return NULL;
-    return (JSAtomStruct *)rt->atom_handles.handles[slot_value];
+    return (JSAtomStruct *)rt->atom_handles.handles[array_idx];
 }
 
 /* Note: the string contents are uninitialized */
@@ -2094,17 +2086,17 @@ void JS_FreeRuntime(JSRuntime *rt)
     /* Clean up weak references - just clear the handle array */
     rt->weakref_handles.count = 0;
     
-    /* Free handle arrays */
+    /* Free handle arrays (except atom_handles - needed for atom cleanup) */
     js_handle_array_free(rt, &rt->context_handles);
     js_handle_array_free(rt, &rt->job_handles);
     js_handle_array_free(rt, &rt->weakref_handles);
     js_handle_array_free(rt, &rt->gc_handles);
-    js_handle_array_free(rt, &rt->atom_handles);
 
     /* free the classes */
     for(i = 0; i < rt->class_count; i++) {
         JSClass *cl = &rt->class_array[i];
-        if (cl->class_id != 0) {
+        if (cl->class_id != 0 && cl->class_name >= JS_ATOM_END) {
+            /* Only free non-constant atoms (atoms >= JS_ATOM_END are dynamically created) */
             JS_FreeAtomRT(rt, cl->class_name);
         }
     }
@@ -2117,7 +2109,7 @@ void JS_FreeRuntime(JSRuntime *rt)
 
         for(i = 0; i < rt->atom_size; i++) {
             JSAtomStruct *p = js_atom_array_get(rt, i);
-            if (!atom_is_free(p) /* && p->str*/) {
+            if (p != NULL /* && p->str*/) {
                 if (i >= JS_ATOM_END) {
                     if (!header_done) {
                         header_done = TRUE;
@@ -2186,6 +2178,9 @@ void JS_FreeRuntime(JSRuntime *rt)
     js_free_rt(rt, rt->atom_array);
     js_free_rt(rt, rt->atom_hash);
     js_free_rt(rt, rt->shape_hash);
+    
+    /* Free atom_handles last - needed for atom cleanup above */
+    js_handle_array_free(rt, &rt->atom_handles);
 #ifdef DUMP_LEAKS
     if (!list_empty(&rt->string_list)) {
         if (rt->rt_info) {
@@ -2764,25 +2759,23 @@ static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
 }
 
 /* Add to handle array and return the index (handle) */
+/* Add to handle array and return the 1-based index (handle).
+ * Returns 0 on error. Handle 0 is reserved as invalid.
+ * Valid handles are 1, 2, 3, ... (corresponding to array indices 0, 1, 2, ...)
+ */
 static uint32_t js_handle_array_add_with_index(JSRuntime *rt, JSHandleArray *arr, void *handle)
 {
     uint32_t index;
-    /* Bug #3 fix: Add safety checks */
     if (!arr || !handle) {
-        QJS_LOGE("js_handle_array_add_with_index: NULL arr=%p or handle=%p", arr, handle);
-        return UINT32_MAX;  /* UINT32_MAX is invalid handle (0 is valid index 0) */
+        return 0;  /* 0 is invalid handle */
     }
-    QJS_LOGI("js_handle_array_add_with_index: arr=%p, count=%u, capacity=%u, handle=%p",
-             arr, (unsigned)arr->count, (unsigned)arr->capacity, handle);
     if (arr->count >= arr->capacity) {
-        QJS_LOGE("js_handle_array_add_with_index: array full! count=%u, capacity=%u", 
-                (unsigned)arr->count, (unsigned)arr->capacity);
-        return UINT32_MAX;  /* UINT32_MAX is invalid handle */
+        return 0;  /* 0 is invalid handle */
     }
-    index = arr->count++;
+    index = arr->count++;  /* 0-based array index */
     arr->handles[index] = handle;
-    QJS_LOGI("js_handle_array_add_with_index: added at index %u", (unsigned)index);
-    return index;
+    /* Return 1-based handle (index + 1). 0 is reserved for invalid. */
+    return index + 1;
 }
 
 /* Sentinel value to mark freed slots - cannot be confused with valid pointers */
@@ -2928,7 +2921,7 @@ static int JS_InitAtoms(JSRuntime *rt)
     /* Add atom_null to atom_handles and store the handle in atom_array[0] */
     QJS_LOGI("JS_InitAtoms: Adding atom_null to handles...");
     uint32_t handle0 = js_handle_array_add_with_index(rt, &rt->atom_handles, atom_null);
-    if (handle0 == UINT32_MAX) {
+    if (handle0 == 0) {
         QJS_LOGE("JS_InitAtoms: js_handle_array_add_with_index failed");
         js_free_rt(rt, atom_null);
         js_free_rt(rt, rt->atom_array);
@@ -2940,14 +2933,10 @@ static int JS_InitAtoms(JSRuntime *rt)
 
     /* Initialize free list: indices 1 to init_size-1 are free */
     QJS_LOGI("JS_InitAtoms: Initializing free list...");
-    rt->atom_free_index = 1;
+    rt->atom_free_index = 1;  /* Next free slot for sequential allocation */
+    /* Initialize slots to 0 (empty) - handles are 1-based, 0 means invalid */
     for(i = 1; i < init_size; i++) {
-        uint32_t next;
-        if (i == (init_size - 1))
-            next = 0;
-        else
-            next = i + 1;
-        rt->atom_array[i] = atom_set_free(next);
+        rt->atom_array[i] = 0;
     }
 
     QJS_LOGI("JS_InitAtoms: Creating %d predefined atoms...", JS_ATOM_END - 1);
@@ -3120,7 +3109,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
 #endif
             /* Add to atom_handles and store handle */
             uint32_t handle0 = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
-            if (handle0 == UINT32_MAX) {
+            if (handle0 == 0) {
                 js_free_rt(rt, p);
                 js_free_rt(rt, new_array);
                 goto fail;
@@ -3132,13 +3121,9 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         rt->atom_size = new_size;
         rt->atom_array = new_array;
         rt->atom_free_index = start;
+        /* Initialize new slots to 0 (empty) */
         for(i = start; i < new_size; i++) {
-            uint32_t next;
-            if (i == (new_size - 1))
-                next = 0;
-            else
-                next = i + 1;
-            rt->atom_array[i] = atom_set_free(next);
+            rt->atom_array[i] = 0;
         }
     }
 
@@ -3150,17 +3135,19 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             p = str;
             p->atom_type = atom_type;
             
-            /* use an already free entry */
+            /* use next free slot (sequential allocation) */
             i = rt->atom_free_index;
             if (i == 0 || i >= rt->atom_size) {
                 QJS_LOGE("__JS_NewAtom: invalid atom_free_index=%u, atom_size=%u", i, rt->atom_size);
                 goto fail;
             }
-            rt->atom_free_index = atom_get_free(rt->atom_array[i]);
+            rt->atom_free_index++;
+            if (rt->atom_free_index >= rt->atom_size)
+                rt->atom_free_index = 0;
             
             /* Add to atom_handles first to get handle, then store handle */
             uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
-            if (handle == UINT32_MAX)
+            if (handle == 0)
                 goto fail;
             rt->atom_array[i] = handle;
         } else {
@@ -3179,18 +3166,20 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
                    1 - str->is_wide_char);
             js_free_string(rt, str);
             
-            /* use an already free entry */
+            /* use next free slot (sequential allocation) */
             i = rt->atom_free_index;
             if (i == 0 || i >= rt->atom_size) {
                 QJS_LOGE("__JS_NewAtom: invalid atom_free_index=%u, atom_size=%u", i, rt->atom_size);
                 goto fail;
             }
-            rt->atom_free_index = atom_get_free(rt->atom_array[i]);
+            rt->atom_free_index++;
+            if (rt->atom_free_index >= rt->atom_size)
+                rt->atom_free_index = 0;
             
             /* Add atom to root set BEFORE adding to gc_handles.
              * Store handle in atom_array. */
             uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
-            if (handle == UINT32_MAX)
+            if (handle == 0)
                 goto fail;
             rt->atom_array[i] = handle;
             
@@ -3210,18 +3199,20 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         list_add_tail(&p->link, &rt->string_list);
 #endif
         
-        /* use an already free entry */
+        /* use next free slot (sequential allocation) */
         i = rt->atom_free_index;
         if (i == 0 || i >= rt->atom_size) {
             QJS_LOGE("__JS_NewAtom: invalid atom_free_index=%u, atom_size=%u", i, rt->atom_size);
             return JS_ATOM_NULL;
         }
-        rt->atom_free_index = atom_get_free(rt->atom_array[i]);
+        rt->atom_free_index++;
+        if (rt->atom_free_index >= rt->atom_size)
+            rt->atom_free_index = 0;
         
         /* Add atom to root set BEFORE adding to gc_handles.
          * Store handle in atom_array. */
         uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
-        if (handle == UINT32_MAX)
+        if (handle == 0)
             return JS_ATOM_NULL;
         rt->atom_array[i] = handle;
         
@@ -3315,33 +3306,30 @@ static JSAtom __JS_FindAtom(JSRuntime *rt, const char *str, size_t len,
     return JS_ATOM_NULL;
 }
 
-static void JS_FreeAtomStruct(JSRuntime *rt, JSAtomStruct *p)
+/* Free an atom given its index and pointer.
+ * Note: i is the atom index (index into atom_array), not the handle.
+ */
+static void JS_FreeAtomStruct(JSRuntime *rt, uint32_t i, JSAtomStruct *p)
 {
-#if 0   /* JS_ATOM_NULL is not refcounted: __JS_AtomIsConst() includes 0 */
-    if (unlikely(i == JS_ATOM_NULL)) {
-        
-        return;
-    }
-#endif
-    uint32_t i = p->hash_next;  /* atom_index */
+    (void)i;  /* i may be used for debugging */
     
     /* Remove atom from root set */
     js_handle_array_mark_freed(&rt->atom_handles, p);
     if (p->atom_type != JS_ATOM_TYPE_SYMBOL) {
         JSAtomStruct *p0, *p1;
-        uint32_t h0;
+        uint32_t h0, idx;
 
         h0 = p->hash & (rt->atom_hash_size - 1);
-        i = rt->atom_hash[h0];
-        p1 = js_atom_array_get(rt, i);
+        idx = rt->atom_hash[h0];
+        p1 = js_atom_array_get(rt, idx);
         if (p1 == p) {
             rt->atom_hash[h0] = p1->hash_next;
         } else {
             for(;;) {
-                assert(i != 0);
+                assert(idx != 0);
                 p0 = p1;
-                i = p1->hash_next;
-                p1 = js_atom_array_get(rt, i);
+                idx = p1->hash_next;
+                p1 = js_atom_array_get(rt, idx);
                 if (p1 == p) {
                     p0->hash_next = p1->hash_next;
                     break;
@@ -3349,10 +3337,9 @@ static void JS_FreeAtomStruct(JSRuntime *rt, JSAtomStruct *p)
             }
         }
     }
-    /* insert in free atom list */
-    rt->atom_array[i] = atom_set_free(rt->atom_free_index);
-    rt->atom_free_index = i;
-    /* free the string structure */
+    /* Note: we don't clear atom_array[i] here - the caller handles that
+     * or atom_array is freed separately during JS_FreeRuntime.
+     */
 #ifdef DUMP_LEAKS
     list_del(&p->link);
 #endif
@@ -3373,7 +3360,11 @@ static void __JS_FreeAtom(JSRuntime *rt, uint32_t i)
 
     p = js_atom_array_get(rt, i);
     /* ref_count check removed - atoms are managed by mark-and-sweep GC */
-    JS_FreeAtomStruct(rt, p);
+    if (p) {
+        JS_FreeAtomStruct(rt, i, p);
+        /* Mark slot as empty */
+        rt->atom_array[i] = 0;
+    }
 }
 
 /* Warning: 'p' is freed */

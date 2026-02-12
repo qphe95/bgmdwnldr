@@ -22,6 +22,7 @@
 #include "http_download.h"
 #include "url_analyzer.h"
 #include "js_quickjs.h"
+#include "quickjs.h"
 
 #define LOG_TAG "minimalvulkan"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -1953,9 +1954,7 @@ static void run_asan_memory_tests(void) {
      * when running under ASAN. This is a bug in QuickJS itself, not our code.
      * We're skipping QuickJS tests under ASAN until it's fixed upstream.
      */
-    LOGI("ASAN: Skipping QuickJS tests (known ASAN incompatibility)");
-    // TODO: Re-enable once QuickJS ASAN issues are fixed
-    #if 0
+    LOGI("ASAN: Testing QuickJS initialization...");
     if (js_quickjs_init()) {
         const char *scripts[3];
         size_t lens[3];
@@ -1970,8 +1969,9 @@ static void run_asan_memory_tests(void) {
             LOGI("ASAN: QuickJS test passed, captured %d URLs", result.captured_url_count);
         }
         js_quickjs_cleanup();
+    } else {
+        LOGI("ASAN: QuickJS initialization failed!");
     }
-    #endif
     
     /* Test 2: String operations and buffer handling */
     LOGI("ASAN: Testing string operations...");
@@ -2188,6 +2188,32 @@ void android_main(struct android_app *app) {
     snprintf(vk.statusText, sizeof(vk.statusText), "Idle");
     update_density_scale(app, &vk);
     app->userData = &vk;
+    
+    // Initialize QuickJS for non-ASAN builds
+    #ifndef __SANITIZE_ADDRESS__
+    LOGI("Initializing QuickJS...");
+    if (js_quickjs_init()) {
+        LOGI("QuickJS GC initialized successfully!");
+        
+        // Test full runtime creation (includes atom initialization)
+        LOGI("Creating QuickJS runtime...");
+        JSRuntime *rt = JS_NewRuntime();
+        if (rt) {
+            LOGI("QuickJS runtime created successfully! rt=%p", rt);
+            LOGI("About to call JS_FreeRuntime...");
+            JS_FreeRuntime(rt);
+            LOGI("QuickJS runtime freed successfully!");
+        } else {
+            LOGI("QuickJS runtime creation failed!");
+        }
+        
+        js_quickjs_cleanup();
+        LOGI("QuickJS cleanup complete.");
+    } else {
+        LOGI("QuickJS initialization failed!");
+    }
+    #endif
+    
     // ASAN TEST MODE: Under ASAN, skip Vulkan and network operations
     // ASAN has compatibility issues with native_app_glue, directory operations,
     // and network syscalls. We just run a minimal event loop for memory testing.
