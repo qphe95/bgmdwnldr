@@ -2246,17 +2246,22 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     /* ref_count removed - using mark-and-sweep GC */
     add_gc_object(rt, &ctx->header, JS_GC_OBJ_TYPE_JS_CONTEXT);
 
-    ctx->class_proto = js_malloc_rt(rt, sizeof(ctx->class_proto[0]) *
-                                    rt->class_count);
-    if (!ctx->class_proto) {
+    /* Add to handle array BEFORE allocating class_proto.
+     * This ensures that when JS_NewClass1 resizes class_proto arrays,
+     * this context's array will be included. */
+    if (js_handle_array_add(rt, &rt->context_handles, ctx) < 0) {
         js_free_rt(rt, ctx);
         return NULL;
     }
+    
     ctx->rt = rt;
     
-    /* Add to handle array (replaces context_list linked list) */
-    if (js_handle_array_add(rt, &rt->context_handles, ctx) < 0) {
-        js_free_rt(rt, ctx->class_proto);
+    /* Allocate class_proto after adding to handle array so JS_NewClass1
+     * can find and resize this array when registering new classes */
+    ctx->class_proto = js_malloc_rt(rt, sizeof(ctx->class_proto[0]) *
+                                    rt->class_count);
+    if (!ctx->class_proto) {
+        js_handle_array_remove(&rt->context_handles, ctx);
         js_free_rt(rt, ctx);
         return NULL;
     }
