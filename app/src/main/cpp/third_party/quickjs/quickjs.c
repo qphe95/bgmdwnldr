@@ -279,7 +279,7 @@ struct JSRuntime {
     int atom_size;
     int atom_count_resize; /* resize hash table at this count */
     uint32_t *atom_hash;
-    JSAtomStruct **atom_array;
+    uint32_t *atom_array;  /* Stores handles (indices into atom_handles) instead of pointers */
     int atom_free_index; /* 0 = none */
 
     int class_count;    /* size of class_array */
@@ -1361,6 +1361,13 @@ static void js_handle_array_compact(JSHandleArray *arr);
 static void js_compact_all_handle_arrays(JSRuntime *rt);
 static inline BOOL js_handle_array_is_empty(JSHandleArray *arr);
 static inline void* js_handle_array_get(JSHandleArray *arr, uint32_t index);
+
+/* Helper to get atom pointer from handle stored in atom_array */
+static inline JSAtomStruct *js_get_atom_from_handle(JSRuntime *rt, uint32_t handle) {
+    if (handle == 0 || handle >= rt->atom_handles.count)
+        return NULL;
+    return (JSAtomStruct *)rt->atom_handles.handles[handle];
+}
 static JSValue js_instantiate_prototype(JSContext *ctx, JSObject *p, JSAtom atom, void *opaque);
 static JSValue js_module_ns_autoinit(JSContext *ctx, JSObject *p, JSAtom atom,
                                  void *opaque);
@@ -1905,19 +1912,39 @@ int JS_ExecutePendingJob(JSRuntime *rt, JSContext **pctx)
     return ret;
 }
 
-static inline uint32_t atom_get_free(const JSAtomStruct *p)
+/* Encoding for handle-based atom_array:
+ * - Odd values (1, 3, 5, ...): free slot markers encoding next free index
+ *   - atom_set_free(v) = (v << 1) | 1
+ *   - atom_get_free(p) = p >> 1
+ * - Even values (0, 2, 4, ...): valid handles (0 means invalid/end)
+ *   - Handle stored as-is: atom_array[i] = handle
+ *   - atom_is_free(p) checks if (p & 1)
+ */
+static inline uint32_t atom_get_free(uint32_t slot_value)
 {
-    return (uintptr_t)p >> 1;
+    return slot_value >> 1;
 }
 
-static inline BOOL atom_is_free(const JSAtomStruct *p)
+static inline BOOL atom_is_free(uint32_t slot_value)
 {
-    return (uintptr_t)p & 1;
+    return slot_value & 1;
 }
 
-static inline JSAtomStruct *atom_set_free(uint32_t v)
+static inline uint32_t atom_set_free(uint32_t next_index)
 {
-    return (JSAtomStruct *)(((uintptr_t)v << 1) | 1);
+    return (next_index << 1) | 1;
+}
+
+/* Helper to get atom pointer from atom_array slot */
+static inline JSAtomStruct *js_atom_array_get(JSRuntime *rt, uint32_t atom_index)
+{
+    uint32_t slot_value = rt->atom_array[atom_index];
+    if (atom_is_free(slot_value))
+        return NULL;
+    /* slot_value is the handle, look it up in atom_handles */
+    if (slot_value == 0 || slot_value >= rt->atom_handles.count)
+        return NULL;
+    return (JSAtomStruct *)rt->atom_handles.handles[slot_value];
 }
 
 /* Note: the string contents are uninitialized */
@@ -2046,7 +2073,7 @@ void JS_FreeRuntime(JSRuntime *rt)
         BOOL header_done = FALSE;
 
         for(i = 0; i < rt->atom_size; i++) {
-            JSAtomStruct *p = rt->atom_array[i];
+            JSAtomStruct *p = js_atom_array_get(rt, i);
             if (!atom_is_free(p) /* && p->str*/) {
                 if (i >= JS_ATOM_END) {
                     if (!header_done) {
@@ -2100,8 +2127,8 @@ void JS_FreeRuntime(JSRuntime *rt)
 
     /* free the atoms */
     for(i = 0; i < rt->atom_size; i++) {
-        JSAtomStruct *p = rt->atom_array[i];
-        if (!atom_is_free(p)) {
+        JSAtomStruct *p = js_atom_array_get(rt, i);
+        if (p) {
             /* Bug #1 fix: Check if already freed by GC (size == 0) */
             if (p->header.size == 0) {
                 /* Already freed - skip */
@@ -2209,7 +2236,9 @@ JSContext *JS_NewContext(JSRuntime *rt)
 {
     JSContext *ctx;
     
+    QJS_LOGE("JS_NewContext: rt=%p atom_array=%p", rt, rt->atom_array);
     ctx = JS_NewContextRaw(rt);
+    QJS_LOGE("JS_NewContextRaw returned ctx=%p", ctx);
     if (!ctx)
         return NULL;
     if (JS_AddIntrinsicBaseObjects(ctx)) {
@@ -2593,7 +2622,7 @@ static __maybe_unused void JS_DumpAtoms(JSRuntime *rt)
         if (h) {
             printf("  %d:", i);
             while (h) {
-                p = rt->atom_array[h];
+                p = js_atom_array_get(rt, h);
                 printf(" ");
                 JS_DumpString(rt, p);
                 h = p->hash_next;
@@ -2604,8 +2633,8 @@ static __maybe_unused void JS_DumpAtoms(JSRuntime *rt)
     printf("}\n");
     printf("JSAtom table: {\n");
     for(i = 0; i < rt->atom_size; i++) {
-        p = rt->atom_array[i];
-        if (!atom_is_free(p)) {
+        p = js_atom_array_get(rt, i);
+        if (p) {
             printf("  %d: { %d %08x ", i, p->atom_type, p->hash);
             if (!(p->len == 0 && p->is_wide_char != 0))
                 JS_DumpString(rt, p);
@@ -2628,7 +2657,7 @@ static int JS_ResizeAtomHash(JSRuntime *rt, int new_hash_size)
     for(i = 0; i < rt->atom_hash_size; i++) {
         h = rt->atom_hash[i];
         while (h != 0) {
-            p = rt->atom_array[h];
+            p = js_atom_array_get(rt, h);
             hash_next1 = p->hash_next;
             /* add in new hash table */
             j = p->hash & new_hash_mask;
@@ -2679,6 +2708,24 @@ static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
     }
     arr->handles[arr->count++] = handle;
     return 0;
+}
+
+/* Add to handle array and return the index (handle) */
+static uint32_t js_handle_array_add_with_index(JSRuntime *rt, JSHandleArray *arr, void *handle)
+{
+    uint32_t index;
+    /* Bug #3 fix: Add safety checks */
+    if (!arr || !handle) {
+        return 0;  /* 0 is invalid handle */
+    }
+    if (arr->count >= arr->capacity) {
+        fprintf(stderr, "Handle array full: count=%u, capacity=%u\n", 
+                (unsigned)arr->count, (unsigned)arr->capacity);
+        return 0;  /* 0 is invalid handle */
+    }
+    index = arr->count++;
+    arr->handles[index] = handle;
+    return index;
 }
 
 /* Sentinel value to mark freed slots - cannot be confused with valid pointers */
@@ -2793,7 +2840,8 @@ static int JS_InitAtoms(JSRuntime *rt)
     /* Allocate atom_array upfront to avoid NULL pointer dereference
        when find_atom() is called during context creation */
     init_size = 711;  /* Enough for predefined atoms (at least 504) */
-    rt->atom_array = js_mallocz_rt(rt, sizeof(JSAtomStruct *) * init_size);
+    rt->atom_array = js_mallocz_rt(rt, sizeof(uint32_t) * init_size);
+    QJS_LOGE("JS_InitAtoms: atom_array=%p size=%u", rt->atom_array, init_size);
     if (!rt->atom_array)
         return -1;
     rt->atom_size = init_size;
@@ -2809,7 +2857,15 @@ static int JS_InitAtoms(JSRuntime *rt)
 #ifdef DUMP_LEAKS
     list_add_tail(&atom_null->link, &rt->string_list);
 #endif
-    rt->atom_array[0] = atom_null;
+    /* Add atom_null to atom_handles and store the handle in atom_array[0] */
+    uint32_t handle0 = js_handle_array_add_with_index(rt, &rt->atom_handles, atom_null);
+    if (handle0 == 0) {
+        js_free_rt(rt, atom_null);
+        js_free_rt(rt, rt->atom_array);
+        rt->atom_array = NULL;
+        return -1;
+    }
+    rt->atom_array[0] = handle0;
     rt->atom_count = 1;
 
     /* Initialize free list: indices 1 to init_size-1 are free */
@@ -2866,7 +2922,7 @@ static JSAtomKindEnum JS_AtomGetKind(JSContext *ctx, JSAtom v)
         return JS_ATOM_KIND_STRING;
     if (unlikely(v >= rt->atom_size))
         return JS_ATOM_KIND_STRING; /* Defensive: invalid atom */
-    p = rt->atom_array[v];
+    p = js_atom_array_get(rt, v);
     if (unlikely(!p))
         return JS_ATOM_KIND_STRING; /* Defensive: null atom */
     switch(p->atom_type) {
@@ -2897,11 +2953,11 @@ static JSAtom js_get_atom_index(JSRuntime *rt, JSAtomStruct *p)
         JSAtomStruct *p1;
 
         i = rt->atom_hash[p->hash & (rt->atom_hash_size - 1)];
-        p1 = rt->atom_array[i];
+        p1 = js_atom_array_get(rt, i);
         while (p1 != p) {
             assert(i != 0);
             i = p1->hash_next;
-            p1 = rt->atom_array[i];
+            p1 = js_atom_array_get(rt, i);
         }
     }
     return i;
@@ -2933,7 +2989,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         h1 = h & (rt->atom_hash_size - 1);
         i = rt->atom_hash[h1];
         while (i != 0) {
-            p = rt->atom_array[i];
+            p = js_atom_array_get(rt, i);
             if (unlikely(!p)) {
                 /* Defensive: null atom entry, skip */
                 break;
@@ -2960,7 +3016,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
     if (rt->atom_free_index == 0) {
         /* allow new atom entries */
         uint32_t new_size, start;
-        JSAtomStruct **new_array;
+        uint32_t *new_array;
 
         /* alloc new with size progression 3/2:
            4 6 9 13 19 28 42 63 94 141 211 316 474 711 1066 1599 2398 3597 5395 8092
@@ -2970,7 +3026,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         if (new_size > JS_ATOM_MAX)
             goto fail;
         /* XXX: should use realloc2 to use slack space */
-        new_array = js_realloc_rt(rt, rt->atom_array, sizeof(*new_array) * new_size);
+        new_array = js_realloc_rt(rt, rt->atom_array, sizeof(uint32_t) * new_size);
         if (!new_array)
             goto fail;
         /* Note: the atom 0 is not used */
@@ -2987,7 +3043,14 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
 #ifdef DUMP_LEAKS
             list_add_tail(&p->link, &rt->string_list);
 #endif
-            new_array[0] = p;
+            /* Add to atom_handles and store handle */
+            uint32_t handle0 = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
+            if (handle0 == 0) {
+                js_free_rt(rt, p);
+                js_free_rt(rt, new_array);
+                goto fail;
+            }
+            new_array[0] = handle0;
             rt->atom_count++;
             start = 1;
         }
@@ -3015,11 +3078,12 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             /* use an already free entry */
             i = rt->atom_free_index;
             rt->atom_free_index = atom_get_free(rt->atom_array[i]);
-            rt->atom_array[i] = p;
             
-            /* Add to root set BEFORE setting hash fields.
-             * This ensures atom is protected as a root immediately. */
-            js_handle_array_add(rt, &rt->atom_handles, p);
+            /* Add to atom_handles first to get handle, then store handle */
+            uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
+            if (handle == 0)
+                goto fail;
+            rt->atom_array[i] = handle;
         } else {
             /* Duplicate string as new atom */
             p = js_malloc_rt(rt, sizeof(JSString) +
@@ -3039,13 +3103,13 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             /* use an already free entry */
             i = rt->atom_free_index;
             rt->atom_free_index = atom_get_free(rt->atom_array[i]);
-            rt->atom_array[i] = p;
             
             /* Add atom to root set BEFORE adding to gc_handles.
-             * This prevents a race where GC runs between adding to gc_handles
-             * and adding to atom_handles, causing the atom to be freed
-             * before it's marked as a root. */
-            js_handle_array_add(rt, &rt->atom_handles, p);
+             * Store handle in atom_array. */
+            uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
+            if (handle == 0)
+                goto fail;
+            rt->atom_array[i] = handle;
             
             /* ref_count removed - using mark-and-sweep GC.
              * Add to gc_handles AFTER atom_handles to ensure atom is
@@ -3066,13 +3130,13 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         /* use an already free entry */
         i = rt->atom_free_index;
         rt->atom_free_index = atom_get_free(rt->atom_array[i]);
-        rt->atom_array[i] = p;
         
         /* Add atom to root set BEFORE adding to gc_handles.
-         * This prevents a race where GC runs between adding to gc_handles
-         * and adding to atom_handles, causing the atom to be freed
-         * before it's marked as a root. */
-        js_handle_array_add(rt, &rt->atom_handles, p);
+         * Store handle in atom_array. */
+        uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
+        if (handle == 0)
+            return JS_ATOM_NULL;
+        rt->atom_array[i] = handle;
         
         /* ref_count removed - using mark-and-sweep GC.
          * Add to gc_handles AFTER atom_handles to ensure atom is
@@ -3128,18 +3192,38 @@ static JSAtom __JS_FindAtom(JSRuntime *rt, const char *str, size_t len,
     h &= JS_ATOM_HASH_MASK;
     h1 = h & (rt->atom_hash_size - 1);
     i = rt->atom_hash[h1];
+    int loop_count = 0;
     while (i != 0) {
-        p = rt->atom_array[i];
+        p = js_atom_array_get(rt, i);
+        if ((uintptr_t)p < 0x10000) {
+            QJS_LOGE("__JS_FindAtom: CORRUPT atom %u, p=%p", i, p);
+            return JS_ATOM_NULL;
+        }
+        /* Debug: log hash comparison details for 'parseInt' */
+        if (len == 7 && memcmp(str, "parseInt", 7) == 0) {
+            QJS_LOGE("__JS_FindAtom: parseInt i=%u p->hash=%u h=%u type=%d len=%d is_wide=%d", 
+                     i, p->hash, h, p->atom_type, p->len, p->is_wide_char);
+        }
         if (p->hash == h &&
             p->atom_type == JS_ATOM_TYPE_STRING &&
             p->len == len &&
             p->is_wide_char == 0 &&
             memcmp(p->u.str8, str, len) == 0) {
+            if (len == 7 && memcmp(str, "parseInt", 7) == 0) {
+                QJS_LOGE("__JS_FindAtom: FOUND parseInt at atom %u", i);
+            }
             if (!__JS_AtomIsConst(i))
                 /* ref_count removed - using mark-and-sweep GC */
             return i;
         }
         i = p->hash_next;
+        if (++loop_count > 10000) {
+            QJS_LOGE("__JS_FindAtom: INFINITE LOOP for '%.*s'", len, str);
+            return JS_ATOM_NULL;
+        }
+    }
+    if (len == 7 && memcmp(str, "parseInt", 7) == 0) {
+        QJS_LOGE("__JS_FindAtom: NOT FOUND parseInt");
     }
     return JS_ATOM_NULL;
 }
@@ -3162,7 +3246,7 @@ static void JS_FreeAtomStruct(JSRuntime *rt, JSAtomStruct *p)
 
         h0 = p->hash & (rt->atom_hash_size - 1);
         i = rt->atom_hash[h0];
-        p1 = rt->atom_array[i];
+        p1 = js_atom_array_get(rt, i);
         if (p1 == p) {
             rt->atom_hash[h0] = p1->hash_next;
         } else {
@@ -3170,7 +3254,7 @@ static void JS_FreeAtomStruct(JSRuntime *rt, JSAtomStruct *p)
                 assert(i != 0);
                 p0 = p1;
                 i = p1->hash_next;
-                p1 = rt->atom_array[i];
+                p1 = js_atom_array_get(rt, i);
                 if (p1 == p) {
                     p0->hash_next = p1->hash_next;
                     break;
@@ -3200,7 +3284,7 @@ static void __JS_FreeAtom(JSRuntime *rt, uint32_t i)
 {
     JSAtomStruct *p;
 
-    p = rt->atom_array[i];
+    p = js_atom_array_get(rt, i);
     /* ref_count check removed - atoms are managed by mark-and-sweep GC */
     JS_FreeAtomStruct(rt, p);
 }
@@ -3235,11 +3319,27 @@ static size_t count_ascii(const uint8_t *buf, size_t len)
 JSAtom JS_NewAtomLen(JSContext *ctx, const char *str, size_t len)
 {
     JSValue val;
+    JSRuntime *rt = ctx->rt;
+
+    /* Validate atom_array before use */
+    if (!rt->atom_array) {
+        QJS_LOGE("JS_NewAtomLen: atom_array is NULL!");
+        return JS_ATOM_NULL;
+    }
+    
+    /* Check for corrupted atoms */
+    for (uint32_t i = 1; i < 100 && i < rt->atom_size; i++) {
+        JSAtomStruct *p = js_atom_array_get(rt, i);
+        if (p && (uintptr_t)p < 0x10000) {
+            QJS_LOGE("JS_NewAtomLen: CORRUPT atom %u, p=%p", i, p);
+            return JS_ATOM_NULL;
+        }
+    }
 
     if (len == 0 ||
         (!is_digit(*str) &&
          count_ascii((const uint8_t *)str, len) == len)) {
-        JSAtom atom = __JS_FindAtom(ctx->rt, str, len, JS_ATOM_TYPE_STRING);
+        JSAtom atom = __JS_FindAtom(rt, str, len, JS_ATOM_TYPE_STRING);
         if (atom)
             return atom;
     }
@@ -3296,7 +3396,7 @@ static JSValue JS_NewSymbol(JSContext *ctx, JSString *p, int atom_type)
     atom = __JS_NewAtom(rt, p, atom_type);
     if (atom == JS_ATOM_NULL)
         return JS_ThrowOutOfMemory(ctx);
-    return JS_MKPTR(JS_TAG_SYMBOL, rt->atom_array[atom]);
+    return JS_MKPTR(JS_TAG_SYMBOL, js_atom_array_get(rt, atom));
 }
 
 /* descr must be a non-numeric string atom */
@@ -3308,7 +3408,7 @@ static JSValue JS_NewSymbolFromAtom(JSContext *ctx, JSAtom descr,
 
     assert(!__JS_AtomIsTaggedInt(descr));
     assert(descr < rt->atom_size);
-    p = rt->atom_array[descr];
+    p = js_atom_array_get(rt, descr);
     JS_MKPTR(JS_TAG_STRING, p);
     return JS_NewSymbol(ctx, p, atom_type);
 }
@@ -3332,8 +3432,8 @@ static const char *JS_AtomGetStrRT(JSRuntime *rt, char *buf, int buf_size,
             JSString *str;
 
             q = buf;
-            p = rt->atom_array[atom];
-            assert(!atom_is_free(p));
+            p = js_atom_array_get(rt, atom);
+            assert(p != NULL);
             str = p;
             if (str) {
                 if (!str->is_wide_char) {
@@ -3378,13 +3478,13 @@ static JSValue __JS_AtomToValue(JSContext *ctx, JSAtom atom, BOOL force_string)
         JSRuntime *rt = ctx->rt;
         JSAtomStruct *p;
         assert(atom < rt->atom_size);
-        p = rt->atom_array[atom];
+        p = js_atom_array_get(rt, atom);
         if (p->atom_type == JS_ATOM_TYPE_STRING) {
             goto ret_string;
         } else if (force_string) {
             if (p->len == 0 && p->is_wide_char != 0) {
                 /* no description string */
-                p = rt->atom_array[JS_ATOM_empty_string];
+                p = js_atom_array_get(rt, JS_ATOM_empty_string);
             }
         ret_string:
             return JS_MKPTR(JS_TAG_STRING, p);
@@ -3417,7 +3517,7 @@ static BOOL JS_AtomIsArrayIndex(JSContext *ctx, uint32_t *pval, JSAtom atom)
         uint32_t val;
 
         assert(atom < rt->atom_size);
-        p = rt->atom_array[atom];
+        p = js_atom_array_get(rt, atom);
         if (p->atom_type == JS_ATOM_TYPE_STRING &&
             is_num_string(&val, p) && val != -1) {
             *pval = val;
@@ -3443,7 +3543,7 @@ static JSValue JS_AtomIsNumericIndex1(JSContext *ctx, JSAtom atom)
     if (__JS_AtomIsTaggedInt(atom))
         return JS_NewInt32(ctx, __JS_AtomToUInt32(atom));
     assert(atom < rt->atom_size);
-    p1 = rt->atom_array[atom];
+    p1 = js_atom_array_get(rt, atom);
     if (p1->atom_type != JS_ATOM_TYPE_STRING)
         return JS_UNDEFINED;
     switch(atom) {
@@ -3517,7 +3617,7 @@ static BOOL JS_AtomSymbolHasDescription(JSContext *ctx, JSAtom v)
     rt = ctx->rt;
     if (__JS_AtomIsTaggedInt(v))
         return FALSE;
-    p = rt->atom_array[v];
+    p = js_atom_array_get(rt, v);
     return (((p->atom_type == JS_ATOM_TYPE_SYMBOL &&
               p->hash != JS_ATOM_HASH_PRIVATE) ||
              p->atom_type == JS_ATOM_TYPE_GLOBAL_SYMBOL) &&
@@ -6950,8 +7050,8 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
     s->atom_size = sizeof(rt->atom_array[0]) * rt->atom_size +
         sizeof(rt->atom_hash[0]) * rt->atom_hash_size;
     for(i = 0; i < rt->atom_size; i++) {
-        JSAtomStruct *p = rt->atom_array[i];
-        if (!atom_is_free(p)) {
+        JSAtomStruct *p = js_atom_array_get(rt, i);
+        if (p) {
             s->atom_size += (sizeof(*p) + (p->len << p->is_wide_char) +
                              1 - p->is_wide_char);
         }
@@ -13623,7 +13723,7 @@ static void js_print_atom(JSPrintValueState *s, JSAtom atom)
     } else {
         assert(atom < s->rt->atom_size);
         JSString *p;
-        p = s->rt->atom_array[atom];
+        p = js_atom_array_get(s->rt, atom);
         if (is_ascii_ident(p)) {
             for(i = 0; i < p->len; i++) {
                 js_putc(s, string_get(p, i));
@@ -38043,7 +38143,7 @@ static int JS_WriteObjectAtoms(BCWriterState *s)
 
     bc_put_leb128(s, s->idx_to_atom_count);
     for(i = 0; i < s->idx_to_atom_count; i++) {
-        JSAtomStruct *p = rt->atom_array[s->idx_to_atom[i]];
+        JSAtomStruct *p = js_atom_array_get(rt, s->idx_to_atom[i]);
         JS_WriteString(s, p);
     }
     /* XXX: should check for OOM in above phase */
@@ -39295,11 +39395,17 @@ static JSAtom find_atom(JSContext *ctx, const char *name)
         /* We assume 8 bit non null strings, which is the case for these
            symbols */
         /* Defensive: atom_array may not be initialized yet */
-        if (unlikely(!ctx->rt->atom_array))
+        if (unlikely(!ctx->rt->atom_array)) {
+            QJS_LOGE("find_atom: atom_array is NULL!");
             return JS_ATOM_NULL;
+        }
         for(atom = JS_ATOM_Symbol_toPrimitive; atom < JS_ATOM_END; atom++) {
-            JSAtomStruct *p = ctx->rt->atom_array[atom];
+            JSAtomStruct *p = js_atom_array_get(ctx->rt, atom);
             if (!p) continue;  /* Skip null atoms */
+            if ((uintptr_t)p < 0x10000) {
+                QJS_LOGE("find_atom: CORRUPT atom %d, p=%p (atom_array=%p)", atom, p, ctx->rt->atom_array);
+                return JS_ATOM_NULL;
+            }
             JSString *str = p;
             /* Check if 8-bit string and lengths match */
             if (!str->is_wide_char && str->len == len) {
@@ -39312,8 +39418,11 @@ static JSAtom find_atom(JSContext *ctx, const char *name)
         /* This allows the caller to handle the error gracefully */
         return JS_ATOM_NULL;
     } else {
+        QJS_LOGE("find_atom: calling JS_NewAtom for '%s'", name);
         atom = JS_NewAtom(ctx, name);
+        QJS_LOGE("find_atom: JS_NewAtom returned %d for '%s'", atom, name);
     }
+    QJS_LOGE("find_atom: returning atom %d for '%s'", atom, name);
     return atom;
 }
 
@@ -39387,7 +39496,9 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, JSValueConst obj,
     switch(e->def_type) {
     case JS_DEF_ALIAS: /* using autoinit for aliases is not safe */
         {
+            QJS_LOGE("JS_InstantiateFunctionListItem: JS_DEF_ALIAS for atom=%d", atom);
             JSAtom atom1 = find_atom(ctx, e->u.alias.name);
+            QJS_LOGE("JS_InstantiateFunctionListItem: alias find_atom returned %d", atom1);
             if (atom1 == JS_ATOM_NULL) {
                 return -1;
             }
@@ -39396,6 +39507,7 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, JSValueConst obj,
                 JS_FreeAtom(ctx, atom1);
                 return -1;
             }
+            QJS_LOGE("JS_InstantiateFunctionListItem: calling JS_GetProperty base=%d", e->u.alias.base);
             switch (e->u.alias.base) {
             case -1:
                 val = JS_GetProperty(ctx, obj, atom1);
@@ -39411,9 +39523,16 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, JSValueConst obj,
                 JS_FreeAtom(ctx, atom1);
                 return -1;
             }
+            QJS_LOGE("JS_InstantiateFunctionListItem: JS_GetProperty returned");
+            QJS_LOGE("JS_InstantiateFunctionListItem: calling JS_FreeAtom atom1=%d", atom1);
             JS_FreeAtom(ctx, atom1);
-            if (JS_IsException(val))
+            QJS_LOGE("JS_InstantiateFunctionListItem: JS_FreeAtom done");
+            QJS_LOGE("JS_InstantiateFunctionListItem: checking JS_IsException");
+            if (JS_IsException(val)) {
+                QJS_LOGE("JS_InstantiateFunctionListItem: JS_IsException true");
                 return -1;
+            }
+            QJS_LOGE("JS_InstantiateFunctionListItem: checking atom %d", atom);
             if (atom == JS_ATOM_Symbol_toPrimitive) {
                 /* Symbol.toPrimitive functions are not writable */
                 prop_flags = JS_PROP_CONFIGURABLE;
@@ -39494,8 +39613,10 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, JSValueConst obj,
         /* Return error for unsupported types instead of aborting */
         return -1;
     }
+    QJS_LOGE("JS_InstantiateFunctionListItem: calling JS_DefinePropertyValue atom=%d", atom);
     if (JS_DefinePropertyValue(ctx, obj, atom, val, prop_flags) < 0)
         return -1;
+    QJS_LOGE("JS_InstantiateFunctionListItem: JS_DefinePropertyValue succeeded");
     return 0;
 }
 
@@ -39505,10 +39626,15 @@ int JS_SetPropertyFunctionList(JSContext *ctx, JSValueConst obj,
     int i, ret;
     for(i = 0; i < len; i++) {
         const JSCFunctionListEntry *e = &tab[i];
+        QJS_LOGE("JS_SetProp: [%d/%d] name='%s'", i, len, e->name);
         JSAtom atom = find_atom(ctx, e->name);
-        if (atom == JS_ATOM_NULL)
+        if (atom == JS_ATOM_NULL) {
+            QJS_LOGE("JS_SetPropertyFunctionList: find_atom NULL for '%s'", e->name);
             return -1;
+        }
+        QJS_LOGE("JS_SetProp: calling JS_InstantiateFunctionListItem for '%s' atom=%d", e->name, atom);
         ret = JS_InstantiateFunctionListItem(ctx, obj, atom, e);
+        QJS_LOGE("JS_SetProp: JS_InstantiateFunctionListItem returned %d for '%s'", ret, e->name);
         JS_FreeAtom(ctx, atom);
         if (ret)
             return -1;
