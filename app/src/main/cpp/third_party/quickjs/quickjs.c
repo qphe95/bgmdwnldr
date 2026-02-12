@@ -3152,6 +3152,10 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             
             /* use an already free entry */
             i = rt->atom_free_index;
+            if (i == 0 || i >= rt->atom_size) {
+                QJS_LOGE("__JS_NewAtom: invalid atom_free_index=%u, atom_size=%u", i, rt->atom_size);
+                goto fail;
+            }
             rt->atom_free_index = atom_get_free(rt->atom_array[i]);
             
             /* Add to atom_handles first to get handle, then store handle */
@@ -3177,6 +3181,10 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             
             /* use an already free entry */
             i = rt->atom_free_index;
+            if (i == 0 || i >= rt->atom_size) {
+                QJS_LOGE("__JS_NewAtom: invalid atom_free_index=%u, atom_size=%u", i, rt->atom_size);
+                goto fail;
+            }
             rt->atom_free_index = atom_get_free(rt->atom_array[i]);
             
             /* Add atom to root set BEFORE adding to gc_handles.
@@ -3204,6 +3212,10 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         
         /* use an already free entry */
         i = rt->atom_free_index;
+        if (i == 0 || i >= rt->atom_size) {
+            QJS_LOGE("__JS_NewAtom: invalid atom_free_index=%u, atom_size=%u", i, rt->atom_size);
+            return JS_ATOM_NULL;
+        }
         rt->atom_free_index = atom_get_free(rt->atom_array[i]);
         
         /* Add atom to root set BEFORE adding to gc_handles.
