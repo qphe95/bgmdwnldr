@@ -1992,14 +1992,11 @@ static inline JSAtomStruct *js_atom_array_get(JSRuntime *rt, uint32_t atom_index
 static JSString *js_alloc_string_rt(JSRuntime *rt, int max_len, int is_wide_char)
 {
     JSString *str;
-    str = js_malloc_rt(rt, sizeof(JSString) + (max_len << is_wide_char) + 1 - is_wide_char);
+    size_t str_size = sizeof(JSString) + (max_len << is_wide_char) + 1 - is_wide_char;
+    str = gc_alloc_js_object(str_size, JS_GC_OBJ_TYPE_JS_STRING, rt);
     if (unlikely(!str))
         return NULL;
-    /* ASAN fix: Initialize link field before adding to GC list */
-    str->header.link.prev = NULL;
-    str->header.link.next = NULL;
-    /* ref_count removed - using mark-and-sweep GC */
-    add_gc_object(rt, &str->header, JS_GC_OBJ_TYPE_JS_STRING);
+    /* Object already registered with GC by gc_alloc_js_object */
     str->is_wide_char = is_wide_char;
     str->len = max_len;
     str->atom_type = 0;
@@ -2260,31 +2257,23 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     }
     
     QJS_LOGI("STEP1-malloc");
-    ctx = js_mallocz_rt(rt, sizeof(JSContext));
+    /* Use atomic allocation for context - adds to context_handles */
+    ctx = gc_alloc_js_object_ex(sizeof(JSContext), JS_GC_OBJ_TYPE_JS_CONTEXT, rt, GC_HANDLE_ARRAY_CONTEXT);
     if (!ctx) {
         QJS_LOGE("STEP1: ctx is NULL after malloc!");
         return NULL;
     }
+    /* Zero the user data portion (past header) */
+    memset((char*)ctx + sizeof(GCHeader), 0, sizeof(JSContext) - sizeof(GCHeader));
     QJS_LOGI("STEP1: ctx=%p", (void*)ctx);
     GCHeader *h = &ctx->header;
     QJS_LOGI("STEP1: h=%p", (void*)h);
-    
-    QJS_LOGI("STEP2-add_gc");
-    QJS_LOGI("STEP2: rt=%p h=%p", (void*)rt, (void*)h);
-    QJS_LOGI("STEP2: &rt->gc_handles=%p", (void*)&rt->gc_handles);
-    QJS_LOGI("STEP2: rt->gc_handles.handles=%p", (void*)rt->gc_handles.handles);
-    add_gc_object(rt, h, JS_GC_OBJ_TYPE_JS_CONTEXT);
+    /* Object already registered with GC by gc_alloc_js_object_ex (in context_handles) */
     QJS_LOGI("STEP2-done");
 
-    /* Add to handle array BEFORE allocating class_proto.
-     * This ensures that when JS_NewClass1 resizes class_proto arrays,
-     * this context's array will be included. */
     QJS_LOGI("STEP3");
-    if (js_handle_array_add(rt, &rt->context_handles, ctx) < 0) {
-        QJS_LOGE("JS_NewContextRaw: js_handle_array_add failed!");
-        js_free_rt(rt, ctx);
-        return NULL;
-    }
+    /* Context already in context_handles from gc_alloc_js_object_ex */
+    QJS_LOGI("STEP3: context already in context_handles");
     QJS_LOGI("STEP4");
     ctx->rt = rt;
     QJS_LOGI("STEP5");
@@ -2896,6 +2885,10 @@ static uint32_t js_handle_array_add_with_index(JSRuntime *rt, JSHandleArray *arr
     return index + 1;
 }
 
+/* Forward declaration - defined later after g_next_handle */
+extern int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_type, GCHandleArrayType array_type);
+extern int js_handle_array_add_js_object(JSRuntime *rt, void *obj, int js_gc_obj_type);
+
 /* Sentinel value to mark freed slots - cannot be confused with valid pointers */
 #define JS_HANDLE_FREED ((void*)(uintptr_t)-1)
 
@@ -3274,9 +3267,8 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             rt->atom_array[i] = handle;
         } else {
             /* Duplicate string as new atom */
-            p = js_malloc_rt(rt, sizeof(JSString) +
-                             (str->len << str->is_wide_char) +
-                             1 - str->is_wide_char);
+            size_t str_size = sizeof(JSString) + (str->len << str->is_wide_char) + 1 - str->is_wide_char;
+            p = gc_alloc_js_object(str_size, JS_GC_OBJ_TYPE_JS_STRING, rt);
             if (unlikely(!p))
                 goto fail;
             p->is_wide_char = str->is_wide_char;
@@ -3298,21 +3290,16 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             if (rt->atom_free_index >= rt->atom_size)
                 rt->atom_free_index = 0;
             
-            /* Add atom to root set BEFORE adding to gc_handles.
-             * Store handle in atom_array. */
+            /* Add atom to root set.
+             * Object already registered with GC by gc_alloc_js_object */
             uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
             if (handle == 0)
                 goto fail;
             rt->atom_array[i] = handle;
-            
-            /* ref_count removed - using mark-and-sweep GC.
-             * Add to gc_handles AFTER atom_handles to ensure atom is
-             * marked as a root before it can be collected. */
-            add_gc_object(rt, &p->header, JS_GC_OBJ_TYPE_JS_STRING);
         }
     } else {
         /* Create empty atom */
-        p = js_malloc_rt(rt, sizeof(JSAtomStruct)); /* empty wide string */
+        p = gc_alloc_js_object(sizeof(JSAtomStruct), JS_GC_OBJ_TYPE_JS_STRING, rt);
         if (!p)
             return JS_ATOM_NULL;
         p->is_wide_char = 1;    /* Hack to represent NULL as a JSString */
@@ -3331,17 +3318,12 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         if (rt->atom_free_index >= rt->atom_size)
             rt->atom_free_index = 0;
         
-        /* Add atom to root set BEFORE adding to gc_handles.
-         * Store handle in atom_array. */
+        /* Add atom to root set.
+         * Object already registered with GC by gc_alloc_js_object */
         uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
         if (handle == 0)
             return JS_ATOM_NULL;
         rt->atom_array[i] = handle;
-        
-        /* ref_count removed - using mark-and-sweep GC.
-         * Add to gc_handles AFTER atom_handles to ensure atom is
-         * marked as a root before it can be collected. */
-        add_gc_object(rt, &p->header, JS_GC_OBJ_TYPE_JS_STRING);
     }
 
     p->hash = h;
@@ -4972,10 +4954,9 @@ static JSValue js_new_string_rope(JSContext *ctx, JSValue op1, JSValue op2)
         JS_ThrowInternalError(ctx, "string too long");
         goto fail;
     }
-    r = js_malloc(ctx, sizeof(*r));
+    r = gc_alloc_js_object(sizeof(*r), JS_GC_OBJ_TYPE_JS_STRING_ROPE, ctx->rt);
     if (!r)
         goto fail;
-    add_gc_object(ctx->rt, &r->header, JS_GC_OBJ_TYPE_JS_STRING_ROPE);
     r->len = len;
     r->is_wide_char = is_wide_char;
     r->depth = depth + 1;
@@ -5313,17 +5294,17 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
         return NULL;
     }
     
-    sh_alloc = js_malloc(ctx, get_shape_size(hash_size, prop_size));
+    /* Use atomic allocation for shapes */
+    size_t shape_total_size = get_shape_size(hash_size, prop_size);
+    sh_alloc = gc_alloc_js_object(shape_total_size, JS_GC_OBJ_TYPE_SHAPE, rt);
     if (!sh_alloc) {
         QJS_LOGE("js_new_shape_nohash: malloc failed!");
         return NULL;
     }
     QJS_LOGI("js_new_shape_nohash: sh_alloc=%p", sh_alloc);
     sh = get_shape_from_alloc(sh_alloc, hash_size);
-    QJS_LOGI("js_new_shape_nohash: sh=%p, calling add_gc_object...", (void*)sh);
-    
-    add_gc_object(rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
-    QJS_LOGI("js_new_shape_nohash: add_gc_object done");
+    QJS_LOGI("js_new_shape_nohash: sh=%p", (void*)sh);
+    /* Object already registered with GC by gc_alloc_js_object */
     if (proto)
         JS_MKPTR(JS_TAG_OBJECT, proto);
     sh->proto = proto;
@@ -5380,14 +5361,20 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
 
     hash_size = sh1->prop_hash_mask + 1;
     size = get_shape_size(hash_size, sh1->prop_size);
-    sh_alloc = js_malloc(ctx, size);
+    
+    /* Use atomic allocation */
+    sh_alloc = gc_alloc_js_object(size, JS_GC_OBJ_TYPE_SHAPE, ctx->rt);
     if (!sh_alloc)
         return NULL;
+    
     sh_alloc1 = get_alloc_from_shape(sh1);
-    memcpy(sh_alloc, sh_alloc1, size);
+    /* Copy everything except the header (which was initialized by gc_alloc_js_object) */
+    memcpy((char*)sh_alloc + sizeof(GCHeader), 
+           (char*)sh_alloc1 + sizeof(GCHeader), 
+           size - sizeof(GCHeader));
+    
     sh = get_shape_from_alloc(sh_alloc, hash_size);
-    /* ref_count removed - using mark-and-sweep GC */
-    add_gc_object(ctx->rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
+    /* Object already registered with GC by gc_alloc_js_object */
     sh->is_hashed = FALSE;
     if (sh->proto) {
         JS_MKPTR(JS_TAG_OBJECT, sh->proto);
@@ -5724,7 +5711,9 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
         return JS_EXCEPTION;
     }
     js_trigger_gc(ctx->rt, sizeof(JSObject));
-    p = js_malloc(ctx, sizeof(JSObject));
+    
+    /* Use atomic allocation that sets gc_obj_type immediately */
+    p = gc_alloc_js_object(sizeof(JSObject), JS_GC_OBJ_TYPE_JS_OBJECT, ctx->rt);
     if (unlikely(!p))
         goto fail;
     p->class_id = class_id;
@@ -5829,8 +5818,7 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
         }
         break;
     }
-    /* ref_count removed - using mark-and-sweep GC */
-    add_gc_object(ctx->rt, &p->header, JS_GC_OBJ_TYPE_JS_OBJECT);
+    /* Object already registered with GC by gc_alloc_js_object */
     if (props) {
         for(i = 0; i < sh->prop_count; i++)
             p->prop[i] = props[i];
@@ -6592,6 +6580,65 @@ static void gc_remove_weak_objects(JSRuntime *rt)
 
 /* Handle-based GC integration */
 static GCHandle g_next_handle = 1;
+
+/* This function is called from gc_alloc_js_object in quickjs_gc_unified.c.
+ * It adds an already-initialized GC object to the runtime's gc_handles array.
+ * The object is guaranteed to have gc_obj_type set before this is called.
+ */
+int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_type, GCHandleArrayType array_type)
+{
+    GCHeader *h = (GCHeader *)obj;
+    JSHandleArray *arr;
+    
+    if (!rt || !h) {
+        return -1;
+    }
+    
+    /* Verify the object is properly initialized */
+    if (h->gc_obj_type != js_gc_obj_type) {
+        QJS_LOGE("js_handle_array_add_js_object_ex: gc_obj_type mismatch! expected=%d, got=%d",
+                 js_gc_obj_type, h->gc_obj_type);
+        return -1;
+    }
+    
+    /* Select the appropriate handle array */
+    switch (array_type) {
+        case GC_HANDLE_ARRAY_GC:
+            arr = &rt->gc_handles;
+            break;
+        case GC_HANDLE_ARRAY_CONTEXT:
+            arr = &rt->context_handles;
+            break;
+        case GC_HANDLE_ARRAY_ATOM:
+            arr = &rt->atom_handles;
+            break;
+        case GC_HANDLE_ARRAY_JOB:
+            arr = &rt->job_handles;
+            break;
+        case GC_HANDLE_ARRAY_WEAKREF:
+            arr = &rt->weakref_handles;
+            break;
+        default:
+            QJS_LOGE("js_handle_array_add_js_object_ex: unknown array type %d", array_type);
+            return -1;
+    }
+    
+    /* Add to the selected handle array */
+    if (js_handle_array_add(rt, arr, h) < 0) {
+        QJS_LOGE("js_handle_array_add_js_object_ex: failed to add to handle array type %d", array_type);
+        return -1;
+    }
+    
+    /* Assign handle */
+    h->handle = g_next_handle++;
+    
+    return 0;
+}
+
+/* Backward compatibility wrapper */
+int js_handle_array_add_js_object(JSRuntime *rt, void *obj, int js_gc_obj_type) {
+    return js_handle_array_add_js_object_ex(rt, obj, js_gc_obj_type, GC_HANDLE_ARRAY_GC);
+}
 
 /* Stack bump allocator for handle-based GC */
 typedef struct {
@@ -11757,10 +11804,10 @@ static JSBigInt *js_bigint_new(JSContext *ctx, int len)
         JS_ThrowRangeError(ctx, "BigInt is too large to allocate");
         return NULL;
     }
-    r = js_malloc(ctx, sizeof(JSBigInt) + len * sizeof(js_limb_t));
+    size_t bigint_size = sizeof(JSBigInt) + len * sizeof(js_limb_t);
+    r = gc_alloc_js_object(bigint_size, JS_GC_OBJ_TYPE_JS_BIGINT, ctx->rt);
     if (!r)
         return NULL;
-    add_gc_object(ctx->rt, &r->header, JS_GC_OBJ_TYPE_JS_BIGINT);
     r->len = len;
     return r;
 }
@@ -17177,7 +17224,7 @@ static JSValueConst JS_GetActiveFunction(JSContext *ctx)
 static JSVarRef *js_create_var_ref(JSContext *ctx, BOOL is_lexical)
 {
     JSVarRef *var_ref;
-    var_ref = js_malloc(ctx, sizeof(JSVarRef));
+    var_ref = gc_alloc_js_object(sizeof(JSVarRef), JS_GC_OBJ_TYPE_VAR_REF, ctx->rt);
     if (!var_ref)
         return NULL;
     /* ref_count removed - using mark-and-sweep GC */
@@ -17189,7 +17236,6 @@ static JSVarRef *js_create_var_ref(JSContext *ctx, BOOL is_lexical)
     var_ref->is_detached = TRUE;
     var_ref->is_lexical = FALSE;
     var_ref->is_const = FALSE;
-    add_gc_object(ctx->rt, &var_ref->header, JS_GC_OBJ_TYPE_VAR_REF);
     return var_ref;
 }
 
@@ -17225,11 +17271,10 @@ static JSVarRef *get_var_ref(JSContext *ctx, JSStackFrame *sf, int var_idx,
     }
 
     /* create a new one */
-    var_ref = js_malloc(ctx, sizeof(JSVarRef));
+    var_ref = gc_alloc_js_object(sizeof(JSVarRef), JS_GC_OBJ_TYPE_VAR_REF, ctx->rt);
     if (!var_ref)
         return NULL;
     /* ref_count removed - using mark-and-sweep GC */
-    add_gc_object(ctx->rt, &var_ref->header, JS_GC_OBJ_TYPE_VAR_REF);
     var_ref->is_detached = FALSE;
     var_ref->is_lexical = FALSE;
     var_ref->is_const = FALSE;
@@ -20917,12 +20962,12 @@ static JSAsyncFunctionState *async_func_init(JSContext *ctx,
     p = JS_VALUE_GET_OBJ(func_obj);
     b = p->u.func.function_bytecode;
     arg_buf_len = max_int(b->arg_count, argc);
-    s = js_malloc(ctx, sizeof(*s) + sizeof(JSValue) * (arg_buf_len + b->var_count + b->stack_size) + sizeof(JSVarRef *) * b->var_ref_count);
+    size_t async_func_size = sizeof(*s) + sizeof(JSValue) * (arg_buf_len + b->var_count + b->stack_size) + sizeof(JSVarRef *) * b->var_ref_count;
+    s = gc_alloc_js_object(async_func_size, JS_GC_OBJ_TYPE_ASYNC_FUNCTION, ctx->rt);
     if (!s)
         return NULL;
-    memset(s, 0, sizeof(*s));
-    
-    add_gc_object(ctx->rt, &s->header, JS_GC_OBJ_TYPE_ASYNC_FUNCTION);
+    /* gc_alloc_js_object doesn't zero memory, so we need to memset */
+    memset((char*)s + sizeof(GCHeader), 0, async_func_size - sizeof(GCHeader));
 
     sf = &s->frame;
     sf->js_mode = b->js_mode | JS_MODE_ASYNC;
@@ -29837,13 +29882,12 @@ fail:
 static JSModuleDef *js_new_module_def(JSContext *ctx, JSAtom name)
 {
     JSModuleDef *m;
-    m = js_mallocz(ctx, sizeof(*m));
+    m = gc_alloc_js_object(sizeof(*m), JS_GC_OBJ_TYPE_MODULE, ctx->rt);
     if (!m) {
         JS_FreeAtom(ctx, name);
         return NULL;
     }
-    
-    add_gc_object(ctx->rt, &m->header, JS_GC_OBJ_TYPE_MODULE);
+    /* gc_alloc_js_object doesn't zero memory */
     m->module_name = name;
     m->module_ns = JS_UNDEFINED;
     m->func_obj = JS_UNDEFINED;
@@ -36308,11 +36352,12 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     byte_code_offset = function_size;
     function_size += fd->byte_code.size;
 
-    b = js_mallocz(ctx, function_size);
+    b = gc_alloc_js_object(function_size, JS_GC_OBJ_TYPE_FUNCTION_BYTECODE, ctx->rt);
     if (!b)
         goto fail;
+    /* gc_alloc_js_object doesn't zero memory */
+    memset((char*)b + sizeof(GCHeader), 0, function_size - sizeof(GCHeader));
     
-
     b->byte_code_buf = (void *)((uint8_t*)b + byte_code_offset);
     b->byte_code_len = fd->byte_code.size;
     memcpy(b->byte_code_buf, fd->byte_code.buf, fd->byte_code.size);
@@ -36435,8 +36480,7 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     b->is_direct_or_indirect_eval = (fd->eval_type == JS_EVAL_TYPE_DIRECT ||
                                      fd->eval_type == JS_EVAL_TYPE_INDIRECT);
     b->realm = JS_DupContext(ctx);
-
-    add_gc_object(ctx->rt, &b->header, JS_GC_OBJ_TYPE_FUNCTION_BYTECODE);
+    /* gc_alloc_js_object already set gc_obj_type to JS_GC_OBJ_TYPE_FUNCTION_BYTECODE */
 
 #if defined(DUMP_BYTECODE) && (DUMP_BYTECODE & 1)
     if (!fd->strip_debug) {
@@ -38982,9 +39026,11 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
         function_size += bc.byte_code_len;
     }
 
-    b = js_mallocz(ctx, function_size);
+    b = gc_alloc_js_object(function_size, JS_GC_OBJ_TYPE_FUNCTION_BYTECODE, ctx->rt);
     if (!b)
         return JS_EXCEPTION;
+    /* gc_alloc_js_object doesn't zero memory */
+    memset((char*)b + sizeof(GCHeader), 0, function_size - sizeof(GCHeader));
 
     memcpy(b, &bc, offsetof(JSFunctionBytecode, debug));
     
@@ -38997,8 +39043,7 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
     if (b->cpool_count != 0) {
         b->cpool = (void *)((uint8_t*)b + cpool_offset);
     }
-
-    add_gc_object(ctx->rt, &b->header, JS_GC_OBJ_TYPE_FUNCTION_BYTECODE);
+    /* gc_alloc_js_object already set gc_obj_type to JS_GC_OBJ_TYPE_FUNCTION_BYTECODE */
 
     obj = JS_MKPTR(JS_TAG_FUNCTION_BYTECODE, b);
 

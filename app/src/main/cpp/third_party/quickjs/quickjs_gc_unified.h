@@ -17,6 +17,10 @@
 extern "C" {
 #endif
 
+/* Forward declaration for JSRuntime (used by gc_alloc_js_object) */
+struct JSRuntime;
+typedef struct JSRuntime JSRuntime;
+
 /* Total GC heap size - 512MB */
 #define GC_HEAP_SIZE (512 * 1024 * 1024)
 
@@ -165,6 +169,24 @@ size_t gc_size(void *ptr);
 
 /* Handle-based allocation for GC objects */
 GCHandle gc_alloc_handle(size_t size, GCType type);
+
+/* Handle array types for atomic allocation */
+typedef enum {
+    GC_HANDLE_ARRAY_GC,       /* General gc_handles (JS_OBJECT, SHAPE, STRING, etc.) */
+    GC_HANDLE_ARRAY_CONTEXT,  /* context_handles (JSContext) */
+    GC_HANDLE_ARRAY_ATOM,     /* atom_handles (JSString atoms) */
+    GC_HANDLE_ARRAY_JOB,      /* job_handles (JSJobEntry) */
+    GC_HANDLE_ARRAY_WEAKREF,  /* weakref_handles (weak references) */
+} GCHandleArrayType;
+
+/* Allocate and register a QuickJS GC object atomically.
+ * This prevents the race condition where GC sees an uninitialized object.
+ * Sets gc_obj_type immediately and adds to the specified handle array.
+ */
+void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHandleArrayType array_type);
+
+/* Convenience macro for the most common case (gc_handles) */
+#define gc_alloc_js_object(size, type, rt) gc_alloc_js_object_ex(size, type, rt, GC_HANDLE_ARRAY_GC)
 
 /* Get pointer from handle */
 void *gc_deref(GCHandle handle);

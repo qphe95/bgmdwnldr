@@ -260,6 +260,74 @@ GCHandle gc_alloc_handle(size_t size, GCType type) {
     return handle;
 }
 
+/* Allocate a QuickJS GC object with atomic initialization.
+ * This function is called from QuickJS to allocate objects that will be
+ * tracked by the GC. The gc_obj_type is set BEFORE the object is visible
+ * to the GC, preventing race conditions.
+ * 
+ * This function uses the specified JSRuntime handle array for QuickJS compatibility.
+ */
+extern int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_type, GCHandleArrayType array_type);
+
+void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHandleArrayType array_type) {
+    LOG_INFO("gc_alloc_js_object_ex: size=%zu type=%d rt=%p array=%d", size, js_gc_obj_type, (void*)rt, array_type);
+    if (!g_gc.initialized || !rt) {
+        LOG_ERROR("gc_alloc_js_object_ex: not initialized or rt is NULL");
+        return NULL;
+    }
+    
+    /* Allocate with header */
+    size_t total_size = sizeof(GCHeader) + ALIGN16(size);
+    size_t old_offset = atomic_fetch_add(&g_gc.bump.offset, total_size);
+    
+    if (old_offset + total_size > g_gc.heap_size) {
+        /* Out of memory - rollback */
+        atomic_fetch_sub(&g_gc.bump.offset, total_size);
+        LOG_ERROR("GC heap exhausted in gc_alloc_js_object_ex!");
+        return NULL;
+    }
+    
+    /* Get pointer to header */
+    GCHeader *hdr = (GCHeader *)(g_gc.heap + old_offset);
+    void *user_ptr = (void *)(hdr + 1);
+    
+    /* CRITICAL: Initialize header BEFORE adding to any handle array.
+     * This ensures GC always sees a valid, initialized object. */
+    hdr->ref_count_unused = 0;
+    hdr->gc_obj_type = js_gc_obj_type;  /* Set type IMMEDIATELY */
+    hdr->mark = 0;
+    hdr->dummy0 = 0;
+    hdr->dummy1 = 0;
+    hdr->dummy2 = 0;
+    hdr->link.next = NULL;
+    hdr->link.prev = NULL;
+    hdr->handle = GC_HANDLE_NULL;
+    hdr->size = total_size;
+    hdr->type = GC_TYPE_JS_OBJECT;
+    hdr->pinned = 0;
+    hdr->flags = 0;
+    hdr->pad = 0;
+    
+    /* Memory barrier to ensure all initialization is visible before adding to handles */
+    atomic_thread_fence(memory_order_release);
+    
+    /* Add to the specified QuickJS handle array */
+    if (js_handle_array_add_js_object_ex(rt, hdr, js_gc_obj_type, array_type) < 0) {
+        /* Failed to add - mark as freed and return NULL */
+        hdr->size = 0;  /* Mark as freed */
+        return NULL;
+    }
+    
+    LOG_INFO("gc_alloc_js_object_ex: SUCCESS ptr=%p total_size=%zu", user_ptr, total_size);
+    
+    /* Update stats */
+    g_gc.total_bytes += total_size;
+    g_gc.bytes_allocated += total_size;
+    update_malloc_state(total_size);
+    
+    return user_ptr;
+}
+
 void *gc_realloc(void *ptr, size_t new_size) {
     if (!ptr) {
         return gc_alloc_raw(new_size);
