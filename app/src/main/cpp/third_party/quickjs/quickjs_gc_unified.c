@@ -343,33 +343,21 @@ void *gc_realloc(void *ptr, size_t new_size) {
         return NULL;
     }
     
-    /* ptr is hdr (not user_ptr). Get header info directly. */
-    GCHeader *old_hdr = (GCHeader*)ptr;
+    /* ptr is user_ptr (after header). Get header via gc_header(). */
+    GCHeader *old_hdr = gc_header(ptr);
     size_t old_total_size = old_hdr->size;
     size_t old_user_size = old_total_size - sizeof(GCHeader);
     GCType type = old_hdr->type;
-    GCHandle old_handle = old_hdr->handle;
     
-    /* Allocate new space (returns hdr) */
-    void *new_hdr_ptr = gc_alloc(new_size, type);
-    if (!new_hdr_ptr) {
+    /* Allocate new space (returns user_ptr) */
+    void *new_user_ptr = gc_alloc(new_size, type);
+    if (!new_user_ptr) {
         return NULL;
     }
     
-    /* Copy user data (after header) */
+    /* Copy user data */
     size_t copy_size = old_user_size < new_size ? old_user_size : new_size;
-    memcpy((char*)new_hdr_ptr + sizeof(GCHeader), 
-           (char*)ptr + sizeof(GCHeader), 
-           copy_size);
-    
-    /* Update handle if present */
-    if (old_handle != GC_HANDLE_NULL) {
-        GCHeader *new_hdr = (GCHeader*)new_hdr_ptr;
-        new_hdr->handle = old_handle;
-        /* Store hdr in handle table, not user_ptr */
-        g_gc.handles[old_handle].ptr = new_hdr_ptr;
-        g_gc.handles[old_handle].gen = g_gc.gc_count;
-    }
+    memcpy(new_user_ptr, ptr, copy_size);
     
     /* Old space becomes garbage - will be reclaimed by compaction */
     /* Bug #2 fix: Decrement bytes_allocated since we're effectively freeing old space */
@@ -382,7 +370,7 @@ void *gc_realloc(void *ptr, size_t new_size) {
     /* Mark old header as dead (size = 0 indicates dead) */
     old_hdr->size = 0;
     
-    return new_hdr_ptr;
+    return new_user_ptr;
 }
 
 void gc_free(void *ptr) {

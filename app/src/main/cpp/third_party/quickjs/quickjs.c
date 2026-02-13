@@ -314,6 +314,12 @@ struct JSRuntime {
     BOOL current_exception_is_uncatchable : 8;
     /* true if inside an out of memory error, to avoid recursing */
     BOOL in_out_of_memory : 8;
+    /* true if GC is disabled during critical initialization */
+    BOOL gc_disabled : 8;
+    
+    /* 3-tier atom system: first permanent_atom_count atoms are never freed */
+    uint32_t permanent_atom_count;
+    uint32_t *atom_gc_marks;  /* Mark bits for dynamic atoms (NULL if not needed) */
 
     struct JSStackFrame *current_stack_frame;
 
@@ -528,6 +534,7 @@ enum {
     JS_ATOM_TYPE_GLOBAL_SYMBOL,
     JS_ATOM_TYPE_SYMBOL,
     JS_ATOM_TYPE_PRIVATE,
+    JS_ATOM_TYPE_DEAD = 0xFF,  /* Atom is being freed, references are stale */
 };
 
 typedef enum {
@@ -540,6 +547,9 @@ typedef enum {
 #define JS_ATOM_HASH_PRIVATE JS_ATOM_HASH_MASK
 
 struct JSString {
+    /* IMPORTANT: Keep fixed-size fields separate from flexible array.
+     * hash_next was moved here to avoid overlap with str8[0] */
+    uint32_t hash_next; /* atom_index for JS_ATOM_TYPE_SYMBOL - MUST BE FIRST */
     uint32_t len : 31;
     uint8_t is_wide_char : 1; /* 0 = 8 bits, 1 = 16 bits characters */
     /* for JS_ATOM_TYPE_SYMBOL: hash = weakref_count, atom_type = 3,
@@ -547,7 +557,6 @@ struct JSString {
        XXX: could change encoding to have one more bit in hash */
     uint32_t hash : 30;
     uint8_t atom_type : 2; /* != 0 if atom, JS_ATOM_TYPE_x */
-    uint32_t hash_next; /* atom_index for JS_ATOM_TYPE_SYMBOL */
 #ifdef DUMP_LEAKS
     struct list_head link; /* string list */
 #endif
@@ -556,6 +565,20 @@ struct JSString {
         uint16_t str16[0];
     } u;
 };
+
+/* Compile-time verification of JSString layout */
+#include <stddef.h>
+typedef char _check_hash_next_offset[(offsetof(JSString, hash_next) == 0) ? 1 : -1];
+typedef char _check_str8_offset[(offsetof(JSString, u.str8) == 12) ? 1 : -1];
+typedef char _check_jsstring_size[(sizeof(JSString) == 12) ? 1 : -1];
+
+/* Runtime verification function - called during init */
+static void js_verify_string_layout(void) {
+    QJS_LOGI("JSString layout: sizeof=%zu hash_next_offset=%zu str8_offset=%zu",
+             sizeof(JSString),
+             offsetof(JSString, hash_next),
+             offsetof(JSString, u.str8));
+}
 
 typedef struct JSStringRope {
     uint32_t len;
@@ -1414,6 +1437,12 @@ static void js_trigger_gc(JSRuntime *rt, size_t size)
         force_gc = TRUE;
     }
     QJS_LOGI("js_trigger_gc: after gc_should_run, force_gc=%d", force_gc);
+    
+    /* Don't run GC if explicitly disabled during critical initialization */
+    if (force_gc && rt->gc_disabled) {
+        QJS_LOGI("js_trigger_gc: delaying GC - gc_disabled is set");
+        force_gc = FALSE;
+    }
 #endif
     QJS_LOGI("js_trigger_gc: checking if force_gc...");
     if (force_gc) {
@@ -1967,16 +1996,40 @@ static inline BOOL js_handle_array_entry_is_valid(void *entry);
 
 static inline JSAtomStruct *js_atom_array_get(JSRuntime *rt, uint32_t atom_index)
 {
-    uint32_t handle = rt->atom_array[atom_index];
-    if (handle == 0)  /* 0 = empty slot */
+    if (atom_index >= rt->atom_size) {
+        QJS_LOGE("js_atom_array_get: atom_index %u >= atom_size %u", atom_index, rt->atom_size);
         return NULL;
+    }
+    uint32_t handle = rt->atom_array[atom_index];
+    if (handle == 0) {  /* 0 = empty slot */
+        QJS_LOGE("js_atom_array_get: atom %u has handle=0 (empty slot)", atom_index);
+        return NULL;
+    }
     /* handle is 1-based, convert to 0-based array index */
     uint32_t array_idx = handle - 1;
-    if (array_idx >= rt->atom_handles.count)
+    if (array_idx >= rt->atom_handles.count) {
+        QJS_LOGE("js_atom_array_get: atom %u handle=%u array_idx=%u >= count=%u", 
+                 atom_index, handle, array_idx, rt->atom_handles.count);
         return NULL;
+    }
     void *entry = rt->atom_handles.handles[array_idx];
-    if (!js_handle_array_entry_is_valid(entry))
+    if (!js_handle_array_entry_is_valid(entry)) {
+        QJS_LOGE("js_atom_array_get: atom %u handle=%u array_idx=%u entry=%p INVALID", 
+                 atom_index, handle, array_idx, entry);
+        QJS_LOGE("  rt=%p &atom_handles=%p atom_handles.handles=%p atom_handles.count=%u", 
+                 (void*)rt, (void*)&rt->atom_handles, (void*)rt->atom_handles.handles, rt->atom_handles.count);
         return NULL;
+    }
+    /* Debug: verify atom string data for symbol atoms */
+    if (atom_index >= 225 && atom_index <= 237) {
+        JSString *str = (JSString *)entry;
+        char hex[64];
+        int i, n = str->len < 20 ? str->len : 20;
+        for(i=0; i<n; i++) snprintf(hex+i*3, 4, "%02x ", str->u.str8[i]);
+        hex[n*3] = 0;
+        QJS_LOGI("js_atom_array_get: atom %d handle=%d entry=%p len=%d hex=%s", 
+                 atom_index, handle, entry, str->len, hex);
+    }
     return (JSAtomStruct *)entry;
 }
 
@@ -1985,6 +2038,7 @@ static JSString *js_alloc_string_rt(JSRuntime *rt, int max_len, int is_wide_char
 {
     JSString *str;
     size_t str_size = sizeof(JSString) + (max_len << is_wide_char) + 1 - is_wide_char;
+    QJS_LOGI("js_alloc_string_rt: sizeof(JSString)=%zu max_len=%d str_size=%zu", sizeof(JSString), max_len, str_size);
     str = gc_alloc_js_object(str_size, JS_GC_OBJ_TYPE_JS_STRING, rt);
     if (unlikely(!str))
         return NULL;
@@ -2159,6 +2213,15 @@ void JS_FreeRuntime(JSRuntime *rt)
     for(i = 0; i < rt->atom_size; i++) {
         JSAtomStruct *p = js_atom_array_get(rt, i);
         if (p) {
+            /* Skip atom 0 (JS_ATOM_NULL) - it's allocated with js_mallocz_rt,
+             * not gc_alloc_js_object, so it has no GC header */
+            if (i == 0) {
+#ifdef DUMP_LEAKS
+                list_del(&p->link);
+#endif
+                js_free_rt(rt, p);
+                continue;
+            }
             /* Bug #1 fix: Check if already freed by GC (size == 0) */
             if (gc_header(p)->size == 0) {
                 /* Already freed - skip */
@@ -2230,6 +2293,9 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     JSContext *ctx;
     int i;
 
+    /* Log IMMEDIATELY on entry */
+    __android_log_print(ANDROID_LOG_ERROR, "QuickJS", "ENTRY JS_NewContextRaw rt=%p", (void*)rt);
+
     /* Crash immediately with deliberate NULL deref to verify we can see logs */
     volatile int *crash_test = NULL;
     // *crash_test = 1;  /* Uncomment to test crash logging */
@@ -2295,9 +2361,15 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     init_list_head(&ctx->loaded_modules);
     QJS_LOGI("STEP9.5: init_list_head done, loaded_modules.next=%p", (void*)ctx->loaded_modules.next);
 
+    /* Disable GC during critical initialization to prevent freeing
+     * objects that are being set up but not yet rooted */
+    rt->gc_disabled = TRUE;
+    QJS_LOGI("STEP10: GC disabled for initialization");
+    
     QJS_LOGI("STEP10");
     if (JS_AddIntrinsicBasicObjects(ctx)) {
         QJS_LOGE("JS_AddIntrinsicBasicObjects failed!");
+        rt->gc_disabled = FALSE;
         JS_FreeContext(ctx);
         return NULL;
     }
@@ -2323,6 +2395,9 @@ JSContext *JS_NewContext(JSRuntime *rt)
         JS_FreeContext(ctx);
         return NULL;
     }
+    /* Re-enable GC now that initialization is complete */
+    rt->gc_disabled = FALSE;
+    QJS_LOGI("JS_NewContext: GC re-enabled after initialization");
     return ctx;
 }
 
@@ -2868,14 +2943,22 @@ static uint32_t js_handle_array_add_with_index(JSRuntime *rt, JSHandleArray *arr
 {
     uint32_t index;
     if (!arr || !handle) {
+        QJS_LOGE("js_handle_array_add_with_index: NULL arr=%p or handle=%p", (void*)arr, (void*)handle);
         return 0;  /* 0 is invalid handle */
     }
     if (arr->count >= arr->capacity) {
+        QJS_LOGE("js_handle_array_add_with_index: array full, count=%u capacity=%u", arr->count, arr->capacity);
         return 0;  /* 0 is invalid handle */
     }
     index = arr->count++;  /* 0-based array index */
+    
     arr->handles[index] = handle;
+    
     /* Return 1-based handle (index + 1). 0 is reserved for invalid. */
+    QJS_LOGI("js_handle_array_add_with_index: &rt->atom_handles=%p rt->atom_handles.handles=%p rt->atom_handles.count=%u",
+             (void*)&rt->atom_handles, (void*)rt->atom_handles.handles, rt->atom_handles.count);
+    QJS_LOGI("js_handle_array_add_with_index: arr=%p arr->handles=%p added handle=%u (index=%u) ptr=%p wrote=%p", 
+             (void*)arr, (void*)arr->handles, index + 1, index, handle, arr->handles[index]);
     return index + 1;
 }
 
@@ -2895,6 +2978,7 @@ static void js_handle_array_mark_freed(JSHandleArray *arr, void *handle)
     
     for (i = 0; i < arr->count; i++) {
         if (arr->handles[i] == handle) {
+            QJS_LOGE("js_handle_array_mark_freed: marking arr=%p index=%u as FREED", (void*)arr, i);
             arr->handles[i] = JS_HANDLE_FREED;  /* Mark as freed */
             return;
         }
@@ -2984,6 +3068,7 @@ static int JS_InitAtoms(JSRuntime *rt)
     uint32_t init_size;
 
     QJS_LOGI("JS_InitAtoms: Starting...");
+    js_verify_string_layout();
 
     rt->atom_hash_size = 0;
     rt->atom_hash = NULL;
@@ -3057,14 +3142,36 @@ static int JS_InitAtoms(JSRuntime *rt)
         else
             atom_type = JS_ATOM_TYPE_STRING;
         len = strlen(p);
+        /* Debug: Check source string for Symbol.iterator */
+        if (i >= 225 && i <= 237) {
+            char hex[64];
+            int j, n = len < 20 ? len : 20;
+            for(j=0; j<n; j++) snprintf(hex+j*3, 4, "%02x ", (unsigned char)p[j]);
+            hex[n*3] = 0;
+            QJS_LOGI("JS_InitAtoms: atom %d source='%.*s' len=%d hex=%s", i, len, p, len, hex);
+        }
         JSAtom result = __JS_NewAtomInit(rt, p, len, atom_type);
         if (result == JS_ATOM_NULL) {
             QJS_LOGE("JS_InitAtoms: __JS_NewAtomInit failed at atom %d (type=%d, len=%d)", i, atom_type, len);
             return -1;
         }
+        /* Verify atom was created correctly */
+        if (i >= 225 && i <= 237) {
+            JSAtomStruct *ap = js_atom_array_get(rt, result);
+            if (ap) {
+                char hex[64];
+                int j, n = ap->len < 20 ? ap->len : 20;
+                for(j=0; j<n; j++) snprintf(hex+j*3, 4, "%02x ", ap->u.str8[j]);
+                hex[n*3] = 0;
+                QJS_LOGI("JS_InitAtoms: atom %d after create, str='%s' len=%d hex=%s", i, ap->u.str8, ap->len, hex);
+            }
+        }
         p = p + len + 1;
     }
     QJS_LOGI("JS_InitAtoms: All %d atoms created successfully!", JS_ATOM_END - 1);
+    /* Initialize permanent atom count - atoms 0 to JS_ATOM_END-1 are never freed */
+    rt->permanent_atom_count = JS_ATOM_END;
+    QJS_LOGI("JS_InitAtoms: permanent_atom_count set to %u", rt->permanent_atom_count);
     return 0;
 }
 
@@ -3144,9 +3251,14 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
     JSAtomStruct *p;
     int len;
 
-#if 0
-    printf("__JS_NewAtom: ");  JS_DumpString(rt, str); printf("\n");
-#endif
+    /* Debug: verify symbol string data on entry */
+    if (atom_type == JS_ATOM_TYPE_SYMBOL && str && str->len >= 10) {
+        char hex[64];
+        int j, n = str->len < 20 ? str->len : 20;
+        for(j=0; j<n; j++) snprintf(hex+j*3, 4, "%02x ", str->u.str8[j]);
+        hex[n*3] = 0;
+        QJS_LOGI("__JS_NewAtom: ENTRY str='%s' len=%d hex=%s", str->u.str8, str->len, hex);
+    }
     if (atom_type < JS_ATOM_TYPE_SYMBOL) {
         /* str is not NULL */
         if (str->atom_type == atom_type) {
@@ -3239,10 +3351,28 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
     if (str) {
         if (str->atom_type == 0) {
             /* Reuse existing string as atom. It's already in gc_handles
-             * from when it was created, but needs to be added to atom_handles
-             * as a root to prevent GC from freeing it. */
+             * from when it was created as a GC object.
+             * 
+             * CRITICAL: We must mark it IMMEDIATELY to prevent GC from freeing it.
+             * The race condition: GC can run between string creation and atom reuse,
+             * and since the string is in gc_handles but not yet in atom_handles,
+             * gc_sweep will free it if mark==0.
+             * 
+             * We set mark=1 here and add to atom_handles right after.
+             * gc_mark_roots will mark all atoms later, keeping it alive.
+             */
             p = str;
             p->atom_type = atom_type;
+            
+            /* Mark the atom immediately so GC sweep won't free it.
+             * This is essential because the string is in gc_handles but
+             * gc_mark_roots may have already cleared its mark. */
+            {
+                GCHeader *atom_hdr = gc_header(p);
+                QJS_LOGI("__JS_NewAtom: PROTECT reused string atom %d, ptr=%p, mark was %d, atom_type now %d", 
+                         i, (void*)p, atom_hdr->mark, p->atom_type);
+                atom_hdr->mark = 1;
+            }
             
             /* use next free slot (sequential allocation) */
             i = rt->atom_free_index;
@@ -3260,9 +3390,10 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
                 goto fail;
             rt->atom_array[i] = handle;
         } else {
-            /* Duplicate string as new atom */
+            /* Duplicate string as new atom.
+             * Atoms are permanent roots - allocate with js_malloc to avoid GC interference */
             size_t str_size = sizeof(JSString) + (str->len << str->is_wide_char) + 1 - str->is_wide_char;
-            p = gc_alloc_js_object(str_size, JS_GC_OBJ_TYPE_JS_STRING, rt);
+            p = js_malloc_rt(rt, str_size);
             if (unlikely(!p))
                 goto fail;
             p->is_wide_char = str->is_wide_char;
@@ -3292,10 +3423,12 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             rt->atom_array[i] = handle;
         }
     } else {
-        /* Create empty atom */
-        p = gc_alloc_js_object(sizeof(JSAtomStruct), JS_GC_OBJ_TYPE_JS_STRING, rt);
+        /* Create empty atom.
+         * Atoms are permanent roots - allocate with js_malloc to avoid GC interference */
+        p = js_malloc_rt(rt, sizeof(JSAtomStruct));
         if (!p)
             return JS_ATOM_NULL;
+        memset(p, 0, sizeof(JSAtomStruct));
         p->is_wide_char = 1;    /* Hack to represent NULL as a JSString */
         p->len = 0;
 #ifdef DUMP_LEAKS
@@ -3334,6 +3467,19 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
     }
 
     //    JS_DumpAtoms(rt);
+    
+    /* Debug: verify atom string data on exit */
+    if (atom_type == JS_ATOM_TYPE_SYMBOL && i >= 225 && i <= 237) {
+        JSAtomStruct *ap = js_atom_array_get(rt, i);
+        if (ap) {
+            char hex[64];
+            int j, n = ap->len < 20 ? ap->len : 20;
+            for(j=0; j<n; j++) snprintf(hex+j*3, 4, "%02x ", ap->u.str8[j]);
+            hex[n*3] = 0;
+            QJS_LOGI("__JS_NewAtom: EXIT atom %d str='%s' len=%d hex=%s", i, ap->u.str8, ap->len, hex);
+        }
+    }
+    
     return i;
 
  fail:
@@ -3349,11 +3495,26 @@ static JSAtom __JS_NewAtomInit(JSRuntime *rt, const char *str, int len,
                                int atom_type)
 {
     JSString *p;
+    /* Only log for symbol atoms to reduce noise */
+    if (atom_type == JS_ATOM_TYPE_SYMBOL) {
+        char src_hex[64];
+        int j, n = len < 20 ? len : 20;
+        for(j=0; j<n; j++) snprintf(src_hex+j*3, 4, "%02x ", (unsigned char)str[j]);
+        src_hex[n*3] = 0;
+        QJS_LOGI("__JS_NewAtomInit: SYMBOL str='%.*s' len=%d src_hex=%s", len, str, len, src_hex);
+    }
     p = js_alloc_string_rt(rt, len, 0);
     if (!p)
         return JS_ATOM_NULL;
     memcpy(p->u.str8, str, len);
     p->u.str8[len] = '\0';
+    if (atom_type == JS_ATOM_TYPE_SYMBOL) {
+        char dst_hex[64];
+        int j, n = len < 20 ? len : 20;
+        for(j=0; j<n; j++) snprintf(dst_hex+j*3, 4, "%02x ", p->u.str8[j]);
+        dst_hex[n*3] = 0;
+        QJS_LOGI("__JS_NewAtomInit: SYMBOL after memcpy p->u.str8='%s' len=%d dst_hex=%s", p->u.str8, p->len, dst_hex);
+    }
     return __JS_NewAtom(rt, p, atom_type);
 }
 
@@ -3774,14 +3935,21 @@ static int JS_AtomIsNumericIndex(JSContext *ctx, JSAtom atom)
 
 void JS_FreeAtom(JSContext *ctx, JSAtom v)
 {
-    if (!__JS_AtomIsConst(v))
-        __JS_FreeAtom(ctx->rt, v);
+    /* Atoms are permanent - never freed.
+     * They stay in atom_hash and atom_handles for the lifetime of the runtime.
+     */
+    (void)ctx;
+    (void)v;
 }
 
 void JS_FreeAtomRT(JSRuntime *rt, JSAtom v)
 {
-    if (!__JS_AtomIsConst(v))
-        __JS_FreeAtom(rt, v);
+    /* Atoms are permanent - never freed.
+     * They stay in atom_hash and atom_handles for the lifetime of the runtime.
+     * This prevents hash table corruption and use-after-free bugs.
+     */
+    (void)rt;
+    (void)v;
 }
 
 /* return TRUE if 'v' is a symbol with a string description */
@@ -6232,6 +6400,13 @@ static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
         *ppr = NULL;
         return NULL;
     }
+    
+    /* Defensive: check if shape pointer is valid */
+    if (unlikely((uintptr_t)p->shape < 0x1000)) {
+        QJS_LOGE("find_own_property: invalid shape pointer %p for object %p", (void*)p->shape, (void*)p);
+        *ppr = NULL;
+        return NULL;
+    }
     sh = p->shape;
     h = (uintptr_t)atom & sh->prop_hash_mask;
     h = prop_hash_end(sh)[-h - 1];
@@ -6511,7 +6686,7 @@ static void free_gc_object(JSRuntime *rt, void *user_ptr)
         js_free_module_def(rt, (JSModuleDef *)user_ptr);
         break;
     case JS_GC_OBJ_TYPE_JS_STRING:
-        free_string(rt, (JSString *)gp);
+        /* Atoms are permanent roots - never freed by GC */
         break;
     case JS_GC_OBJ_TYPE_JS_BIGINT:
         free_bigint(rt, (JSBigInt *)gp);
@@ -6728,20 +6903,25 @@ static void remove_gc_object(GCHeader *h)
 
 void JS_MarkValue(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
 {
+    int tag = JS_VALUE_GET_TAG(val);
+    QJS_LOGI("JS_MarkValue: ENTER ptr=%p tag=%d has_ref=%d", JS_VALUE_GET_PTR(val), tag, JS_VALUE_HAS_REF_COUNT(val));
     if (JS_VALUE_HAS_REF_COUNT(val)) {
-        switch(JS_VALUE_GET_TAG(val)) {
+        switch(tag) {
         case JS_TAG_OBJECT:
         case JS_TAG_FUNCTION_BYTECODE:
         case JS_TAG_MODULE:
         case JS_TAG_STRING:
         case JS_TAG_STRING_ROPE:
-            QJS_LOGI("JS_MarkValue: marking ptr=%p tag=%d", JS_VALUE_GET_PTR(val), JS_VALUE_GET_TAG(val));
+            QJS_LOGI("JS_MarkValue: marking ptr=%p tag=%d", JS_VALUE_GET_PTR(val), tag);
             mark_func(rt, JS_VALUE_GET_PTR(val));
             QJS_LOGI("JS_MarkValue: done marking ptr=%p", JS_VALUE_GET_PTR(val));
             break;
         default:
+            QJS_LOGI("JS_MarkValue: skipping ptr=%p tag=%d (not in switch)", JS_VALUE_GET_PTR(val), tag);
             break;
         }
+    } else {
+        QJS_LOGI("JS_MarkValue: skipping ptr=%p tag=%d (no ref count)", JS_VALUE_GET_PTR(val), tag);
     }
 }
 
@@ -6844,9 +7024,37 @@ static void mark_children(JSRuntime *rt, void *user_ptr,
     case JS_GC_OBJ_TYPE_SHAPE:
         {
             JSShape *sh = (JSShape *)user_ptr;
-            QJS_LOGI("mark_children: SHAPE sh=%p, proto=%p", (void*)sh, (void*)sh->proto);
+            JSShapeProperty *prs;
+            int i;
+            QJS_LOGI("mark_children: SHAPE sh=%p, proto=%p, prop_count=%d", (void*)sh, (void*)sh->proto, sh->prop_count);
             if (sh->proto != NULL) {
                 mark_func(rt, sh->proto);
+            }
+            /* Mark atoms referenced by this shape's properties.
+             * These atoms must stay alive as long as the shape exists.
+             */
+            prs = get_shape_prop(sh);
+            for(i = 0; i < sh->prop_count; i++) {
+                if (prs[i].atom != JS_ATOM_NULL) {
+                    JSAtomStruct *atom_ptr = js_atom_array_get(rt, prs[i].atom);
+                    if (!atom_ptr) {
+                        QJS_LOGE("mark_children: shape atom %d at index %d is NULL!", prs[i].atom, i);
+                        continue;
+                    }
+                    if ((uintptr_t)atom_ptr < 0x1000) {
+                        QJS_LOGE("mark_children: shape atom %d at index %d is invalid ptr=%p!", 
+                                 prs[i].atom, i, (void*)atom_ptr);
+                        continue;
+                    }
+                    if (gc_ptr_is_valid(atom_ptr)) {
+                        QJS_LOGI("mark_children: marking shape atom %d at index %d, ptr=%p", 
+                                 prs[i].atom, i, (void*)atom_ptr);
+                        mark_func(rt, atom_ptr);
+                    } else {
+                        QJS_LOGI("mark_children: shape atom %d at index %d is malloc'd, skipping mark", 
+                                 prs[i].atom, i);
+                    }
+                }
             }
         }
         break;
@@ -6864,7 +7072,7 @@ static void mark_children(JSRuntime *rt, void *user_ptr,
         break;
     case JS_GC_OBJ_TYPE_JS_STRING:
     case JS_GC_OBJ_TYPE_JS_BIGINT:
-        /* No children to mark */
+        /* Atoms are permanent roots - no children, never freed */
         break;
     case JS_GC_OBJ_TYPE_JS_STRING_ROPE:
         {
@@ -6881,43 +7089,49 @@ static void mark_children(JSRuntime *rt, void *user_ptr,
 }
 
 /* Mark an object and all its children as reachable */
-static void gc_mark_recursive(JSRuntime *rt, GCHeader *p)
+/* Wrapper for mark_func callbacks that converts user_ptr to header internally.
+ * mark_func callbacks receive user_ptr (after header), not GCHeader*.
+ */
+static void gc_mark_recursive(JSRuntime *rt, void *user_ptr);
+
+static void gc_mark_recursive(JSRuntime *rt, void *user_ptr)
 {
-    QJS_LOGI("gc_mark_recursive: ENTER p=%p", (void*)p);
-    if (!p) {
-        QJS_LOGE("gc_mark_recursive: p is NULL!");
+    QJS_LOGI("gc_mark_recursive: ENTER user_ptr=%p", (void*)user_ptr);
+    if (!user_ptr) {
+        QJS_LOGE("gc_mark_recursive: user_ptr is NULL!");
         return;
     }
-    /* Defensive check: p must be in valid GC heap range or a valid system pointer */
-    /* Reject obviously invalid pointers (NULL, very low addresses, or clearly invalid high addresses) */
-    /* ARM64 Android can use addresses up to 0xFF... so we only reject obviously bad ones */
-    if ((uintptr_t)p < 0x1000 || (uintptr_t)p > 0xFFFFFFFFFFFFF000) {
-        QJS_LOGE("gc_mark_recursive: p=%p is outside valid address range, skipping", (void*)p);
+    /* Defensive check: user_ptr must be in valid GC heap range */
+    if ((uintptr_t)user_ptr < 0x1000 || (uintptr_t)user_ptr > 0xFFFFFFFFFFFFF000) {
+        QJS_LOGE("gc_mark_recursive: user_ptr=%p is outside valid address range, skipping", (void*)user_ptr);
         return;
     }
-    /* Check alignment - GCHeader should be at least 8-byte aligned */
-    if ((uintptr_t)p & 0x7) {
-        QJS_LOGE("gc_mark_recursive: p=%p is not 8-byte aligned, skipping", (void*)p);
+    /* Check alignment - should be at least 8-byte aligned */
+    if ((uintptr_t)user_ptr & 0x7) {
+        QJS_LOGE("gc_mark_recursive: user_ptr=%p is not 8-byte aligned, skipping", (void*)user_ptr);
         return;
     }
+    
+    /* Get header from user_ptr */
+    GCHeader *hdr = gc_header(user_ptr);
+    
     /* Skip objects that haven't been fully initialized yet */
-    if (p->gc_obj_type == 0) {
-        QJS_LOGI("gc_mark_recursive: skipping uninitialized object p=%p", (void*)p);
+    if (hdr->gc_obj_type == 0) {
+        QJS_LOGI("gc_mark_recursive: skipping uninitialized object user_ptr=%p", (void*)user_ptr);
         return;
     }
-    QJS_LOGI("gc_mark_recursive: p->mark=%d", p->mark);
-    if (p->mark)
+    QJS_LOGI("gc_mark_recursive: hdr->mark=%d", hdr->mark);
+    if (hdr->mark)
         return;  /* Already marked */
-    p->mark = 1;
+    hdr->mark = 1;
     QJS_LOGI("gc_mark_recursive: calling mark_children");
-    mark_children(rt, p, gc_mark_recursive);
+    mark_children(rt, user_ptr, gc_mark_recursive);
 }
 
 /* Mark all objects reachable from roots */
 static void gc_mark_roots(JSRuntime *rt)
 {
     int i;
-    GCHeader *p;
 
     QJS_LOGI("gc_mark_roots: ENTER, gc_handles.count=%d", rt->gc_handles.count);
     QJS_LOGI("gc_mark_roots: handles=%p", (void*)rt->gc_handles.handles);
@@ -6925,26 +7139,26 @@ static void gc_mark_roots(JSRuntime *rt)
     /* First, clear all marks */
     for (i = 0; i < rt->gc_handles.count; i++) {
         QJS_LOGI("gc_mark_roots: accessing entry %d", i);
-        p = rt->gc_handles.handles[i];
-        QJS_LOGI("gc_mark_roots: entry %d p=%p", i, (void*)p);
-        QJS_LOGI("gc_mark_roots: clearing mark entry %d, p=%p", i, (void*)p);
-        if (js_handle_array_entry_is_valid(p)) {
-            QJS_LOGI("gc_mark_roots: clearing p->mark for entry %d", i);
-            p->mark = 0;
+        void *user_ptr = rt->gc_handles.handles[i];
+        QJS_LOGI("gc_mark_roots: entry %d user_ptr=%p", i, (void*)user_ptr);
+        if (js_handle_array_entry_is_valid(user_ptr)) {
+            GCHeader *hdr = gc_header(user_ptr);
+            QJS_LOGI("gc_mark_roots: clearing mark for entry %d, hdr=%p", i, (void*)hdr);
+            hdr->mark = 0;
         }
     }
 
     /* Mark from contexts (roots) */
     QJS_LOGI("gc_mark_roots: context_handles.count=%u", rt->context_handles.count);
     for (i = 0; i < rt->context_handles.count; i++) {
-        GCHeader *ctx_hdr = rt->context_handles.handles[i];
-        QJS_LOGI("gc_mark_roots: marking context entry %d, ctx_hdr=%p", i, (void*)ctx_hdr);
-        if (!js_handle_array_entry_is_valid(ctx_hdr)) {
+        void *ctx_ptr = rt->context_handles.handles[i];
+        QJS_LOGI("gc_mark_roots: marking context entry %d, ctx_ptr=%p", i, (void*)ctx_ptr);
+        if (!js_handle_array_entry_is_valid(ctx_ptr)) {
             QJS_LOGI("gc_mark_roots: context entry %d invalid, skipping", i);
             continue;
         }
-        QJS_LOGI("gc_mark_roots: ctx_hdr->gc_obj_type=%d", ctx_hdr->gc_obj_type);
-        gc_mark_recursive(rt, ctx_hdr);
+        /* ctx_ptr is user_ptr (after header), pass directly to gc_mark_recursive */
+        gc_mark_recursive(rt, ctx_ptr);
     }
 
     /* Mark the runtime's current_exception */
@@ -6959,11 +7173,50 @@ static void gc_mark_roots(JSRuntime *rt)
         }
     }
     
-    /* Mark all atoms - they are roots referenced by atom_handles */
-    for (i = 0; i < rt->atom_handles.count; i++) {
-        JSAtomStruct *p = rt->atom_handles.handles[i];
-        if (js_handle_array_entry_is_valid(p)) {
-            gc_mark_recursive(rt, p);
+    /* 3-tier atom marking:
+     * Tier 1: Permanent atoms (0 to permanent_atom_count-1) are always roots
+     * Tier 2: Dynamic atoms are marked through shape references below
+     */
+    QJS_LOGI("gc_mark_roots: Tier 1 - marking %u permanent atoms", rt->permanent_atom_count);
+    for (i = 0; i < rt->permanent_atom_count && i < rt->atom_handles.count; i++) {
+        void *atom = rt->atom_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(atom)) {
+            continue;
+        }
+        if (gc_ptr_is_valid(atom)) {
+            QJS_LOGI("gc_mark_roots: marking permanent atom %d, ptr=%p", i, atom);
+            gc_mark_recursive(rt, atom);
+        }
+    }
+    
+    /* Tier 2: Mark atoms referenced by shapes.
+     * Dynamic atoms must be reachable through shapes to stay alive.
+     */
+    QJS_LOGI("gc_mark_roots: Tier 2 - marking atoms referenced by shapes");
+    for (i = 0; i < rt->gc_handles.count; i++) {
+        void *user_ptr = rt->gc_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(user_ptr)) continue;
+        
+        GCHeader *hdr = gc_header(user_ptr);
+        if (hdr->gc_obj_type == JS_GC_OBJ_TYPE_SHAPE) {
+            JSShape *sh = (JSShape *)user_ptr;
+            JSShapeProperty *prs = get_shape_prop(sh);
+            int j;
+            for (j = 0; j < sh->prop_count; j++) {
+                if (prs[j].atom != JS_ATOM_NULL) {
+                    JSAtom atom_idx = prs[j].atom;
+                    if (atom_idx < rt->atom_handles.count) {
+                        void *atom = rt->atom_handles.handles[atom_idx];
+                        if (js_handle_array_entry_is_valid(atom) && gc_ptr_is_valid(atom)) {
+                            JSAtomStruct *p = (JSAtomStruct *)atom;
+                            if (p->atom_type != JS_ATOM_TYPE_DEAD) {
+                                QJS_LOGI("gc_mark_roots: marking shape-referenced atom %d", atom_idx);
+                                gc_mark_recursive(rt, atom);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -7010,18 +7263,132 @@ static void gc_sweep(JSRuntime *rt)
         /* Bug #4 fix: Check if already freed via gc_free() (size == 0) */
         if (hdr->size == 0) {
             /* Object was already freed, just mark handle entry */
+            QJS_LOGI("gc_sweep: entry %d already freed (size=0), marking gc_handles[%d] as freed", i, i);
             rt->gc_handles.handles[i] = JS_HANDLE_FREED;
             continue;
         }
         
         if (!hdr->mark) {
             /* Object is unreachable - free it and mark entry as freed */
+            QJS_LOGI("gc_sweep: FREEING entry %d, user_ptr=%p, gc_obj_type=%d, marking gc_handles[%d] as freed", i, (void*)user_ptr, hdr->gc_obj_type, i);
             free_gc_object(rt, user_ptr);
             rt->gc_handles.handles[i] = JS_HANDLE_FREED;
         }
     }
 
     rt->gc_phase = JS_GC_PHASE_NONE;
+}
+
+/* 3-tier atom system: Sweep dynamic atoms that are no longer referenced.
+ * This runs after gc_sweep to free unmarked dynamic atoms.
+ */
+static void gc_sweep_atoms(JSRuntime *rt)
+{
+    uint32_t i;
+    int freed_count = 0;
+    
+    QJS_LOGI("gc_sweep_atoms: ENTER, atom_handles.count=%u, permanent_atom_count=%u", 
+             rt->atom_handles.count, rt->permanent_atom_count);
+    
+    /* Phase 1: Mark unreferenced dynamic atoms as DEAD and remove from hash table */
+    for (i = rt->permanent_atom_count; i < rt->atom_handles.count; i++) {
+        void *atom = rt->atom_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(atom)) {
+            continue;
+        }
+        if (!gc_ptr_is_valid(atom)) {
+            continue;  /* Skip malloc'd atoms */
+        }
+        
+        JSAtomStruct *p = (JSAtomStruct *)atom;
+        GCHeader *hdr = gc_header(atom);
+        
+        /* Skip already dead atoms */
+        if (p->atom_type == JS_ATOM_TYPE_DEAD) {
+            continue;
+        }
+        
+        /* If atom is not marked, it will be freed */
+        if (!hdr->mark) {
+            /* Remove from atom_hash so it can't be looked up anymore */
+            if (p->atom_type != JS_ATOM_TYPE_SYMBOL) {
+                uint32_t h0 = p->hash & (rt->atom_hash_size - 1);
+                uint32_t idx = rt->atom_hash[h0];
+                JSAtomStruct *p1 = js_atom_array_get(rt, idx);
+                if (p1 == p) {
+                    rt->atom_hash[h0] = p1->hash_next;
+                } else if (p1 != NULL) {
+                    JSAtomStruct *p0;
+                    for(;;) {
+                        if (idx == 0) break;
+                        p0 = p1;
+                        idx = p0->hash_next;
+                        p1 = js_atom_array_get(rt, idx);
+                        if (p1 == p) {
+                            p0->hash_next = p1->hash_next;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            /* Mark as dead so shapes know to skip it */
+            QJS_LOGI("gc_sweep_atoms: marking atom %u as DEAD", i);
+            p->atom_type = JS_ATOM_TYPE_DEAD;
+            freed_count++;
+        }
+    }
+    
+    /* Phase 2: Scan all shapes and null out dead atom references */
+    for (i = 0; i < rt->gc_handles.count; i++) {
+        void *user_ptr = rt->gc_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(user_ptr)) continue;
+        
+        GCHeader *hdr = gc_header(user_ptr);
+        if (hdr->gc_obj_type == JS_GC_OBJ_TYPE_SHAPE) {
+            JSShape *sh = (JSShape *)user_ptr;
+            JSShapeProperty *prs = get_shape_prop(sh);
+            int j;
+            for (j = 0; j < sh->prop_count; j++) {
+                if (prs[j].atom != JS_ATOM_NULL) {
+                    JSAtom atom_idx = prs[j].atom;
+                    if (atom_idx < rt->atom_handles.count) {
+                        void *atom = rt->atom_handles.handles[atom_idx];
+                        if (js_handle_array_entry_is_valid(atom)) {
+                            JSAtomStruct *p = (JSAtomStruct *)atom;
+                            if (p->atom_type == JS_ATOM_TYPE_DEAD) {
+                                QJS_LOGI("gc_sweep_atoms: nulling dead atom %u in shape %p prop %d", 
+                                         atom_idx, (void*)sh, j);
+                                prs[j].atom = JS_ATOM_NULL;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /* Phase 3: Free dead atoms */
+    for (i = rt->permanent_atom_count; i < rt->atom_handles.count; i++) {
+        void *atom = rt->atom_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(atom)) {
+            continue;
+        }
+        if (!gc_ptr_is_valid(atom)) {
+            continue;
+        }
+        
+        JSAtomStruct *p = (JSAtomStruct *)atom;
+        if (p->atom_type == JS_ATOM_TYPE_DEAD) {
+            QJS_LOGI("gc_sweep_atoms: freeing dead atom %u", i);
+            /* Free the atom memory */
+            GCHeader *hdr = gc_header(atom);
+            hdr->size = 0;  /* Mark as freed */
+            rt->atom_handles.handles[i] = JS_HANDLE_FREED;
+        }
+    }
+    
+    QJS_LOGI("gc_sweep_atoms: freed %d dynamic atoms", freed_count);
 }
 
 static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
@@ -7044,6 +7411,9 @@ static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
 
     /* Sweep phase: free all unmarked objects */
     gc_sweep(rt);
+    
+    /* 3-tier atom system: sweep dynamic atoms that are no longer referenced */
+    gc_sweep_atoms(rt);
 
     /* Compact handle arrays to remove NULL entries (like stack allocator) */
     js_compact_all_handle_arrays(rt);
@@ -39905,14 +40275,45 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, JSValueConst obj,
                 return -1;
             }
             QJS_LOGE("JS_InstantiateFunctionListItem: calling JS_GetProperty base=%d", e->u.alias.base);
+            /* Safety check: ensure object is valid before calling JS_GetProperty */
             switch (e->u.alias.base) {
             case -1:
+                if (JS_IsUndefined(obj) || JS_IsNull(obj)) {
+                    QJS_LOGE("JS_InstantiateFunctionListItem: obj is undefined/null for base=-1");
+                    JS_FreeAtom(ctx, atom1);
+                    return -1;
+                }
+                if (!JS_IsObject(obj)) {
+                    QJS_LOGE("JS_InstantiateFunctionListItem: obj is not an object for base=-1, tag=%d", JS_VALUE_GET_TAG(obj));
+                    JS_FreeAtom(ctx, atom1);
+                    return -1;
+                }
                 val = JS_GetProperty(ctx, obj, atom1);
                 break;
             case 0:
-                val = JS_GetProperty(ctx, ctx->global_obj, atom1);
+                if (JS_IsUndefined(ctx->global_obj) || JS_IsNull(ctx->global_obj)) {
+                    QJS_LOGE("JS_InstantiateFunctionListItem: global_obj is undefined/null for base=0");
+                    JS_FreeAtom(ctx, atom1);
+                    return -1;
+                }
+                {
+                    /* Debug: verify global_obj is valid */
+                    JSObject *p = JS_VALUE_GET_OBJ(ctx->global_obj);
+                    QJS_LOGE("JS_InstantiateFunctionListItem: global_obj=%p shape=%p", (void*)p, (void*)p->shape);
+                    if (p->shape) {
+                        QJS_LOGE("JS_InstantiateFunctionListItem: shape->prop_hash_mask=%u prop_count=%d", 
+                                 p->shape->prop_hash_mask, p->shape->prop_count);
+                    }
+                    val = JS_GetProperty(ctx, ctx->global_obj, atom1);
+                }
                 break;
             case 1:
+                if (JS_IsUndefined(ctx->class_proto[JS_CLASS_ARRAY]) || 
+                    JS_IsNull(ctx->class_proto[JS_CLASS_ARRAY])) {
+                    QJS_LOGE("JS_InstantiateFunctionListItem: class_proto[JS_CLASS_ARRAY] is undefined/null for base=1");
+                    JS_FreeAtom(ctx, atom1);
+                    return -1;
+                }
                 val = JS_GetProperty(ctx, ctx->class_proto[JS_CLASS_ARRAY], atom1);
                 break;
             default:
