@@ -1408,8 +1408,16 @@ extern void gc_set_threshold(size_t threshold);
 static void js_trigger_gc(JSRuntime *rt, size_t size)
 {
     BOOL force_gc;
+    
+    QJS_LOGI("js_trigger_gc: ENTER rt=%p size=%zu", (void*)rt, size);
+    
     /* Skip GC during early initialization (no contexts yet) */
+    if (!rt) {
+        QJS_LOGE("js_trigger_gc: rt is NULL!");
+        return;
+    }
     if (rt->context_handles.count == 0) {
+        QJS_LOGI("js_trigger_gc: no contexts, skipping");
         return;
     }
 #ifdef FORCE_GC_AT_MALLOC
@@ -2235,43 +2243,81 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     JSContext *ctx;
     int i;
 
-    ctx = js_mallocz_rt(rt, sizeof(JSContext));
-    if (!ctx)
+    /* Crash immediately with deliberate NULL deref to verify we can see logs */
+    volatile int *crash_test = NULL;
+    // *crash_test = 1;  /* Uncomment to test crash logging */
+    
+    QJS_LOGI("ENTER JS_NewContextRaw");
+    
+    if (!rt) {
+        QJS_LOGE("rt is NULL!");
         return NULL;
-    /* ref_count removed - using mark-and-sweep GC */
-    add_gc_object(rt, &ctx->header, JS_GC_OBJ_TYPE_JS_CONTEXT);
+    }
+    
+    /* Check if handle arrays are initialized */
+    if (!rt->context_handles.handles) {
+        QJS_LOGE("context_handles.handles is NULL!");
+        return NULL;
+    }
+    
+    QJS_LOGI("STEP1-malloc");
+    ctx = js_mallocz_rt(rt, sizeof(JSContext));
+    if (!ctx) {
+        QJS_LOGE("STEP1: ctx is NULL after malloc!");
+        return NULL;
+    }
+    QJS_LOGI("STEP1: ctx=%p", (void*)ctx);
+    GCHeader *h = &ctx->header;
+    QJS_LOGI("STEP1: h=%p", (void*)h);
+    
+    QJS_LOGI("STEP2-add_gc");
+    QJS_LOGI("STEP2: rt=%p h=%p", (void*)rt, (void*)h);
+    QJS_LOGI("STEP2: &rt->gc_handles=%p", (void*)&rt->gc_handles);
+    QJS_LOGI("STEP2: rt->gc_handles.handles=%p", (void*)rt->gc_handles.handles);
+    add_gc_object(rt, h, JS_GC_OBJ_TYPE_JS_CONTEXT);
+    QJS_LOGI("STEP2-done");
 
     /* Add to handle array BEFORE allocating class_proto.
      * This ensures that when JS_NewClass1 resizes class_proto arrays,
      * this context's array will be included. */
+    QJS_LOGI("STEP3");
     if (js_handle_array_add(rt, &rt->context_handles, ctx) < 0) {
+        QJS_LOGE("JS_NewContextRaw: js_handle_array_add failed!");
         js_free_rt(rt, ctx);
         return NULL;
     }
-    
+    QJS_LOGI("STEP4");
     ctx->rt = rt;
+    QJS_LOGI("STEP5");
     
     /* Allocate class_proto after adding to handle array so JS_NewClass1
      * can find and resize this array when registering new classes */
+    QJS_LOGI("STEP6");
     ctx->class_proto = js_malloc_rt(rt, sizeof(ctx->class_proto[0]) *
                                     rt->class_count);
+    QJS_LOGI("STEP7");
     if (!ctx->class_proto) {
         js_handle_array_remove(&rt->context_handles, ctx);
         js_free_rt(rt, ctx);
         return NULL;
     }
+    QJS_LOGI("STEP8");
     for(i = 0; i < rt->class_count; i++)
         ctx->class_proto[i] = JS_NULL;
+    QJS_LOGI("STEP9");
     ctx->array_ctor = JS_NULL;
     ctx->iterator_ctor = JS_NULL;
     ctx->regexp_ctor = JS_NULL;
     ctx->promise_ctor = JS_NULL;
     init_list_head(&ctx->loaded_modules);
 
+    QJS_LOGI("STEP10");
     if (JS_AddIntrinsicBasicObjects(ctx)) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects failed!");
         JS_FreeContext(ctx);
         return NULL;
     }
+    QJS_LOGI("STEP11-done");
     return ctx;
 }
 
@@ -2743,18 +2789,36 @@ static void js_handle_array_free(JSRuntime *rt, JSHandleArray *arr)
 
 static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
 {
+    QJS_LOGI("js_handle_array_add: ENTER arr=%p handle=%p", (void*)arr, handle);
+    
     /* Bug #3 fix: Add safety checks */
     if (!arr || !handle) {
+        QJS_LOGE("js_handle_array_add: NULL arr=%p or handle=%p", arr, handle);
+        return -1;
+    }
+    /* CRITICAL FIX: Check if handles array is allocated */
+    QJS_LOGI("js_handle_array_add: arr->handles=%p", (void*)arr->handles);
+    if (!arr->handles) {
+        QJS_LOGE("js_handle_array_add: arr->handles is NULL! arr=%p, count=%u, capacity=%u", 
+                 (void*)arr, (unsigned)arr->count, (unsigned)arr->capacity);
         return -1;
     }
     if (arr->count >= arr->capacity) {
         /* Don't crash, just return error */
-        /* Note: Using fprintf since LOG_ERROR isn't available here */
-        fprintf(stderr, "Handle array full: count=%u, capacity=%u\n", 
+        QJS_LOGE("Handle array full: count=%u, capacity=%u", 
                 (unsigned)arr->count, (unsigned)arr->capacity);
         return -1;
     }
-    arr->handles[arr->count++] = handle;
+    QJS_LOGI("js_handle_array_add: about to write to arr->handles[%u]", (unsigned)arr->count);
+    QJS_LOGI("js_handle_array_add: arr=%p, &arr->count=%p", (void*)arr, (void*)&arr->count);
+    uint32_t idx = arr->count;
+    QJS_LOGI("js_handle_array_add: idx=%u", (unsigned)idx);
+    QJS_LOGI("js_handle_array_add: writing handle=%p to arr->handles[%u]", handle, (unsigned)idx);
+    arr->handles[idx] = handle;
+    QJS_LOGI("js_handle_array_add: write succeeded");
+    arr->count = idx + 1;
+    QJS_LOGI("js_handle_array_add: count updated to %u", (unsigned)arr->count);
+    QJS_LOGI("js_handle_array_add: SUCCESS");
     return 0;
 }
 
@@ -2942,6 +3006,9 @@ static int JS_InitAtoms(JSRuntime *rt)
     QJS_LOGI("JS_InitAtoms: Creating %d predefined atoms...", JS_ATOM_END - 1);
     p = js_atom_init;
     for(i = 1; i < JS_ATOM_END; i++) {
+        if (i % 50 == 0) {
+            QJS_LOGI("JS_InitAtoms: Progress - atom %d/%d", i, JS_ATOM_END - 1);
+        }
         if (i == JS_ATOM_Private_brand)
             atom_type = JS_ATOM_TYPE_PRIVATE;
         else if (i >= JS_ATOM_Symbol_toPrimitive)
@@ -2949,8 +3016,9 @@ static int JS_InitAtoms(JSRuntime *rt)
         else
             atom_type = JS_ATOM_TYPE_STRING;
         len = strlen(p);
-        if (__JS_NewAtomInit(rt, p, len, atom_type) == JS_ATOM_NULL) {
-            QJS_LOGE("JS_InitAtoms: __JS_NewAtomInit failed at atom %d", i);
+        JSAtom result = __JS_NewAtomInit(rt, p, len, atom_type);
+        if (result == JS_ATOM_NULL) {
+            QJS_LOGE("JS_InitAtoms: __JS_NewAtomInit failed at atom %d (type=%d, len=%d)", i, atom_type, len);
             return -1;
         }
         p = p + len + 1;
@@ -5185,15 +5253,27 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
     void *sh_alloc;
     JSShape *sh;
 
-    sh_alloc = js_malloc(ctx, get_shape_size(hash_size, prop_size));
-    if (!sh_alloc)
+    QJS_LOGI("js_new_shape_nohash: START ctx=%p rt=%p", (void*)ctx, (void*)rt);
+    if (!rt) {
+        QJS_LOGE("js_new_shape_nohash: rt is NULL!");
         return NULL;
+    }
+    
+    sh_alloc = js_malloc(ctx, get_shape_size(hash_size, prop_size));
+    if (!sh_alloc) {
+        QJS_LOGE("js_new_shape_nohash: malloc failed!");
+        return NULL;
+    }
+    QJS_LOGI("js_new_shape_nohash: sh_alloc=%p", sh_alloc);
     sh = get_shape_from_alloc(sh_alloc, hash_size);
+    QJS_LOGI("js_new_shape_nohash: sh=%p, calling add_gc_object...", (void*)sh);
     
     add_gc_object(rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
+    QJS_LOGI("js_new_shape_nohash: add_gc_object done");
     if (proto)
         JS_MKPTR(JS_TAG_OBJECT, proto);
     sh->proto = proto;
+    QJS_LOGI("js_new_shape_nohash: memset...");
     memset(prop_hash_end(sh) - hash_size, 0, sizeof(prop_hash_end(sh)[0]) *
            hash_size);
     sh->prop_hash_mask = hash_size - 1;
@@ -5201,6 +5281,7 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
     sh->prop_count = 0;
     sh->deleted_prop_count = 0;
     sh->is_hashed = FALSE;
+    QJS_LOGI("js_new_shape_nohash: SUCCESS sh=%p", (void*)sh);
     return sh;
 }
 
@@ -5734,6 +5815,9 @@ static JSValue JS_NewObjectProtoClassAlloc(JSContext *ctx, JSValueConst proto_va
     JSObject *proto;
     int hash_size, hash_bits;
 
+    QJS_LOGI("JS_NewObjectProtoClassAlloc: START class_id=%d n_alloc_props=%d", class_id, n_alloc_props);
+    QJS_LOGI("JS_NewObjectProtoClassAlloc: ctx=%p rt=%p", (void*)ctx, (void*)ctx->rt);
+
     if (n_alloc_props <= JS_PROP_INITIAL_SIZE) {
         n_alloc_props = JS_PROP_INITIAL_SIZE;
         hash_size = JS_PROP_INITIAL_HASH_SIZE;
@@ -5741,10 +5825,15 @@ static JSValue JS_NewObjectProtoClassAlloc(JSContext *ctx, JSValueConst proto_va
         hash_bits = 32 - clz32(n_alloc_props - 1); /* ceil(log2(radix)) */
         hash_size = 1 << hash_bits;
     }
+    QJS_LOGI("JS_NewObjectProtoClassAlloc: hash_size=%d n_alloc_props=%d", hash_size, n_alloc_props);
     proto = get_proto_obj(proto_val);
+    QJS_LOGI("JS_NewObjectProtoClassAlloc: calling js_new_shape_nohash...");
     sh = js_new_shape_nohash(ctx, proto, hash_size, n_alloc_props);
-    if (!sh)
+    if (!sh) {
+        QJS_LOGE("JS_NewObjectProtoClassAlloc: js_new_shape_nohash failed!");
         return JS_EXCEPTION;
+    }
+    QJS_LOGI("JS_NewObjectProtoClassAlloc: calling JS_NewObjectFromShape...");
     return JS_NewObjectFromShape(ctx, sh, class_id, NULL);
 }
 
@@ -6495,10 +6584,34 @@ typedef struct {
 static void add_gc_object(JSRuntime *rt, GCHeader *h,
                           JSGCObjectTypeEnum type)
 {
+    QJS_LOGI("add_gc_object: ENTER rt=%p h=%p", (void*)rt, (void*)h);
+    
+    /* CRITICAL FIX: Check for NULL inputs */
+    if (!rt) {
+        QJS_LOGE("add_gc_object: rt is NULL!");
+        abort();  /* Crash with clear message */
+    }
+    if (!h) {
+        QJS_LOGE("add_gc_object: h is NULL!");
+        abort();  /* Crash with clear message */
+    }
+    /* Check if gc_handles is initialized */
+    if (!rt->gc_handles.handles) {
+        QJS_LOGE("add_gc_object: rt->gc_handles.handles is NULL! gc_handles.count=%u, capacity=%u",
+                 rt->gc_handles.count, rt->gc_handles.capacity);
+        abort();  /* Crash with clear message */
+    }
+    
+    QJS_LOGI("add_gc_object: about to set h->mark, h=%p", (void*)h);
     h->mark = 0;
     h->gc_obj_type = type;
+    QJS_LOGI("add_gc_object: calling js_handle_array_add...");
     /* Add to handle array for ASAN-safe tracking */
-    js_handle_array_add(rt, &rt->gc_handles, h);
+    if (js_handle_array_add(rt, &rt->gc_handles, h) < 0) {
+        QJS_LOGE("add_gc_object: js_handle_array_add failed!");
+        abort();  /* Crash with clear message */
+    }
+    QJS_LOGI("add_gc_object: js_handle_array_add succeeded");
     
     /* Assign handle for handle-based GC */
     h->handle = g_next_handle++;
@@ -55935,24 +56048,34 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
     JSCFunctionType ft;
     int i;
 
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: START ctx=%p rt=%p", (void*)ctx, (void*)ctx->rt);
+    
     /* warning: ordering is tricky */
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating OBJECT proto...");
     ctx->class_proto[JS_CLASS_OBJECT] =
         JS_NewObjectProtoClassAlloc(ctx, JS_NULL, JS_CLASS_OBJECT,
                                     countof(js_object_proto_funcs) + 1);
-    if (JS_IsException(ctx->class_proto[JS_CLASS_OBJECT]))
+    if (JS_IsException(ctx->class_proto[JS_CLASS_OBJECT])) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: OBJECT proto creation failed!");
         return -1;
+    }
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: OBJECT proto created");
     JS_SetImmutablePrototype(ctx, ctx->class_proto[JS_CLASS_OBJECT]);
 
     /* 2 more properties: caller and arguments */
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating function_proto...");
     ctx->function_proto = JS_NewCFunction3(ctx, js_function_proto, "", 0,
                                            JS_CFUNC_generic, 0,
                                            ctx->class_proto[JS_CLASS_OBJECT],
                                            countof(js_function_proto_funcs) + 3 + 2);
     if (JS_IsException(ctx->function_proto)) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: function_proto creation failed!");
         return -1;
     }
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: function_proto created");
     ctx->class_proto[JS_CLASS_BYTECODE_FUNCTION] = ctx->function_proto;
 
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating global_obj...");
     ctx->global_obj = JS_NewObjectProtoClassAlloc(ctx, ctx->class_proto[JS_CLASS_OBJECT],
                                                   JS_CLASS_GLOBAL_OBJECT, 64);
     if (JS_IsException(ctx->global_obj))
@@ -56059,6 +56182,7 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
                            JS_ATOM_callee, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE))
         return -1;
     
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: SUCCESS");
     return 0;
 }
 

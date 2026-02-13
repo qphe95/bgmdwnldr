@@ -49,8 +49,8 @@ LOCAL_C_INCLUDES := \
     $(TF_PSA_PATH)/drivers/builtin/src \
     $(TF_PSA_PATH)/core \
     $(QUICKJS_PATH)
-# ASAN disabled for production builds
-LOCAL_CFLAGS := -O2 -g -DCONFIG_VERSION=\"2024-02-14\"
+# ASAN build - CONFIG_VERSION must always be defined for QuickJS
+LOCAL_CFLAGS := -DCONFIG_VERSION=\"2024-02-14\" -D__SANITIZE_ADDRESS__=1 -O1 -g
 LOCAL_LDFLAGS := 
 LOCAL_LDLIBS := -landroid -llog -lvulkan -lmediandk -lm
 LOCAL_STATIC_LIBRARIES := android_native_app_glue
