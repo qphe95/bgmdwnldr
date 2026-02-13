@@ -138,6 +138,14 @@ bool gc_should_run(void) {
     return g_gc.bytes_allocated > g_gc.gc_threshold;
 }
 
+/* Check if a pointer is in the valid GC heap range */
+bool gc_ptr_is_valid(const void *ptr) {
+    if (!g_gc.initialized || !ptr) return false;
+    
+    const uint8_t *p = (const uint8_t *)ptr;
+    return (p >= g_gc.heap && p < g_gc.heap + GC_HEAP_SIZE);
+}
+
 /* Bug #2 fix: Update malloc_state in runtime if available */
 static void update_malloc_state(size_t allocated_delta) {
     if (g_gc.rt) {

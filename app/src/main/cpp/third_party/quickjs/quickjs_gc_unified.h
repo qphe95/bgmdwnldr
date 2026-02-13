@@ -186,6 +186,9 @@ size_t gc_available(void);
 /* Check if GC should run based on memory pressure (Bug #2 fix) */
 bool gc_should_run(void);
 
+/* Check if a pointer is in the valid GC heap range */
+bool gc_ptr_is_valid(const void *ptr);
+
 /* Set the runtime pointer for malloc_state updates (Bug #2 fix) */
 void gc_set_runtime(struct JSRuntime *rt);
 

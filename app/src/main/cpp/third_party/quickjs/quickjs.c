@@ -1410,27 +1410,42 @@ static void js_trigger_gc(JSRuntime *rt, size_t size)
     BOOL force_gc;
     
     /* Skip GC during early initialization (no contexts yet) */
+    QJS_LOGI("js_trigger_gc: checking rt...");
     if (!rt)
         return;
+    QJS_LOGI("js_trigger_gc: rt=%p, checking context_handles...", (void*)rt);
+    QJS_LOGI("js_trigger_gc: &rt->context_handles=%p", (void*)&rt->context_handles);
+    QJS_LOGI("js_trigger_gc: rt->context_handles.handles=%p", (void*)rt->context_handles.handles);
+    QJS_LOGI("js_trigger_gc: rt->context_handles.count=%u", rt->context_handles.count);
     if (rt->context_handles.count == 0)
         return;
+    QJS_LOGI("js_trigger_gc: checking malloc_state...");
+    QJS_LOGI("js_trigger_gc: &rt->malloc_state=%p", (void*)&rt->malloc_state);
+    QJS_LOGI("js_trigger_gc: rt->malloc_state.malloc_size=%zu", rt->malloc_state.malloc_size);
+    QJS_LOGI("js_trigger_gc: rt->malloc_gc_threshold=%zu", rt->malloc_gc_threshold);
+    QJS_LOGI("js_trigger_gc: about to check force_gc...");
 #ifdef FORCE_GC_AT_MALLOC
     force_gc = TRUE;
 #else
+    QJS_LOGI("js_trigger_gc: calculating force_gc...");
+    QJS_LOGI("js_trigger_gc: malloc_size + size = %zu", rt->malloc_state.malloc_size + size);
     force_gc = ((rt->malloc_state.malloc_size + size) >
                 rt->malloc_gc_threshold);
+    QJS_LOGI("js_trigger_gc: force_gc=%d", force_gc);
     
     /* Bug #2 fix: Also check unified GC memory pressure */
+    QJS_LOGI("js_trigger_gc: checking gc_should_run...");
     if (!force_gc && gc_should_run()) {
         force_gc = TRUE;
     }
+    QJS_LOGI("js_trigger_gc: after gc_should_run, force_gc=%d", force_gc);
 #endif
+    QJS_LOGI("js_trigger_gc: checking if force_gc...");
     if (force_gc) {
-#ifdef DUMP_GC
-        printf("GC: size=%" PRIu64 "\n",
-               (uint64_t)rt->malloc_state.malloc_size);
-#endif
+        QJS_LOGI("js_trigger_gc: force_gc is TRUE, about to run GC...");
+        QJS_LOGI("js_trigger_gc: calling JS_RunGC...");
         JS_RunGC(rt);
+        QJS_LOGI("js_trigger_gc: JS_RunGC returned");
         rt->malloc_gc_threshold = rt->malloc_state.malloc_size +
             (rt->malloc_state.malloc_size >> 1);
         /* Bug #2 fix: Update unified GC threshold too */
@@ -2242,6 +2257,7 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     // *crash_test = 1;  /* Uncomment to test crash logging */
     
     QJS_LOGI("ENTER JS_NewContextRaw");
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "ENTER JS_NewContextRaw rt=%p", (void*)rt);
     
     if (!rt) {
         QJS_LOGE("rt is NULL!");
@@ -2287,6 +2303,7 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     /* Allocate class_proto after adding to handle array so JS_NewClass1
      * can find and resize this array when registering new classes */
     QJS_LOGI("STEP6");
+    QJS_LOGI("STEP6: rt->class_count=%d", rt->class_count);
     ctx->class_proto = js_malloc_rt(rt, sizeof(ctx->class_proto[0]) *
                                     rt->class_count);
     QJS_LOGI("STEP7");
@@ -2325,6 +2342,11 @@ JSContext *JS_NewContext(JSRuntime *rt)
     if (!ctx)
         return NULL;
     if (JS_AddIntrinsicBaseObjects(ctx)) {
+        JS_FreeContext(ctx);
+        return NULL;
+    }
+    /* Initialize WeakRef and FinalizationRegistry classes */
+    if (JS_AddIntrinsicWeakRef(ctx)) {
         JS_FreeContext(ctx);
         return NULL;
     }
@@ -2402,37 +2424,80 @@ static void JS_MarkContext(JSRuntime *rt, JSContext *ctx,
     int i;
     struct list_head *el;
 
+    QJS_LOGI("JS_MarkContext: ENTER ctx=%p", (void*)ctx);
+    QJS_LOGI("JS_MarkContext: &ctx->loaded_modules=%p", (void*)&ctx->loaded_modules);
+    QJS_LOGI("JS_MarkContext: ctx->loaded_modules.next=%p", (void*)ctx->loaded_modules.next);
+    
+    QJS_LOGI("JS_MarkContext: about to enter list_for_each");
     list_for_each(el, &ctx->loaded_modules) {
         JSModuleDef *m = list_entry(el, JSModuleDef, link);
         JS_MarkValue(rt, JS_MKPTR(JS_TAG_MODULE, m), mark_func);
     }
+    QJS_LOGI("JS_MarkContext: done with loaded_modules");
 
+    QJS_LOGI("JS_MarkContext: marking global_obj");
     JS_MarkValue(rt, ctx->global_obj, mark_func);
+    QJS_LOGI("JS_MarkContext: marking global_var_obj");
     JS_MarkValue(rt, ctx->global_var_obj, mark_func);
+    QJS_LOGI("JS_MarkContext: done with global values");
 
+    QJS_LOGI("JS_MarkContext: marking throw_type_error");
     JS_MarkValue(rt, ctx->throw_type_error, mark_func);
+    QJS_LOGI("JS_MarkContext: marking eval_obj");
     JS_MarkValue(rt, ctx->eval_obj, mark_func);
 
+    QJS_LOGI("JS_MarkContext: marking array_proto_values");
     JS_MarkValue(rt, ctx->array_proto_values, mark_func);
+    QJS_LOGI("JS_MarkContext: marking native_error_proto");
     for(i = 0; i < JS_NATIVE_ERROR_COUNT; i++) {
         JS_MarkValue(rt, ctx->native_error_proto[i], mark_func);
     }
+    QJS_LOGI("JS_MarkContext: marking class_proto, rt->class_count=%d", rt->class_count);
+    QJS_LOGI("JS_MarkContext: ctx->class_proto=%p", (void*)ctx->class_proto);
     for(i = 0; i < rt->class_count; i++) {
-        JS_MarkValue(rt, ctx->class_proto[i], mark_func);
+        JSValue val = ctx->class_proto[i];
+        uint32_t tag = JS_VALUE_GET_TAG(val);
+        QJS_LOGI("JS_MarkContext: class_proto[%d] tag=%u", i, (unsigned)tag);
+        if (tag == JS_TAG_OBJECT) {
+            JSObject *p = JS_VALUE_GET_OBJ(val);
+            QJS_LOGI("JS_MarkContext: class_proto[%d] obj=%p", i, (void*)p);
+        }
+        JS_MarkValue(rt, val, mark_func);
     }
+    QJS_LOGI("JS_MarkContext: done with class_proto");
+    
+    QJS_LOGI("JS_MarkContext: iterator_ctor tag=%u", (unsigned)JS_VALUE_GET_TAG(ctx->iterator_ctor));
+    QJS_LOGI("JS_MarkContext: marking iterator_ctor");
     JS_MarkValue(rt, ctx->iterator_ctor, mark_func);
+    QJS_LOGI("JS_MarkContext: async_iterator_proto tag=%u", (unsigned)JS_VALUE_GET_TAG(ctx->async_iterator_proto));
+    QJS_LOGI("JS_MarkContext: marking async_iterator_proto");
     JS_MarkValue(rt, ctx->async_iterator_proto, mark_func);
+    QJS_LOGI("JS_MarkContext: promise_ctor tag=%u", (unsigned)JS_VALUE_GET_TAG(ctx->promise_ctor));
+    QJS_LOGI("JS_MarkContext: marking promise_ctor");
     JS_MarkValue(rt, ctx->promise_ctor, mark_func);
+    QJS_LOGI("JS_MarkContext: marking array_ctor");
     JS_MarkValue(rt, ctx->array_ctor, mark_func);
+    QJS_LOGI("JS_MarkContext: marking regexp_ctor");
     JS_MarkValue(rt, ctx->regexp_ctor, mark_func);
+    QJS_LOGI("JS_MarkContext: marking function_ctor");
     JS_MarkValue(rt, ctx->function_ctor, mark_func);
+    QJS_LOGI("JS_MarkContext: marking function_proto");
     JS_MarkValue(rt, ctx->function_proto, mark_func);
 
-    if (ctx->array_shape)
+    QJS_LOGI("JS_MarkContext: checking shapes");
+    QJS_LOGI("JS_MarkContext: ctx=%p", (void*)ctx);
+    QJS_LOGI("JS_MarkContext: about to read array_shape");
+    JSShape *array_shape = ctx->array_shape;
+    QJS_LOGI("JS_MarkContext: array_shape=%p", (void*)array_shape);
+    if (ctx->array_shape) {
+        QJS_LOGI("JS_MarkContext: marking array_shape");
         mark_func(rt, &ctx->array_shape->header);
+    }
 
-    if (ctx->arguments_shape)
+    if (ctx->arguments_shape) {
+        QJS_LOGI("JS_MarkContext: marking arguments_shape");
         mark_func(rt, &ctx->arguments_shape->header);
+    }
 
     if (ctx->mapped_arguments_shape)
         mark_func(rt, &ctx->mapped_arguments_shape->header);
@@ -2783,10 +2848,16 @@ static void js_handle_array_free(JSRuntime *rt, JSHandleArray *arr)
 
 static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
 {
+    /* CRITICAL: Check arr immediately before any logging */
+    if (!arr) {
+        QJS_LOGE("js_handle_array_add: arr is NULL!");
+        return -1;
+    }
+    
     QJS_LOGI("js_handle_array_add: ENTER arr=%p handle=%p", (void*)arr, handle);
     
     /* Bug #3 fix: Add safety checks */
-    if (!arr || !handle) {
+    if (!handle) {
         QJS_LOGE("js_handle_array_add: NULL arr=%p or handle=%p", arr, handle);
         return -1;
     }
@@ -6632,7 +6703,9 @@ void JS_MarkValue(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
         case JS_TAG_MODULE:
         case JS_TAG_STRING:
         case JS_TAG_STRING_ROPE:
+            QJS_LOGI("JS_MarkValue: marking ptr=%p tag=%d", JS_VALUE_GET_PTR(val), JS_VALUE_GET_TAG(val));
             mark_func(rt, JS_VALUE_GET_PTR(val));
+            QJS_LOGI("JS_MarkValue: done marking ptr=%p", JS_VALUE_GET_PTR(val));
             break;
         default:
             break;
@@ -6643,6 +6716,7 @@ void JS_MarkValue(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
 static void mark_children(JSRuntime *rt, GCHeader *gp,
                           JS_MarkFunc *mark_func)
 {
+    QJS_LOGI("mark_children: ENTER gp=%p gc_obj_type=%u", (void*)gp, (unsigned)gp->gc_obj_type);
     switch(gp->gc_obj_type) {
     case JS_GC_OBJ_TYPE_JS_OBJECT:
         {
@@ -6737,6 +6811,7 @@ static void mark_children(JSRuntime *rt, GCHeader *gp,
     case JS_GC_OBJ_TYPE_SHAPE:
         {
             JSShape *sh = (JSShape *)gp;
+            QJS_LOGI("mark_children: SHAPE sh=%p, proto=%p", (void*)sh, (void*)sh->proto);
             if (sh->proto != NULL) {
                 mark_func(rt, &sh->proto->header);
             }
@@ -6766,16 +6841,30 @@ static void mark_children(JSRuntime *rt, GCHeader *gp,
         }
         break;
     default:
-        abort();
+        /* Unknown object type - skip it */
+        QJS_LOGE("mark_children: unknown gc_obj_type=%d, skipping", gp->gc_obj_type);
+        break;
     }
 }
 
 /* Mark an object and all its children as reachable */
 static void gc_mark_recursive(JSRuntime *rt, GCHeader *p)
 {
+    QJS_LOGI("gc_mark_recursive: ENTER p=%p", (void*)p);
+    if (!p) {
+        QJS_LOGE("gc_mark_recursive: p is NULL!");
+        return;
+    }
+    /* Skip objects that haven't been fully initialized yet */
+    if (p->gc_obj_type == 0) {
+        QJS_LOGI("gc_mark_recursive: skipping uninitialized object p=%p", (void*)p);
+        return;
+    }
+    QJS_LOGI("gc_mark_recursive: p->mark=%d", p->mark);
     if (p->mark)
         return;  /* Already marked */
     p->mark = 1;
+    QJS_LOGI("gc_mark_recursive: calling mark_children");
     mark_children(rt, p, gc_mark_recursive);
 }
 
@@ -6785,16 +6874,29 @@ static void gc_mark_roots(JSRuntime *rt)
     int i;
     GCHeader *p;
 
+    QJS_LOGI("gc_mark_roots: ENTER, gc_handles.count=%d", rt->gc_handles.count);
+    QJS_LOGI("gc_mark_roots: handles=%p", (void*)rt->gc_handles.handles);
+    
     /* First, clear all marks */
     for (i = 0; i < rt->gc_handles.count; i++) {
+        QJS_LOGI("gc_mark_roots: accessing entry %d", i);
         p = rt->gc_handles.handles[i];
-        if (js_handle_array_entry_is_valid(p))
+        QJS_LOGI("gc_mark_roots: entry %d p=%p", i, (void*)p);
+        QJS_LOGI("gc_mark_roots: clearing mark entry %d, p=%p", i, (void*)p);
+        if (js_handle_array_entry_is_valid(p)) {
+            QJS_LOGI("gc_mark_roots: clearing p->mark for entry %d", i);
             p->mark = 0;
+        }
     }
 
     /* Mark from contexts (roots) */
     for (i = 0; i < rt->context_handles.count; i++) {
         JSContext *ctx = rt->context_handles.handles[i];
+        QJS_LOGI("gc_mark_roots: marking context entry %d, ctx=%p", i, (void*)ctx);
+        if (!js_handle_array_entry_is_valid(ctx)) {
+            QJS_LOGI("gc_mark_roots: context entry %d invalid, skipping", i);
+            continue;
+        }
         gc_mark_recursive(rt, &ctx->header);
     }
 
@@ -6825,14 +6927,34 @@ static void gc_sweep(JSRuntime *rt)
     int i;
     GCHeader *p;
 
+    QJS_LOGI("gc_sweep: ENTER, gc_handles.count=%d", rt->gc_handles.count);
     rt->gc_phase = JS_GC_PHASE_REMOVE_CYCLES;
 
     /* Iterate over gc_handles and free unmarked objects */
     for (i = 0; i < rt->gc_handles.count; i++) {
         p = rt->gc_handles.handles[i];
+        QJS_LOGI("gc_sweep: entry %d, p=%p", i, (void*)p);
+        
         if (!js_handle_array_entry_is_valid(p)) {
+            QJS_LOGI("gc_sweep: entry %d invalid, skipping", i);
             continue;
         }
+        
+        /* Safety check: p must point to valid memory in GC heap */
+        if (!gc_ptr_is_valid(p)) {
+            QJS_LOGE("gc_sweep: entry %d p=%p not in GC heap, marking freed", i, (void*)p);
+            rt->gc_handles.handles[i] = JS_HANDLE_FREED;
+            continue;
+        }
+        
+        /* Additional safety: check minimum object alignment (8-byte for 64-bit) */
+        if ((uintptr_t)p & 0x7) {
+            QJS_LOGE("gc_sweep: entry %d p=%p not 8-byte aligned, marking freed", i, (void*)p);
+            rt->gc_handles.handles[i] = JS_HANDLE_FREED;
+            continue;
+        }
+        
+        QJS_LOGI("gc_sweep: entry %d, p->size=%u", i, (unsigned)p->size);
         
         /* Bug #4 fix: Check if already freed via gc_free() (size == 0) */
         if (p->size == 0) {
@@ -6853,6 +6975,11 @@ static void gc_sweep(JSRuntime *rt)
 
 static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
 {
+    QJS_LOGI("JS_RunGCInternal: ENTER rt=%p", (void*)rt);
+    if (!rt) {
+        QJS_LOGE("JS_RunGCInternal: rt is NULL!");
+        return;
+    }
     if (remove_weak_objects) {
         /* free the weakly referenced object or symbol structures, delete
            the associated Map/Set entries and queue the finalization
@@ -6860,6 +6987,7 @@ static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
         gc_remove_weak_objects(rt);
     }
 
+    QJS_LOGI("JS_RunGCInternal: about to mark roots...");
     /* Mark phase: mark all reachable objects from roots */
     gc_mark_roots(rt);
 
@@ -6872,7 +7000,13 @@ static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
 
 void JS_RunGC(JSRuntime *rt)
 {
+    QJS_LOGI("JS_RunGC: ENTER rt=%p", (void*)rt);
+    if (!rt) {
+        QJS_LOGE("JS_RunGC: rt is NULL!");
+        return;
+    }
     JS_RunGCInternal(rt, TRUE);
+    QJS_LOGI("JS_RunGC: returned");
 }
 
 /* Return false if not an object or if the object has already been
