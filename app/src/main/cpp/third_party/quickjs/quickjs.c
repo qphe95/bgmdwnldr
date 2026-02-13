@@ -407,16 +407,13 @@ typedef struct {
 } JSWeakRefHeader;
 
 typedef struct JSVarRef {
-    union {
-        GCHeader header; /* must come first */
-        struct {
-            int __gc_ref_count; /* corresponds to unused header field */
-            uint8_t __gc_mark; /* corresponds to header.mark/gc_obj_type */
-            uint8_t is_detached;
-            uint8_t is_lexical; /* only used with global variables */
-            uint8_t is_const; /* only used with global variables */
-        };
-    };
+    GCHeader header; /* must come first */
+    
+    /* Flags - previously bit-packed in union with header */
+    uint8_t is_detached;
+    uint8_t is_lexical; /* only used with global variables */
+    uint8_t is_const;   /* only used with global variables */
+    
     JSValue *pvalue; /* pointer to the value, either on the stack or
                         to 'value' */
     union {
@@ -957,30 +954,22 @@ struct JSShape {
 };
 
 struct JSObject {
-    union {
-        GCHeader header;
-        struct {
-            int __gc_ref_count; /* corresponds to unused header field */
-            uint8_t __gc_mark : 7; /* corresponds to header.mark/gc_obj_type */
-            /* TRUE if the array prototype is "normal":
-               - no small index properties which are get/set or non writable
-               - its prototype is Object.prototype
-               - Object.prototype has no small index properties which are get/set or non writable
-               - the prototype of Object.prototype is null (always true as it is immutable)
-            */
-            uint8_t is_std_array_prototype : 1;
-
-            uint8_t extensible : 1;
-            uint8_t free_mark : 1; /* only used when freeing objects with cycles */
-            uint8_t is_exotic : 1; /* TRUE if object has exotic property handlers */
-            uint8_t fast_array : 1; /* TRUE if u.array is used for get/put (for JS_CLASS_ARRAY, JS_CLASS_ARGUMENTS, JS_CLASS_MAPPED_ARGUMENTS and typed arrays) */
-            uint8_t is_constructor : 1; /* TRUE if object is a constructor function */
-            uint8_t has_immutable_prototype : 1; /* cannot modify the prototype */
-            uint8_t tmp_mark : 1; /* used in JS_WriteObjectRec() */
-            uint8_t is_HTMLDDA : 1; /* specific annex B IsHtmlDDA behavior */
-            uint16_t class_id; /* see JS_CLASS_x */
-        };
-    };
+    GCHeader header;  /* GC metadata - must be first for unified GC */
+    
+    /* JS Object flags - previously bit-packed in union with header.
+     * Separated to avoid layout mismatch with GCHeader.
+     */
+    uint16_t class_id;           /* see JS_CLASS_x */
+    uint8_t is_std_array_prototype : 1;  /* TRUE if array prototype is "normal" */
+    uint8_t extensible : 1;
+    uint8_t free_mark : 1;       /* only used when freeing objects with cycles */
+    uint8_t is_exotic : 1;       /* TRUE if object has exotic property handlers */
+    uint8_t fast_array : 1;      /* TRUE if u.array is used */
+    uint8_t is_constructor : 1;  /* TRUE if object is a constructor function */
+    uint8_t has_immutable_prototype : 1; /* cannot modify the prototype */
+    uint8_t tmp_mark : 1;        /* used in JS_WriteObjectRec() */
+    uint8_t is_HTMLDDA : 1;      /* specific annex B IsHtmlDDA behavior */
+    uint8_t _padding : 7;        /* unused padding to align weakref_count */
     /* count the number of weak references to this object. The object
        structure is freed only if weakref_count = 0 */
     uint32_t weakref_count; 
