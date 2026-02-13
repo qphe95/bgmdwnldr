@@ -20,6 +20,7 @@ typedef struct JSMallocState {
     size_t malloc_count;
     size_t malloc_size;
     size_t malloc_limit;
+    void *opaque; /* user opaque */
 } JSMallocState;
 
 #define LOG_TAG "GCUnified"

@@ -1409,17 +1409,11 @@ static void js_trigger_gc(JSRuntime *rt, size_t size)
 {
     BOOL force_gc;
     
-    QJS_LOGI("js_trigger_gc: ENTER rt=%p size=%zu", (void*)rt, size);
-    
     /* Skip GC during early initialization (no contexts yet) */
-    if (!rt) {
-        QJS_LOGE("js_trigger_gc: rt is NULL!");
+    if (!rt)
         return;
-    }
-    if (rt->context_handles.count == 0) {
-        QJS_LOGI("js_trigger_gc: no contexts, skipping");
+    if (rt->context_handles.count == 0)
         return;
-    }
 #ifdef FORCE_GC_AT_MALLOC
     force_gc = TRUE;
 #else
@@ -5664,6 +5658,11 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
     JSObject *p;
     int i;
 
+    QJS_LOGI("JS_NewObjectFromShape: ctx=%p rt=%p", (void*)ctx, (void*)ctx->rt);
+    if (!ctx->rt) {
+        QJS_LOGE("JS_NewObjectFromShape: ctx->rt is NULL!");
+        return JS_EXCEPTION;
+    }
     js_trigger_gc(ctx->rt, sizeof(JSObject));
     p = js_malloc(ctx, sizeof(JSObject));
     if (unlikely(!p))
