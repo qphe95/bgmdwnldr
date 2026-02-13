@@ -241,6 +241,8 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
     g_gc.bytes_allocated += total_size;
     update_malloc_state(total_size);
     
+    /* Return user_ptr (not hdr) for clean GC abstraction.
+     * Use gc_header(user_ptr) to access the GC header when needed. */
     return user_ptr;
 }
 
@@ -311,20 +313,23 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
     /* Memory barrier to ensure all initialization is visible before adding to handles */
     atomic_thread_fence(memory_order_release);
     
-    /* Add to the specified QuickJS handle array */
-    if (js_handle_array_add_js_object_ex(rt, hdr, js_gc_obj_type, array_type) < 0) {
+    /* Add to the specified QuickJS handle array.
+     * Pass user_ptr so the handle array stores pointers to user data. */
+    if (js_handle_array_add_js_object_ex(rt, user_ptr, js_gc_obj_type, array_type) < 0) {
         /* Failed to add - mark as freed and return NULL */
         hdr->size = 0;  /* Mark as freed */
         return NULL;
     }
     
-    LOG_INFO("gc_alloc_js_object_ex: SUCCESS ptr=%p total_size=%zu", user_ptr, total_size);
+    LOG_INFO("gc_alloc_js_object_ex: SUCCESS user_ptr=%p total_size=%zu", user_ptr, total_size);
     
     /* Update stats */
     g_gc.total_bytes += total_size;
     g_gc.bytes_allocated += total_size;
     update_malloc_state(total_size);
     
+    /* Return user_ptr for clean GC abstraction.
+     * Use gc_header(user_ptr) to access the GC header when needed. */
     return user_ptr;
 }
 
@@ -338,28 +343,31 @@ void *gc_realloc(void *ptr, size_t new_size) {
         return NULL;
     }
     
-    /* Get old info */
-    GCHeader *old_hdr = gc_header(ptr);
-    size_t old_user_size = old_hdr->size - sizeof(GCHeader);
+    /* ptr is hdr (not user_ptr). Get header info directly. */
+    GCHeader *old_hdr = (GCHeader*)ptr;
+    size_t old_total_size = old_hdr->size;
+    size_t old_user_size = old_total_size - sizeof(GCHeader);
     GCType type = old_hdr->type;
     GCHandle old_handle = old_hdr->handle;
-    size_t old_total_size = old_hdr->size;
     
-    /* Allocate new space */
-    void *new_ptr = gc_alloc(new_size, type);
-    if (!new_ptr) {
+    /* Allocate new space (returns hdr) */
+    void *new_hdr_ptr = gc_alloc(new_size, type);
+    if (!new_hdr_ptr) {
         return NULL;
     }
     
-    /* Copy data */
+    /* Copy user data (after header) */
     size_t copy_size = old_user_size < new_size ? old_user_size : new_size;
-    memcpy(new_ptr, ptr, copy_size);
+    memcpy((char*)new_hdr_ptr + sizeof(GCHeader), 
+           (char*)ptr + sizeof(GCHeader), 
+           copy_size);
     
     /* Update handle if present */
     if (old_handle != GC_HANDLE_NULL) {
-        GCHeader *new_hdr = gc_header(new_ptr);
+        GCHeader *new_hdr = (GCHeader*)new_hdr_ptr;
         new_hdr->handle = old_handle;
-        g_gc.handles[old_handle].ptr = new_ptr;
+        /* Store hdr in handle table, not user_ptr */
+        g_gc.handles[old_handle].ptr = new_hdr_ptr;
         g_gc.handles[old_handle].gen = g_gc.gc_count;
     }
     
@@ -374,7 +382,7 @@ void *gc_realloc(void *ptr, size_t new_size) {
     /* Mark old header as dead (size = 0 indicates dead) */
     old_hdr->size = 0;
     
-    return new_ptr;
+    return new_hdr_ptr;
 }
 
 void gc_free(void *ptr) {

@@ -407,9 +407,7 @@ typedef struct {
 } JSWeakRefHeader;
 
 typedef struct JSVarRef {
-    GCHeader header; /* must come first */
-    
-    /* Flags - previously bit-packed in union with header */
+    /* Flags */
     uint8_t is_detached;
     uint8_t is_lexical; /* only used with global variables */
     uint8_t is_const;   /* only used with global variables */
@@ -450,7 +448,6 @@ typedef uint128_t js_dlimb_t;
 #endif
 
 typedef struct JSBigInt {
-    GCHeader header; /* must come first, 32-bit */
     uint32_t len; /* number of limbs, >= 1 */
     js_limb_t tab[]; /* two's complement representation, always
                         normalized so that 'len' is the minimum
@@ -475,7 +472,6 @@ typedef enum {
 #define JS_INTERRUPT_COUNTER_INIT 10000
 
 struct JSContext {
-    GCHeader header; /* must come first */
     JSRuntime *rt;
     struct list_head link;
 
@@ -544,7 +540,6 @@ typedef enum {
 #define JS_ATOM_HASH_PRIVATE JS_ATOM_HASH_MASK
 
 struct JSString {
-    GCHeader header; /* must come first, 32-bit */
     uint32_t len : 31;
     uint8_t is_wide_char : 1; /* 0 = 8 bits, 1 = 16 bits characters */
     /* for JS_ATOM_TYPE_SYMBOL: hash = weakref_count, atom_type = 3,
@@ -563,7 +558,6 @@ struct JSString {
 };
 
 typedef struct JSStringRope {
-    GCHeader header; /* must come first, 32-bit */
     uint32_t len;
     uint8_t is_wide_char; /* 0 = 8 bits, 1 = 16 bits characters */
     uint8_t depth; /* max depth of the rope tree */
@@ -648,7 +642,6 @@ typedef enum JSFunctionKindEnum {
 } JSFunctionKindEnum;
 
 typedef struct JSFunctionBytecode {
-    GCHeader header; /* must come first */
     uint8_t js_mode;
     uint8_t has_prototype : 1; /* true if a prototype field is necessary */
     uint8_t has_simple_parameter_list : 1;
@@ -747,7 +740,6 @@ typedef struct JSGlobalObject {
 } JSGlobalObject;
 
 typedef struct JSAsyncFunctionState {
-    GCHeader header;
     JSValue this_val; /* 'this' argument */
     int argc; /* number of function arguments */
     BOOL throw_flag; /* used to throw an exception in JS_CallInternal() */
@@ -851,7 +843,6 @@ typedef enum {
 } JSModuleStatus;
 
 struct JSModuleDef {
-    GCHeader header; /* must come first */
     JSAtom module_name;
     struct list_head link;
 
@@ -939,7 +930,6 @@ typedef struct JSShapeProperty {
 struct JSShape {
     /* hash table of size hash_mask + 1 before the start of the
        structure (see prop_hash_end()). */
-    GCHeader header;
     /* true if the shape is inserted in the shape hash table. If not,
        JSShape.hash is not valid */
     uint8_t is_hashed;
@@ -954,11 +944,7 @@ struct JSShape {
 };
 
 struct JSObject {
-    GCHeader header;  /* GC metadata - must be first for unified GC */
-    
-    /* JS Object flags - previously bit-packed in union with header.
-     * Separated to avoid layout mismatch with GCHeader.
-     */
+    /* JS Object flags */
     uint16_t class_id;           /* see JS_CLASS_x */
     uint8_t is_std_array_prototype : 1;  /* TRUE if array prototype is "normal" */
     uint8_t extensible : 1;
@@ -1137,7 +1123,7 @@ static __maybe_unused void JS_DumpAtoms(JSRuntime *rt);
 static __maybe_unused void JS_DumpString(JSRuntime *rt, const JSString *p);
 static __maybe_unused void JS_DumpObjectHeader(JSRuntime *rt);
 static __maybe_unused void JS_DumpObject(JSRuntime *rt, JSObject *p);
-static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, GCHeader *p);
+static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, void *user_ptr);
 static __maybe_unused void JS_DumpAtom(JSContext *ctx, const char *str, JSAtom atom);
 static __maybe_unused void JS_DumpValueRT(JSRuntime *rt, const char *str, JSValueConst val);
 static __maybe_unused void JS_DumpValue(JSContext *ctx, const char *str, JSValueConst val);
@@ -1976,6 +1962,9 @@ static inline BOOL atom_is_free(uint32_t slot_value)
 }
 
 /* Helper to get atom pointer from atom_array slot using 1-based handle */
+/* Forward declaration - defined later */
+static inline BOOL js_handle_array_entry_is_valid(void *entry);
+
 static inline JSAtomStruct *js_atom_array_get(JSRuntime *rt, uint32_t atom_index)
 {
     uint32_t handle = rt->atom_array[atom_index];
@@ -1985,7 +1974,10 @@ static inline JSAtomStruct *js_atom_array_get(JSRuntime *rt, uint32_t atom_index
     uint32_t array_idx = handle - 1;
     if (array_idx >= rt->atom_handles.count)
         return NULL;
-    return (JSAtomStruct *)rt->atom_handles.handles[array_idx];
+    void *entry = rt->atom_handles.handles[array_idx];
+    if (!js_handle_array_entry_is_valid(entry))
+        return NULL;
+    return (JSAtomStruct *)entry;
 }
 
 /* Note: the string contents are uninitialized */
@@ -2027,11 +2019,11 @@ static inline void js_free_string(JSRuntime *rt, JSString *str)
     (void)str;
 }
 
-/* ASAN fix: Initialize the link field to prevent false positives */
+/* ASAN fix: Initialize the link field to prevent false positives.
+ * No longer needed since GCHeader is separate from JSString. */
 static inline void js_string_init_link(JSString *str)
 {
-    str->header.link.prev = NULL;
-    str->header.link.next = NULL;
+    (void)str;
 }
 
 void JS_SetRuntimeInfo(JSRuntime *rt, const char *s)
@@ -2061,7 +2053,7 @@ void JS_FreeRuntime(JSRuntime *rt)
     /* leaking objects */
     {
         BOOL header_done;
-        GCHeader *p;
+        void *user_ptr;
         int count;
 
         /* Mark all reachable objects from roots */
@@ -2069,14 +2061,14 @@ void JS_FreeRuntime(JSRuntime *rt)
 
         header_done = FALSE;
         for (i = 0; i < rt->gc_handles.count; i++) {
-            p = rt->gc_handles.handles[i];
-            if (js_handle_array_entry_is_valid(p) && p->mark) {
+            user_ptr = rt->gc_handles.handles[i];
+            if (js_handle_array_entry_is_valid(user_ptr) && gc_header(user_ptr)->mark) {
                 if (!header_done) {
                     printf("Object leaks:\n");
                     JS_DumpObjectHeader(rt);
                     header_done = TRUE;
                 }
-                JS_DumpGCObject(rt, p);
+                JS_DumpGCObject(rt, user_ptr);
             }
         }
 
@@ -2168,7 +2160,7 @@ void JS_FreeRuntime(JSRuntime *rt)
         JSAtomStruct *p = js_atom_array_get(rt, i);
         if (p) {
             /* Bug #1 fix: Check if already freed by GC (size == 0) */
-            if (p->header.size == 0) {
+            if (gc_header(p)->size == 0) {
                 /* Already freed - skip */
                 continue;
             }
@@ -2257,17 +2249,19 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     }
     
     QJS_LOGI("STEP1-malloc");
-    /* Use atomic allocation for context - adds to context_handles */
+    /* Use atomic allocation for context - adds to context_handles.
+     * Returns hdr which can be directly cast to JSContext* since JSContext starts with GCHeader. */
     ctx = gc_alloc_js_object_ex(sizeof(JSContext), JS_GC_OBJ_TYPE_JS_CONTEXT, rt, GC_HANDLE_ARRAY_CONTEXT);
     if (!ctx) {
         QJS_LOGE("STEP1: ctx is NULL after malloc!");
         return NULL;
     }
-    /* Zero the user data portion (past header) */
-    memset((char*)ctx + sizeof(GCHeader), 0, sizeof(JSContext) - sizeof(GCHeader));
     QJS_LOGI("STEP1: ctx=%p", (void*)ctx);
-    GCHeader *h = &ctx->header;
-    QJS_LOGI("STEP1: h=%p", (void*)h);
+    
+    /* Zero the entire struct - ctx is user_ptr (after header), no offset needed */
+    memset(ctx, 0, sizeof(JSContext));
+    QJS_LOGI("STEP1: &ctx->loaded_modules=%p", (void*)&ctx->loaded_modules);
+    QJS_LOGI("STEP1: ctx->loaded_modules.next=%p (should be NULL after memset)", (void*)ctx->loaded_modules.next);
     /* Object already registered with GC by gc_alloc_js_object_ex (in context_handles) */
     QJS_LOGI("STEP2-done");
 
@@ -2299,6 +2293,7 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     ctx->regexp_ctor = JS_NULL;
     ctx->promise_ctor = JS_NULL;
     init_list_head(&ctx->loaded_modules);
+    QJS_LOGI("STEP9.5: init_list_head done, loaded_modules.next=%p", (void*)ctx->loaded_modules.next);
 
     QJS_LOGI("STEP10");
     if (JS_AddIntrinsicBasicObjects(ctx)) {
@@ -2469,22 +2464,22 @@ static void JS_MarkContext(JSRuntime *rt, JSContext *ctx,
     QJS_LOGI("JS_MarkContext: array_shape=%p", (void*)array_shape);
     if (ctx->array_shape) {
         QJS_LOGI("JS_MarkContext: marking array_shape");
-        mark_func(rt, &ctx->array_shape->header);
+        mark_func(rt, ctx->array_shape);
     }
 
     if (ctx->arguments_shape) {
         QJS_LOGI("JS_MarkContext: marking arguments_shape");
-        mark_func(rt, &ctx->arguments_shape->header);
+        mark_func(rt, ctx->arguments_shape);
     }
 
     if (ctx->mapped_arguments_shape)
-        mark_func(rt, &ctx->mapped_arguments_shape->header);
+        mark_func(rt, ctx->mapped_arguments_shape);
 
     if (ctx->regexp_shape)
-        mark_func(rt, &ctx->regexp_shape->header);
+        mark_func(rt, ctx->regexp_shape);
 
     if (ctx->regexp_result_shape)
-        mark_func(rt, &ctx->regexp_result_shape->header);
+        mark_func(rt, ctx->regexp_result_shape);
 }
 
 void JS_FreeContext(JSContext *ctx)
@@ -2503,13 +2498,12 @@ void JS_FreeContext(JSContext *ctx)
 #ifdef DUMP_OBJECTS
     {
         int i;
-        GCHeader *p;
         printf("JSObjects: {\n");
         JS_DumpObjectHeader(ctx->rt);
         for (i = 0; i < rt->gc_handles.count; i++) {
-            p = rt->gc_handles.handles[i];
-            if (js_handle_array_entry_is_valid(p))
-                JS_DumpGCObject(rt, p);
+            void *user_ptr = rt->gc_handles.handles[i];
+            if (js_handle_array_entry_is_valid(user_ptr))
+                JS_DumpGCObject(rt, user_ptr);
         }
         printf("}\n");
     }
@@ -2554,7 +2548,7 @@ void JS_FreeContext(JSContext *ctx)
 
     /* Remove from handle array (replaces context_list linked list) */
     js_handle_array_remove(&rt->context_handles, ctx);
-    remove_gc_object(&ctx->header);
+    remove_gc_object(ctx);
     js_free_rt(ctx->rt, ctx);
 }
 
@@ -2805,7 +2799,7 @@ static int JS_ResizeAtomHash(JSRuntime *rt, int new_hash_size)
 static int js_handle_array_init(JSRuntime *rt, JSHandleArray *arr)
 {
     size_t alloc_size = sizeof(void*) * JS_MAX_HANDLE_ARRAY_SIZE;
-    arr->handles = js_malloc_rt(rt, alloc_size);
+    arr->handles = js_mallocz_rt(rt, alloc_size);
     QJS_LOGI("js_handle_array_init: handles=%p, size=%zu", arr->handles, alloc_size);
     if (!arr->handles) {
         QJS_LOGE("js_handle_array_init: malloc failed for size %zu", alloc_size);
@@ -3428,11 +3422,11 @@ static void JS_FreeAtomStruct(JSRuntime *rt, uint32_t i, JSAtomStruct *p)
         p1 = js_atom_array_get(rt, idx);
         if (p1 == p) {
             rt->atom_hash[h0] = p1->hash_next;
-        } else {
+        } else if (p1 != NULL) {
             for(;;) {
                 assert(idx != 0);
                 p0 = p1;
-                idx = p1->hash_next;
+                idx = p0->hash_next;
                 p1 = js_atom_array_get(rt, idx);
                 if (p1 == p) {
                     p0->hash_next = p1->hash_next;
@@ -5368,10 +5362,9 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
         return NULL;
     
     sh_alloc1 = get_alloc_from_shape(sh1);
-    /* Copy everything except the header (which was initialized by gc_alloc_js_object) */
-    memcpy((char*)sh_alloc + sizeof(GCHeader), 
-           (char*)sh_alloc1 + sizeof(GCHeader), 
-           size - sizeof(GCHeader));
+    /* Copy shape data. Both allocations return user_ptr (after GCHeader).
+     * The header was initialized by gc_alloc_js_object separately. */
+    memcpy(sh_alloc, sh_alloc1, size);
     
     sh = get_shape_from_alloc(sh_alloc, hash_size);
     /* Object already registered with GC by gc_alloc_js_object */
@@ -5407,7 +5400,7 @@ static void js_free_shape0(JSRuntime *rt, JSShape *sh)
         JS_FreeAtomRT(rt, pr->atom);
         pr++;
     }
-    remove_gc_object(&sh->header);
+    remove_gc_object(sh);
     js_free_rt(rt, get_alloc_from_shape(sh));
 }
 
@@ -5687,7 +5680,7 @@ static __maybe_unused void JS_DumpShapes(JSRuntime *rt)
     /* dump non-hashed shapes */
     for (i = 0; i < rt->gc_handles.count; i++) {
         gp = rt->gc_handles.handles[i];
-        if (js_handle_array_entry_is_valid(gp) && gp->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
+        if (js_handle_array_entry_is_valid(gp) && gc_header(gp)->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
             p = (JSObject *)gp;
             if (!p->shape->is_hashed) {
                 JS_DumpShape(rt, -1, p->shape);
@@ -6194,7 +6187,7 @@ static void js_autoinit_free(JSRuntime *rt, JSProperty *pr)
 static void js_autoinit_mark(JSRuntime *rt, JSProperty *pr,
                              JS_MarkFunc *mark_func)
 {
-    mark_func(rt, &js_autoinit_get_realm(pr)->header);
+    mark_func(rt, js_autoinit_get_realm(pr));
 }
 
 static void free_property(JSRuntime *rt, JSProperty *pr, int prop_flags)
@@ -6276,7 +6269,7 @@ static void free_var_ref(JSRuntime *rt, JSVarRef *var_ref)
                 async_func_free(rt, async_func);
             }
         }
-        remove_gc_object(&var_ref->header);
+        remove_gc_object(var_ref);
         js_free_rt(rt, var_ref);
     }
 }
@@ -6331,7 +6324,7 @@ static void js_c_function_mark(JSRuntime *rt, JSValueConst val,
     JSObject *p = JS_VALUE_GET_OBJ(val);
 
     if (p->u.cfunc.realm)
-        mark_func(rt, &p->u.cfunc.realm->header);
+        mark_func(rt, p->u.cfunc.realm);
 }
 
 static void js_bytecode_function_finalizer(JSRuntime *rt, JSValue val)
@@ -6374,7 +6367,7 @@ static void js_bytecode_function_mark(JSRuntime *rt, JSValueConst val,
             for(i = 0; i < b->closure_var_count; i++) {
                 JSVarRef *var_ref = var_refs[i];
                 if (var_ref) {
-                    mark_func(rt, &var_ref->header);
+                    mark_func(rt, var_ref);
                 }
             }
         }
@@ -6470,18 +6463,18 @@ static void free_object(JSRuntime *rt, JSObject *p)
     p->u.func.var_refs = NULL;
     p->u.func.home_object = NULL;
 
-    remove_gc_object(&p->header);
+    remove_gc_object(p);
     /* keep the object structure in case there are weak references to it */
     if (p->weakref_count == 0) {
         js_free_rt(rt, p);
     } else {
-        p->header.mark = 0; /* reset the mark so that the weakref can be freed */
+        gc_header(p)->mark = 0; /* reset the mark so that the weakref can be freed */
     }
 }
 
 static void free_string(JSRuntime *rt, JSString *str)
 {
-    remove_gc_object(&str->header);
+    remove_gc_object(str);
 #ifdef DUMP_LEAKS
     list_del(&str->link);
 #endif
@@ -6490,31 +6483,32 @@ static void free_string(JSRuntime *rt, JSString *str)
 
 static void free_bigint(JSRuntime *rt, JSBigInt *p)
 {
-    remove_gc_object(&p->header);
+    remove_gc_object(p);
     js_free_rt(rt, p);
 }
 
 static void free_string_rope(JSRuntime *rt, JSStringRope *r)
 {
-    remove_gc_object(&r->header);
+    remove_gc_object(r);
     /* left and right values are freed by GC when unreachable */
     js_free_rt(rt, r);
 }
 
-static void free_gc_object(JSRuntime *rt, GCHeader *gp)
+static void free_gc_object(JSRuntime *rt, void *user_ptr)
 {
+    GCHeader *gp = gc_header(user_ptr);
     switch(gp->gc_obj_type) {
     case JS_GC_OBJ_TYPE_JS_OBJECT:
-        free_object(rt, (JSObject *)gp);
+        free_object(rt, (JSObject *)user_ptr);
         break;
     case JS_GC_OBJ_TYPE_FUNCTION_BYTECODE:
-        free_function_bytecode(rt, (JSFunctionBytecode *)gp);
+        free_function_bytecode(rt, (JSFunctionBytecode *)user_ptr);
         break;
     case JS_GC_OBJ_TYPE_ASYNC_FUNCTION:
-        __async_func_free(rt, (JSAsyncFunctionState *)gp);
+        __async_func_free(rt, (JSAsyncFunctionState *)user_ptr);
         break;
     case JS_GC_OBJ_TYPE_MODULE:
-        js_free_module_def(rt, (JSModuleDef *)gp);
+        js_free_module_def(rt, (JSModuleDef *)user_ptr);
         break;
     case JS_GC_OBJ_TYPE_JS_STRING:
         free_string(rt, (JSString *)gp);
@@ -6587,10 +6581,11 @@ static GCHandle g_next_handle = 1;
  */
 int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_type, GCHandleArrayType array_type)
 {
-    GCHeader *h = (GCHeader *)obj;
+    /* obj is user_ptr (after GCHeader). Get header via gc_header(). */
+    GCHeader *h = gc_header(obj);
     JSHandleArray *arr;
     
-    if (!rt || !h) {
+    if (!rt || !obj) {
         return -1;
     }
     
@@ -6623,8 +6618,9 @@ int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_typ
             return -1;
     }
     
-    /* Add to the selected handle array */
-    if (js_handle_array_add(rt, arr, h) < 0) {
+    /* Add to the selected handle array.
+     * Store user_ptr (obj) so retrieval gives the correct pointer for struct access. */
+    if (js_handle_array_add(rt, arr, obj) < 0) {
         QJS_LOGE("js_handle_array_add_js_object_ex: failed to add to handle array type %d", array_type);
         return -1;
     }
@@ -6749,19 +6745,20 @@ void JS_MarkValue(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
     }
 }
 
-static void mark_children(JSRuntime *rt, GCHeader *gp,
+static void mark_children(JSRuntime *rt, void *user_ptr,
                           JS_MarkFunc *mark_func)
 {
-    QJS_LOGI("mark_children: ENTER gp=%p gc_obj_type=%u", (void*)gp, (unsigned)gp->gc_obj_type);
+    GCHeader *gp = gc_header(user_ptr);
+    QJS_LOGI("mark_children: ENTER user_ptr=%p gc_obj_type=%u", (void*)user_ptr, (unsigned)gp->gc_obj_type);
     switch(gp->gc_obj_type) {
     case JS_GC_OBJ_TYPE_JS_OBJECT:
         {
-            JSObject *p = (JSObject *)gp;
+            JSObject *p = (JSObject *)user_ptr;
             JSShapeProperty *prs;
             JSShape *sh;
             int i;
             sh = p->shape;
-            mark_func(rt, &sh->header);
+            mark_func(rt, sh);
             /* mark all the fields */
             prs = get_shape_prop(sh);
             for(i = 0; i < sh->prop_count; i++) {
@@ -6770,13 +6767,13 @@ static void mark_children(JSRuntime *rt, GCHeader *gp,
                     if (prs->flags & JS_PROP_TMASK) {
                         if ((prs->flags & JS_PROP_TMASK) == JS_PROP_GETSET) {
                             if (pr->u.getset.getter)
-                                mark_func(rt, &pr->u.getset.getter->header);
+                                mark_func(rt, pr->u.getset.getter);
                             if (pr->u.getset.setter)
-                                mark_func(rt, &pr->u.getset.setter->header);
+                                mark_func(rt, pr->u.getset.setter);
                         } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
                             /* Note: the tag does not matter
                                provided it is a GC object */
-                            mark_func(rt, &pr->u.var_ref->header);
+                            mark_func(rt, pr->u.var_ref);
                         } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_AUTOINIT) {
                             js_autoinit_mark(rt, pr, mark_func);
                         }
@@ -6798,32 +6795,32 @@ static void mark_children(JSRuntime *rt, GCHeader *gp,
     case JS_GC_OBJ_TYPE_FUNCTION_BYTECODE:
         /* the template objects can be part of a cycle */
         {
-            JSFunctionBytecode *b = (JSFunctionBytecode *)gp;
+            JSFunctionBytecode *b = (JSFunctionBytecode *)user_ptr;
             int i;
             for(i = 0; i < b->cpool_count; i++) {
                 JS_MarkValue(rt, b->cpool[i], mark_func);
             }
             if (b->realm)
-                mark_func(rt, &b->realm->header);
+                mark_func(rt, b->realm);
         }
         break;
     case JS_GC_OBJ_TYPE_VAR_REF:
         {
-            JSVarRef *var_ref = (JSVarRef *)gp;
+            JSVarRef *var_ref = (JSVarRef *)user_ptr;
             if (var_ref->is_detached) {
                 JS_MarkValue(rt, *var_ref->pvalue, mark_func);
             } else {
                 JSStackFrame *sf = var_ref->stack_frame;
                 if (sf->js_mode & JS_MODE_ASYNC) {
                     JSAsyncFunctionState *async_func = container_of(sf, JSAsyncFunctionState, frame);
-                    mark_func(rt, &async_func->header);
+                    mark_func(rt, async_func);
                 }
             }
         }
         break;
     case JS_GC_OBJ_TYPE_ASYNC_FUNCTION:
         {
-            JSAsyncFunctionState *s = (JSAsyncFunctionState *)gp;
+            JSAsyncFunctionState *s = (JSAsyncFunctionState *)user_ptr;
             JSStackFrame *sf = &s->frame;
             JSValue *sp;
 
@@ -6846,22 +6843,22 @@ static void mark_children(JSRuntime *rt, GCHeader *gp,
         break;
     case JS_GC_OBJ_TYPE_SHAPE:
         {
-            JSShape *sh = (JSShape *)gp;
+            JSShape *sh = (JSShape *)user_ptr;
             QJS_LOGI("mark_children: SHAPE sh=%p, proto=%p", (void*)sh, (void*)sh->proto);
             if (sh->proto != NULL) {
-                mark_func(rt, &sh->proto->header);
+                mark_func(rt, sh->proto);
             }
         }
         break;
     case JS_GC_OBJ_TYPE_JS_CONTEXT:
         {
-            JSContext *ctx = (JSContext *)gp;
+            JSContext *ctx = (JSContext *)user_ptr;
             JS_MarkContext(rt, ctx, mark_func);
         }
         break;
     case JS_GC_OBJ_TYPE_MODULE:
         {
-            JSModuleDef *m = (JSModuleDef *)gp;
+            JSModuleDef *m = (JSModuleDef *)user_ptr;
             js_mark_module_def(rt, m, mark_func);
         }
         break;
@@ -6889,6 +6886,18 @@ static void gc_mark_recursive(JSRuntime *rt, GCHeader *p)
     QJS_LOGI("gc_mark_recursive: ENTER p=%p", (void*)p);
     if (!p) {
         QJS_LOGE("gc_mark_recursive: p is NULL!");
+        return;
+    }
+    /* Defensive check: p must be in valid GC heap range or a valid system pointer */
+    /* Reject obviously invalid pointers (NULL, very low addresses, or clearly invalid high addresses) */
+    /* ARM64 Android can use addresses up to 0xFF... so we only reject obviously bad ones */
+    if ((uintptr_t)p < 0x1000 || (uintptr_t)p > 0xFFFFFFFFFFFFF000) {
+        QJS_LOGE("gc_mark_recursive: p=%p is outside valid address range, skipping", (void*)p);
+        return;
+    }
+    /* Check alignment - GCHeader should be at least 8-byte aligned */
+    if ((uintptr_t)p & 0x7) {
+        QJS_LOGE("gc_mark_recursive: p=%p is not 8-byte aligned, skipping", (void*)p);
         return;
     }
     /* Skip objects that haven't been fully initialized yet */
@@ -6926,14 +6935,16 @@ static void gc_mark_roots(JSRuntime *rt)
     }
 
     /* Mark from contexts (roots) */
+    QJS_LOGI("gc_mark_roots: context_handles.count=%u", rt->context_handles.count);
     for (i = 0; i < rt->context_handles.count; i++) {
-        JSContext *ctx = rt->context_handles.handles[i];
-        QJS_LOGI("gc_mark_roots: marking context entry %d, ctx=%p", i, (void*)ctx);
-        if (!js_handle_array_entry_is_valid(ctx)) {
+        GCHeader *ctx_hdr = rt->context_handles.handles[i];
+        QJS_LOGI("gc_mark_roots: marking context entry %d, ctx_hdr=%p", i, (void*)ctx_hdr);
+        if (!js_handle_array_entry_is_valid(ctx_hdr)) {
             QJS_LOGI("gc_mark_roots: context entry %d invalid, skipping", i);
             continue;
         }
-        gc_mark_recursive(rt, &ctx->header);
+        QJS_LOGI("gc_mark_roots: ctx_hdr->gc_obj_type=%d", ctx_hdr->gc_obj_type);
+        gc_mark_recursive(rt, ctx_hdr);
     }
 
     /* Mark the runtime's current_exception */
@@ -6952,7 +6963,7 @@ static void gc_mark_roots(JSRuntime *rt)
     for (i = 0; i < rt->atom_handles.count; i++) {
         JSAtomStruct *p = rt->atom_handles.handles[i];
         if (js_handle_array_entry_is_valid(p)) {
-            gc_mark_recursive(rt, &p->header);
+            gc_mark_recursive(rt, p);
         }
     }
 }
@@ -6961,47 +6972,51 @@ static void gc_mark_roots(JSRuntime *rt)
 static void gc_sweep(JSRuntime *rt)
 {
     int i;
-    GCHeader *p;
+    void *user_ptr;
+    GCHeader *hdr;
 
     QJS_LOGI("gc_sweep: ENTER, gc_handles.count=%d", rt->gc_handles.count);
     rt->gc_phase = JS_GC_PHASE_REMOVE_CYCLES;
 
     /* Iterate over gc_handles and free unmarked objects */
     for (i = 0; i < rt->gc_handles.count; i++) {
-        p = rt->gc_handles.handles[i];
-        QJS_LOGI("gc_sweep: entry %d, p=%p", i, (void*)p);
+        user_ptr = rt->gc_handles.handles[i];
+        QJS_LOGI("gc_sweep: entry %d, user_ptr=%p", i, (void*)user_ptr);
         
-        if (!js_handle_array_entry_is_valid(p)) {
+        if (!js_handle_array_entry_is_valid(user_ptr)) {
             QJS_LOGI("gc_sweep: entry %d invalid, skipping", i);
             continue;
         }
         
-        /* Safety check: p must point to valid memory in GC heap */
-        if (!gc_ptr_is_valid(p)) {
-            QJS_LOGE("gc_sweep: entry %d p=%p not in GC heap, marking freed", i, (void*)p);
+        /* Get header from user_ptr */
+        hdr = gc_header(user_ptr);
+        
+        /* Safety check: user_ptr must point to valid memory in GC heap */
+        if (!gc_ptr_is_valid(user_ptr)) {
+            QJS_LOGE("gc_sweep: entry %d user_ptr=%p not in GC heap, marking freed", i, (void*)user_ptr);
             rt->gc_handles.handles[i] = JS_HANDLE_FREED;
             continue;
         }
         
         /* Additional safety: check minimum object alignment (8-byte for 64-bit) */
-        if ((uintptr_t)p & 0x7) {
-            QJS_LOGE("gc_sweep: entry %d p=%p not 8-byte aligned, marking freed", i, (void*)p);
+        if ((uintptr_t)user_ptr & 0x7) {
+            QJS_LOGE("gc_sweep: entry %d user_ptr=%p not 8-byte aligned, marking freed", i, (void*)user_ptr);
             rt->gc_handles.handles[i] = JS_HANDLE_FREED;
             continue;
         }
         
-        QJS_LOGI("gc_sweep: entry %d, p->size=%u", i, (unsigned)p->size);
+        QJS_LOGI("gc_sweep: entry %d, hdr->size=%u", i, (unsigned)hdr->size);
         
         /* Bug #4 fix: Check if already freed via gc_free() (size == 0) */
-        if (p->size == 0) {
+        if (hdr->size == 0) {
             /* Object was already freed, just mark handle entry */
             rt->gc_handles.handles[i] = JS_HANDLE_FREED;
             continue;
         }
         
-        if (!p->mark) {
+        if (!hdr->mark) {
             /* Object is unreachable - free it and mark entry as freed */
-            free_gc_object(rt, p);
+            free_gc_object(rt, user_ptr);
             rt->gc_handles.handles[i] = JS_HANDLE_FREED;
         }
     }
@@ -7471,7 +7486,7 @@ void JS_DumpMemoryUsage(FILE *fp, const JSMemoryUsage *s, JSRuntime *rt)
             for (i = 0; i < rt->gc_handles.count; i++) {
                 GCHeader *gp = rt->gc_handles.handles[i];
                 JSObject *p;
-                if (js_handle_array_entry_is_valid(gp) && gp->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
+                if (js_handle_array_entry_is_valid(gp) && gc_header(gp)->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
                     p = (JSObject *)gp;
                     obj_classes[min_uint32(p->class_id, JS_CLASS_INIT_COUNT)]++;
                 }
@@ -14735,15 +14750,16 @@ static __maybe_unused void JS_DumpObject(JSRuntime *rt, JSObject *p)
     printf("\n");
 }
 
-static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, GCHeader *p)
+static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, void *user_ptr)
 {
-    if (p->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
-        JS_DumpObject(rt, (JSObject *)p);
+    GCHeader *gp = gc_header(user_ptr);
+    if (gp->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
+        JS_DumpObject(rt, (JSObject *)user_ptr);
     } else {
         printf("%14p %4d ",
-               (void *)p,
+               (void *)user_ptr,
                0);
-        switch(p->gc_obj_type) {
+        switch(gp->gc_obj_type) {
         case JS_GC_OBJ_TYPE_FUNCTION_BYTECODE:
             printf("[function bytecode]");
             break;
@@ -14763,7 +14779,7 @@ static __maybe_unused void JS_DumpGCObject(JSRuntime *rt, GCHeader *p)
             printf("[module]");
             break;
         default:
-            printf("[unknown %d]", p->gc_obj_type);
+            printf("[unknown %d]", gp->gc_obj_type);
             break;
         }
         printf("\n");
@@ -16442,7 +16458,7 @@ static void js_mapped_arguments_mark(JSRuntime *rt, JSValueConst val,
     int i;
     
     for(i = 0; i < p->u.array.count; i++)
-        mark_func(rt, &var_refs[i]->header);
+        mark_func(rt, var_refs[i]);
 }
 
 /* legacy arguments object: add references to the function arguments */
@@ -20966,8 +20982,8 @@ static JSAsyncFunctionState *async_func_init(JSContext *ctx,
     s = gc_alloc_js_object(async_func_size, JS_GC_OBJ_TYPE_ASYNC_FUNCTION, ctx->rt);
     if (!s)
         return NULL;
-    /* gc_alloc_js_object doesn't zero memory, so we need to memset */
-    memset((char*)s + sizeof(GCHeader), 0, async_func_size - sizeof(GCHeader));
+    /* gc_alloc_js_object returns user_ptr. Zero entire struct. */
+    memset(s, 0, async_func_size);
 
     sf = &s->frame;
     sf->js_mode = b->js_mode | JS_MODE_ASYNC;
@@ -21055,11 +21071,14 @@ static void __async_func_free(JSRuntime *rt, JSAsyncFunctionState *s)
     
     
 
-    remove_gc_object(&s->header);
+    remove_gc_object(s);
     /* ASAN fix: Skip linked list operations */
     /*
     if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES ) {
-        list_add_tail(&s->header.link, &rt->gc_zero_ref_count_list);
+        gc_header(s)->link.next = &rt->gc_zero_ref_count_list;
+        gc_header(s)->link.prev = rt->gc_zero_ref_count_list.prev;
+        rt->gc_zero_ref_count_list.prev->next = &gc_header(s)->link;
+        rt->gc_zero_ref_count_list.prev = &gc_header(s)->link;
     } else {
     */
     js_free_rt(rt, s);
@@ -21122,7 +21141,7 @@ static void js_generator_mark(JSRuntime *rt, JSValueConst val,
 
     if (!s || !s->func_state)
         return;
-    mark_func(rt, &s->func_state->header);
+    mark_func(rt, s->func_state);
 }
 
 /* XXX: use enum */
@@ -21264,7 +21283,7 @@ static void js_async_function_resolve_mark(JSRuntime *rt, JSValueConst val,
     JSObject *p = JS_VALUE_GET_OBJ(val);
     JSAsyncFunctionState *s = p->u.async_function_data;
     if (s) {
-        mark_func(rt, &s->header);
+        mark_func(rt, s);
     }
 }
 
@@ -21468,7 +21487,7 @@ static void js_async_generator_mark(JSRuntime *rt, JSValueConst val,
             JS_MarkValue(rt, req->resolving_funcs[1], mark_func);
         }
         if (s->func_state) {
-            mark_func(rt, &s->func_state->header);
+            mark_func(rt, s->func_state);
         }
     }
 }
@@ -29887,7 +29906,8 @@ static JSModuleDef *js_new_module_def(JSContext *ctx, JSAtom name)
         JS_FreeAtom(ctx, name);
         return NULL;
     }
-    /* gc_alloc_js_object doesn't zero memory */
+    /* gc_alloc_js_object returns user_ptr. Zero entire struct. */
+    memset(m, 0, sizeof(*m));
     m->module_name = name;
     m->module_ns = JS_UNDEFINED;
     m->func_obj = JS_UNDEFINED;
@@ -29915,7 +29935,7 @@ static void js_mark_module_def(JSRuntime *rt, JSModuleDef *m,
         JSExportEntry *me = &m->export_entries[i];
         if (me->export_type == JS_EXPORT_TYPE_LOCAL &&
             me->u.local.var_ref) {
-            mark_func(rt, &me->u.local.var_ref->header);
+            mark_func(rt, me->u.local.var_ref);
         }
     }
 
@@ -29973,7 +29993,7 @@ static void js_free_module_def(JSRuntime *rt, JSModuleDef *m)
     if (m->link.next) {
         list_del(&m->link);
     }
-    remove_gc_object(&m->header);
+    remove_gc_object(m);
     /* ASAN fix: Skip linked list operations */
     js_free_rt(rt, m);
 }
@@ -36355,8 +36375,8 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     b = gc_alloc_js_object(function_size, JS_GC_OBJ_TYPE_FUNCTION_BYTECODE, ctx->rt);
     if (!b)
         goto fail;
-    /* gc_alloc_js_object doesn't zero memory */
-    memset((char*)b + sizeof(GCHeader), 0, function_size - sizeof(GCHeader));
+    /* gc_alloc_js_object returns user_ptr. Zero entire struct. */
+    memset(b, 0, function_size);
     
     b->byte_code_buf = (void *)((uint8_t*)b + byte_code_offset);
     b->byte_code_len = fd->byte_code.size;
@@ -36536,7 +36556,7 @@ static void free_function_bytecode(JSRuntime *rt, JSFunctionBytecode *b)
         js_free_rt(rt, b->debug.source);
     }
 
-    remove_gc_object(&b->header);
+    remove_gc_object(b);
     /* ASAN fix: Skip linked list operations */
     js_free_rt(rt, b);
 }
@@ -39029,8 +39049,9 @@ static JSValue JS_ReadFunctionTag(BCReaderState *s)
     b = gc_alloc_js_object(function_size, JS_GC_OBJ_TYPE_FUNCTION_BYTECODE, ctx->rt);
     if (!b)
         return JS_EXCEPTION;
-    /* gc_alloc_js_object doesn't zero memory */
-    memset((char*)b + sizeof(GCHeader), 0, function_size - sizeof(GCHeader));
+    /* gc_alloc_js_object doesn't zero memory.
+     * Note: b already points to user data (after GCHeader) */
+    memset((char*)b, 0, function_size - sizeof(GCHeader));
 
     memcpy(b, &bc, offsetof(JSFunctionBytecode, debug));
     
@@ -39757,18 +39778,36 @@ static JSAtom find_atom(JSContext *ctx, const char *name)
             QJS_LOGE("find_atom: atom_array is NULL!");
             return JS_ATOM_NULL;
         }
+        QJS_LOGI("find_atom: searching for symbol '%s' (len=%d) range=[%d, %d)", name, len, JS_ATOM_Symbol_toPrimitive, JS_ATOM_END);
         for(atom = JS_ATOM_Symbol_toPrimitive; atom < JS_ATOM_END; atom++) {
             JSAtomStruct *p = js_atom_array_get(ctx->rt, atom);
-            if (!p) continue;  /* Skip null atoms */
+            if (!p) {
+                QJS_LOGI("find_atom: atom %d is NULL", atom);
+                continue;  /* Skip null atoms */
+            }
             if ((uintptr_t)p < 0x10000) {
                 QJS_LOGE("find_atom: CORRUPT atom %d, p=%p (atom_array=%p)", atom, p, ctx->rt->atom_array);
                 return JS_ATOM_NULL;
             }
             JSString *str = p;
+            QJS_LOGI("find_atom: atom %d: type=%d len=%d is_wide=%d str8=%p", atom, str->atom_type, str->len, str->is_wide_char, str->u.str8);
             /* Check if 8-bit string and lengths match */
             if (!str->is_wide_char && str->len == len) {
+                /* Print full hex dump */
+                char atom_hex[64], name_hex[64];
+                int pos, max_pos = len < 16 ? len : 16;
+                if (max_pos > sizeof(atom_hex)/3 - 1) max_pos = sizeof(atom_hex)/3 - 1;
+                for(pos=0; pos<max_pos; pos++) {
+                    snprintf(atom_hex+pos*3, 4, "%02x ", str->u.str8[pos]);
+                    snprintf(name_hex+pos*3, 4, "%02x ", (unsigned char)name[pos]);
+                }
+                atom_hex[pos*3] = 0; name_hex[pos*3] = 0;
+                int cmp = memcmp(str->u.str8, name, len);
+                QJS_LOGI("find_atom: atom %d len=%d cmp=%d", atom, str->len, cmp);
+                QJS_LOGI("find_atom: atom hex: %s", atom_hex);
+                QJS_LOGI("find_atom: name hex: %s", name_hex);
                 /* Safe to access str8 */
-                if (!memcmp(str->u.str8, name, len))
+                if (cmp == 0)
                     return JS_DupAtom(ctx, atom);
             }
         }
@@ -39982,6 +40021,7 @@ int JS_SetPropertyFunctionList(JSContext *ctx, JSValueConst obj,
                                const JSCFunctionListEntry *tab, int len)
 {
     int i, ret;
+    QJS_LOGI("JS_SetPropertyFunctionList: START len=%d", len);
     for(i = 0; i < len; i++) {
         const JSCFunctionListEntry *e = &tab[i];
         QJS_LOGE("JS_SetProp: [%d/%d] name='%s'", i, len, e->name);
@@ -40094,6 +40134,8 @@ static JSValue JS_NewCConstructor(JSContext *ctx, int class_id, const char *name
     JSValue ctor = JS_UNDEFINED, proto, parent_proto;
     int proto_class_id, proto_flags, ctor_flags;
 
+    QJS_LOGI("JS_NewCConstructor: START name=%s class_id=%d", name, class_id);
+
     proto_flags = 0;
     if (flags & JS_NEW_CTOR_READONLY) {
         ctor_flags = JS_PROP_CONFIGURABLE;
@@ -40106,8 +40148,10 @@ static JSValue JS_NewCConstructor(JSContext *ctx, int class_id, const char *name
         parent_ctor = ctx->function_proto;
     } else {
         parent_proto = JS_GetProperty(ctx, parent_ctor, JS_ATOM_prototype);
-        if (JS_IsException(parent_proto))
+        if (JS_IsException(parent_proto)) {
+            QJS_LOGE("JS_NewCConstructor: parent_proto exception for %s", name);
             return JS_EXCEPTION;
+        }
     }
     
     if (flags & JS_NEW_CTOR_PROTO_EXIST) {
@@ -40118,33 +40162,47 @@ static JSValue JS_NewCConstructor(JSContext *ctx, int class_id, const char *name
         else
             proto_class_id = JS_CLASS_OBJECT;
         /* one additional field: constructor */
+        QJS_LOGI("JS_NewCConstructor: Creating proto for %s...", name);
         proto = JS_NewObjectProtoClassAlloc(ctx, parent_proto, proto_class_id,
                                             n_proto_fields + 1);
-        if (JS_IsException(proto))
+        if (JS_IsException(proto)) {
+            QJS_LOGE("JS_NewCConstructor: proto creation failed for %s", name);
             goto fail;
+        }
         if (class_id >= 0)
             ctx->class_proto[class_id] = proto;
     }
-    if (JS_SetPropertyFunctionList(ctx, proto, proto_fields, n_proto_fields))
+    QJS_LOGI("JS_NewCConstructor: Setting proto properties for %s...", name);
+    if (JS_SetPropertyFunctionList(ctx, proto, proto_fields, n_proto_fields)) {
+        QJS_LOGE("JS_NewCConstructor: proto fields failed for %s", name);
         goto fail;
+    }
 
     /* additional fields: name, length, prototype */
+    QJS_LOGI("JS_NewCConstructor: Creating ctor function for %s...", name);
     ctor = JS_NewCFunction3(ctx, func, name, length, cproto, magic, parent_ctor,
                             n_ctor_fields + 3);
-    if (JS_IsException(ctor))
+    if (JS_IsException(ctor)) {
+        QJS_LOGE("JS_NewCConstructor: ctor function failed for %s", name);
         goto fail;
-    if (JS_SetPropertyFunctionList(ctx, ctor, ctor_fields, n_ctor_fields))
+    }
+    QJS_LOGI("JS_NewCConstructor: Setting ctor properties for %s...", name);
+    if (JS_SetPropertyFunctionList(ctx, ctor, ctor_fields, n_ctor_fields)) {
+        QJS_LOGE("JS_NewCConstructor: ctor fields failed for %s", name);
         goto fail;
+    }
     if (!(flags & JS_NEW_CTOR_NO_GLOBAL)) {
+        QJS_LOGI("JS_NewCConstructor: Defining global property for %s...", name);
         if (JS_DefinePropertyValueStr(ctx, ctx->global_obj, name,
                                       ctor,
-                                      JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE) < 0)
+                                      JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE) < 0) {
+            QJS_LOGE("JS_NewCConstructor: global property failed for %s", name);
             goto fail;
+        }
     }
     JS_SetConstructor2(ctx, ctor, proto, proto_flags, ctor_flags);
 
-    
-    
+    QJS_LOGI("JS_NewCConstructor: SUCCESS for %s", name);
     return ctor;
  fail:
     
@@ -51565,7 +51623,7 @@ static void js_weakref_free(JSRuntime *rt, JSValue val)
            it is about to be freed in a cycle or in
            free_zero_refcount() */
         if (p->weakref_count == 0  &&
-            p->header.mark == 0) {
+            gc_header(p)->mark == 0) {
             js_free_rt(rt, p);
         }
     } else if (JS_VALUE_GET_TAG(val) == JS_TAG_SYMBOL) {
@@ -56245,20 +56303,32 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
     QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating global_obj...");
     ctx->global_obj = JS_NewObjectProtoClassAlloc(ctx, ctx->class_proto[JS_CLASS_OBJECT],
                                                   JS_CLASS_GLOBAL_OBJECT, 64);
-    if (JS_IsException(ctx->global_obj))
+    if (JS_IsException(ctx->global_obj)) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: global_obj creation failed!");
         return -1;
+    }
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: global_obj created");
     {
         JSObject *p;
         obj = JS_NewObjectProtoClassAlloc(ctx, JS_NULL, JS_CLASS_OBJECT, 4);
+        if (JS_IsException(obj)) {
+            QJS_LOGE("JS_AddIntrinsicBasicObjects: uninitialized_vars creation failed!");
+            return -1;
+        }
         p = JS_VALUE_GET_OBJ(ctx->global_obj);
         p->u.global_object.uninitialized_vars = obj;
     }
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: uninitialized_vars set");
     ctx->global_var_obj = JS_NewObjectProtoClassAlloc(ctx, JS_NULL,
                                                       JS_CLASS_OBJECT, 16);
-    if (JS_IsException(ctx->global_var_obj))
+    if (JS_IsException(ctx->global_var_obj)) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: global_var_obj creation failed!");
         return -1;
+    }
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: global_var_obj created");
 
     /* Error */
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating Error constructor...");
     ft.generic_magic = js_error_constructor;
     obj = JS_NewCConstructor(ctx, JS_CLASS_ERROR, "Error",
                                     ft.generic, 1, JS_CFUNC_constructor_or_func_magic, -1,
@@ -56266,9 +56336,13 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
                                     js_error_funcs, countof(js_error_funcs),
                                     js_error_proto_funcs, countof(js_error_proto_funcs),
                                     0);
-    if (JS_IsException(obj))
+    if (JS_IsException(obj)) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: Error constructor creation failed!");
         return -1;
+    }
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Error constructor created");
 
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating native error prototypes...");
     for(i = 0; i < JS_NATIVE_ERROR_COUNT; i++) {
         JSValue func_obj;
         const JSCFunctionListEntry *funcs;
@@ -56285,46 +56359,60 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
                                       funcs, 2,
                                       0);
         if (JS_IsException(func_obj)) {
-            
+            QJS_LOGE("JS_AddIntrinsicBasicObjects: native error %d constructor failed!", i);
             return -1;
         }
         ctx->native_error_proto[i] = JS_GetProperty(ctx, func_obj, JS_ATOM_prototype);
         
         if (JS_IsException(ctx->native_error_proto[i])) {
-            
+            QJS_LOGE("JS_AddIntrinsicBasicObjects: native error %d prototype failed!", i);
             return -1;
         }
     }
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: native error prototypes created");
     
 
     /* Array */
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating Array constructor...");
     obj = JS_NewCConstructor(ctx, JS_CLASS_ARRAY, "Array",
                                     js_array_constructor, 1, JS_CFUNC_constructor_or_func, 0,
                                     JS_UNDEFINED,
                                     js_array_funcs, countof(js_array_funcs),
                                     js_array_proto_funcs, countof(js_array_proto_funcs),
                                     JS_NEW_CTOR_PROTO_CLASS);
-    if (JS_IsException(obj))
+    if (JS_IsException(obj)) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: Array constructor failed!");
         return -1;
+    }
     ctx->array_ctor = obj;
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Array constructor created");
 
     {
         JSObject *p = JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]);
         p->is_std_array_prototype = TRUE;
     }
     
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating array_shape...");
     ctx->array_shape = js_new_shape2(ctx, get_proto_obj(ctx->class_proto[JS_CLASS_ARRAY]),
                                      JS_PROP_INITIAL_HASH_SIZE, 1);
-    if (!ctx->array_shape)
+    if (!ctx->array_shape) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: array_shape failed!");
         return -1;
+    }
     if (add_shape_property(ctx, &ctx->array_shape, NULL,
-                           JS_ATOM_length, JS_PROP_WRITABLE | JS_PROP_LENGTH))
+                           JS_ATOM_length, JS_PROP_WRITABLE | JS_PROP_LENGTH)) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: array_shape add_property failed!");
         return -1;
+    }
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: array_shape created");
 
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating arguments_shape...");
     ctx->arguments_shape = js_new_shape2(ctx, get_proto_obj(ctx->class_proto[JS_CLASS_OBJECT]),
                                          JS_PROP_INITIAL_HASH_SIZE, 3);
-    if (!ctx->arguments_shape)
+    if (!ctx->arguments_shape) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: arguments_shape failed!");
         return -1;
+    }
     if (add_shape_property(ctx, &ctx->arguments_shape, NULL,
                            JS_ATOM_length, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE))
         return -1;
@@ -60243,7 +60331,7 @@ static void js_finrec_mark(JSRuntime *rt, JSValueConst val,
             JS_MarkValue(rt, fre->held_val, mark_func);
         }
         JS_MarkValue(rt, frd->cb, mark_func);
-        mark_func(rt, &frd->realm->header);
+        mark_func(rt, frd->realm);
     }
 }
 

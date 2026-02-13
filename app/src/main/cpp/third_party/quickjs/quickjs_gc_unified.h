@@ -217,10 +217,11 @@ void gc_set_runtime(struct JSRuntime *rt);
 /* Update GC threshold (like JS_SetGCThreshold) */
 void gc_set_threshold(size_t threshold);
 
-/* Helper: get header from user pointer */
-static inline GCHeader *gc_header(void *ptr) {
-    if (!ptr) return NULL;
-    return (GCHeader*)((uint8_t*)ptr - sizeof(GCHeader));
+/* Helper: get header from user pointer.
+ * Allocations return user_ptr (after GCHeader), so we subtract to get header. */
+static inline GCHeader *gc_header(void *user_ptr) {
+    if (!user_ptr) return NULL;
+    return (GCHeader*)((uint8_t*)user_ptr - sizeof(GCHeader));
 }
 
 /* Helper: get total allocation size from user pointer */
