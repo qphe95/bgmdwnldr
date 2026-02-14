@@ -1,0 +1,81 @@
+# LLDB batch debugging commands for QuickJS shape corruption
+# 
+# Usage: lldb -b -s lldb_batch_debug.txt -p <PID>
+#
+# This script runs in batch mode and will:
+# 1. Set breakpoints at key functions
+# 2. Continue execution
+# 3. Automatically inspect state when corruption is detected
+
+# Load Python scripts
+command script import /Users/qingpinghe/Documents/bgmdwnldr/lldb_master_debug.py
+
+# Set breakpoints
+breakpoint set --name init_browser_stubs
+breakpoint set --name JS_SetPropertyStr
+breakpoint set --name find_own_property
+
+# Add commands to breakpoints
+
+# When we hit init_browser_stubs, just continue
+breakpoint command add 1
+continue
+DONE
+
+# When we hit JS_SetPropertyStr, check for corruption
+breakpoint command add 2 --python
+thread = frame.GetThread()
+process = thread.GetProcess()
+this_obj = int(frame.FindRegister("x1").GetValue(), 16)
+error = lldb.SBError()
+if this_obj > 0x1000:
+    shape = process.ReadPointerFromMemory(this_obj + 8, error)
+    if error.Success() and shape < 0x1000:
+        print("CORRUPTION DETECTED in JS_SetPropertyStr!")
+        print(f"Object at 0x{this_obj:x} has invalid shape 0x{shape:x}")
+        thread.Stop()
+    else:
+        process.Continue()
+else:
+    process.Continue()
+DONE
+
+# When we hit find_own_property, check if we're about to crash
+breakpoint command add 3 --python
+thread = frame.GetThread()
+process = thread.GetProcess()
+psh = int(frame.FindRegister("x0").GetValue(), 16)
+error = lldb.SBError()
+if psh > 0x1000:
+    obj = process.ReadPointerFromMemory(psh, error)
+    if error.Success() and obj > 0x1000:
+        shape = process.ReadPointerFromMemory(obj + 8, error)
+        if error.Success() and shape < 0x1000:
+            print("CRASH IMMINENT in find_own_property!")
+            print(f"obj=0x{obj:x}, shape=0x{shape:x}")
+            thread.Stop()
+        else:
+            process.Continue()
+    else:
+        process.Continue()
+else:
+    process.Continue()
+DONE
+
+# Start debugging
+qjs-debug-start
+
+# Run
+process continue
+
+# If we stop, analyze the state
+qjs-analyze
+
+# Show backtrace
+bt
+
+# Show registers
+register read
+
+# Quit
+quit

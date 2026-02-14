@@ -1,0 +1,41 @@
+# LLDB commands for debugging shape corruption
+# Usage: lldb -s lldb_shape_commands.txt
+
+# Settings
+settings set target.inline-breakpoint-strategy always
+settings set frame-format "frame #${frame.index}: ${frame.pc}{ ${module.file.basename}{`${function.name-with-args}{${frame.no-debug}${frame.line.file}${frame.line.number}}\n"
+
+# Enable Python scripting
+script import lldb_shape_debug
+
+# Main breakpoint at init_browser_stubs
+breakpoint set --name init_browser_stubs --command "shape-debug-start" --auto-continue false
+
+# Breakpoint at the specific line that's crashing (line 2618 in browser_stubs.c)
+# We need to calculate the actual address based on the crash
+breakpoint set --name JS_SetPropertyStr --condition '(unsigned long)$x1 < 0x1000'
+
+# Set up a breakpoint that will stop when we try to access invalid memory
+breakpoint set --name find_own_property
+
+# Commands to run when find_own_property is hit
+breakpoint command add -s python
+# Print the object pointer and shape
+for i, f in enumerate(frame.GetThread().frames[:5]):
+    print(f"Frame {i}: {f.GetFunctionName()}")
+p = int(frame.FindRegister('x0').GetValue(), 16)
+if p > 0x1000:
+    error = lldb.SBError()
+    shape = process.ReadPointerFromMemory(p + 8, error)
+    print(f"Object at 0x{p:x}, shape = 0x{shape:x}")
+    if shape < 0x1000:
+        print("INVALID SHAPE DETECTED!")
+        frame.GetThread().Stop()
+frame.GetThread().GetProcess().Continue()
+DONE
+
+# Watch for specific memory patterns that indicate corruption
+# This will be set dynamically once we know the object address
+
+# Continue and run
+process continue
