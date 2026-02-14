@@ -293,6 +293,9 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
     GCHeader *hdr = (GCHeader *)(g_gc.heap + old_offset);
     void *user_ptr = (void *)(hdr + 1);
     
+    /* CRITICAL: Zero the entire allocation to prevent garbage values in user data */
+    memset(hdr, 0, total_size);
+    
     /* CRITICAL: Initialize header BEFORE adding to any handle array.
      * This ensures GC always sees a valid, initialized object. */
     hdr->ref_count_unused = 0;

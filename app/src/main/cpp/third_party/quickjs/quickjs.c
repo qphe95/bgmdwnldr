@@ -2615,11 +2615,40 @@ void JS_FreeContext(JSContext *ctx)
     
     
 
-    js_free_shape_null(ctx->rt, ctx->array_shape);
-    js_free_shape_null(ctx->rt, ctx->arguments_shape);
-    js_free_shape_null(ctx->rt, ctx->mapped_arguments_shape);
-    js_free_shape_null(ctx->rt, ctx->regexp_shape);
-    js_free_shape_null(ctx->rt, ctx->regexp_result_shape);
+    QJS_LOGE("JS_FreeContext: about to free shapes...");
+    QJS_LOGE("JS_FreeContext: array_shape=%p", (void*)ctx->array_shape);
+    if (ctx->array_shape) {
+        QJS_LOGE("JS_FreeContext: array_shape->is_hashed=%d hash=%u next=%p", 
+                 ctx->array_shape->is_hashed, ctx->array_shape->hash, (void*)ctx->array_shape->shape_hash_next);
+        js_free_shape_null(ctx->rt, ctx->array_shape);
+        QJS_LOGE("JS_FreeContext: array_shape freed");
+    }
+    QJS_LOGE("JS_FreeContext: arguments_shape=%p", (void*)ctx->arguments_shape);
+    if (ctx->arguments_shape) {
+        QJS_LOGE("JS_FreeContext: arguments_shape->is_hashed=%d hash=%u next=%p", 
+                 ctx->arguments_shape->is_hashed, ctx->arguments_shape->hash, (void*)ctx->arguments_shape->shape_hash_next);
+        js_free_shape_null(ctx->rt, ctx->arguments_shape);
+        QJS_LOGE("JS_FreeContext: arguments_shape freed");
+    }
+    QJS_LOGE("JS_FreeContext: mapped_arguments_shape=%p", (void*)ctx->mapped_arguments_shape);
+    if (ctx->mapped_arguments_shape) {
+        QJS_LOGE("JS_FreeContext: mapped_arguments_shape->is_hashed=%d hash=%u next=%p", 
+                 ctx->mapped_arguments_shape->is_hashed, ctx->mapped_arguments_shape->hash, (void*)ctx->mapped_arguments_shape->shape_hash_next);
+        js_free_shape_null(ctx->rt, ctx->mapped_arguments_shape);
+        QJS_LOGE("JS_FreeContext: mapped_arguments_shape freed");
+    }
+    QJS_LOGE("JS_FreeContext: regexp_shape=%p", (void*)ctx->regexp_shape);
+    if (ctx->regexp_shape) {
+        QJS_LOGE("JS_FreeContext: regexp_shape->is_hashed=%d", ctx->regexp_shape->is_hashed);
+        js_free_shape_null(ctx->rt, ctx->regexp_shape);
+        QJS_LOGE("JS_FreeContext: regexp_shape freed");
+    }
+    QJS_LOGE("JS_FreeContext: regexp_result_shape=%p", (void*)ctx->regexp_result_shape);
+    if (ctx->regexp_result_shape) {
+        QJS_LOGE("JS_FreeContext: regexp_result_shape->is_hashed=%d", ctx->regexp_result_shape->is_hashed);
+        js_free_shape_null(ctx->rt, ctx->regexp_result_shape);
+        QJS_LOGE("JS_FreeContext: regexp_result_shape freed");
+    }
 
     /* Remove from handle array (replaces context_list linked list) */
     js_handle_array_remove(&rt->context_handles, ctx);
@@ -5434,12 +5463,43 @@ static void js_shape_hash_unlink(JSRuntime *rt, JSShape *sh)
     uint32_t h;
     JSShape **psh;
 
+    QJS_LOGE("js_shape_hash_unlink: ENTER sh=%p", (void*)sh);
+    if (!sh) {
+        QJS_LOGE("js_shape_hash_unlink: ERROR - sh is NULL!");
+        return;
+    }
+    if ((uintptr_t)sh < 0x1000) {
+        QJS_LOGE("js_shape_hash_unlink: ERROR - sh is invalid %p!", (void*)sh);
+        return;
+    }
+    
+    QJS_LOGE("js_shape_hash_unlink: sh->hash=%u sh->is_hashed=%d", sh->hash, sh->is_hashed);
     h = get_shape_hash(sh->hash, rt->shape_hash_bits);
+    QJS_LOGE("js_shape_hash_unlink: h=%u shape_hash_bits=%d", h, rt->shape_hash_bits);
     psh = &rt->shape_hash[h];
-    while (*psh != sh)
+    QJS_LOGE("js_shape_hash_unlink: psh=%p *psh=%p", (void*)psh, (void*)(*psh));
+    
+    int loop_count = 0;
+    while (*psh != sh) {
+        if (!*psh) {
+            QJS_LOGE("js_shape_hash_unlink: ERROR - reached end of list!");
+            return;
+        }
+        if ((uintptr_t)(*psh) < 0x1000) {
+            QJS_LOGE("js_shape_hash_unlink: ERROR - corrupted list!");
+            return;
+        }
+        QJS_LOGE("js_shape_hash_unlink: traversing... *psh=%p", (void*)(*psh));
         psh = &(*psh)->shape_hash_next;
+        if (++loop_count > 1000) {
+            QJS_LOGE("js_shape_hash_unlink: ERROR - infinite loop!");
+            return;
+        }
+    }
+    QJS_LOGE("js_shape_hash_unlink: found sh, setting *psh to next=%p", (void*)sh->shape_hash_next);
     *psh = sh->shape_hash_next;
     rt->shape_hash_count--;
+    QJS_LOGE("js_shape_hash_unlink: DONE");
 }
 
 /* create a new empty shape with prototype 'proto'. It is not hashed */
@@ -5478,6 +5538,8 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
     sh->prop_count = 0;
     sh->deleted_prop_count = 0;
     sh->is_hashed = FALSE;
+    sh->hash = 0;  /* Initialize hash */
+    sh->shape_hash_next = NULL;  /* CRITICAL: Initialize to NULL */
     QJS_LOGI("js_new_shape_nohash: SUCCESS sh=%p", (void*)sh);
     return sh;
 }
@@ -5537,6 +5599,7 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     sh = get_shape_from_alloc(sh_alloc, hash_size);
     /* Object already registered with GC by gc_alloc_js_object */
     sh->is_hashed = FALSE;
+    sh->shape_hash_next = NULL;  /* CRITICAL: cloned shape is not in hash table */
     if (sh->proto) {
         JS_MKPTR(JS_TAG_OBJECT, sh->proto);
     }
@@ -5557,19 +5620,40 @@ static void js_free_shape0(JSRuntime *rt, JSShape *sh)
     uint32_t i;
     JSShapeProperty *pr;
 
-    /* ref_count check removed - using mark-and-sweep GC */
-    if (sh->is_hashed)
-        js_shape_hash_unlink(rt, sh);
-    if (sh->proto != NULL) {
-        
+    QJS_LOGE("js_free_shape0: ENTER sh=%p", (void*)sh);
+    if (!sh) {
+        QJS_LOGE("js_free_shape0: ERROR - sh is NULL!");
+        return;
     }
+    if ((uintptr_t)sh < 0x1000) {
+        QJS_LOGE("js_free_shape0: ERROR - sh is invalid %p!", (void*)sh);
+        return;
+    }
+    
+    QJS_LOGE("js_free_shape0: sh->is_hashed=%d", sh->is_hashed);
+    
+    /* ref_count check removed - using mark-and-sweep GC */
+    if (sh->is_hashed) {
+        QJS_LOGE("js_free_shape0: calling js_shape_hash_unlink...");
+        js_shape_hash_unlink(rt, sh);
+        QJS_LOGE("js_free_shape0: js_shape_hash_unlink returned");
+    }
+    QJS_LOGE("js_free_shape0: checking proto...");
+    if (sh->proto != NULL) {
+        QJS_LOGE("js_free_shape0: proto is not NULL");
+    }
+    QJS_LOGE("js_free_shape0: getting shape prop, prop_count=%d", sh->prop_count);
     pr = get_shape_prop(sh);
+    QJS_LOGE("js_free_shape0: freeing atoms...");
     for(i = 0; i < sh->prop_count; i++) {
         JS_FreeAtomRT(rt, pr->atom);
         pr++;
     }
+    QJS_LOGE("js_free_shape0: removing from gc...");
     remove_gc_object(sh);
+    QJS_LOGE("js_free_shape0: freeing memory...");
     js_free_rt(rt, get_alloc_from_shape(sh));
+    QJS_LOGE("js_free_shape0: DONE");
 }
 
 static void js_free_shape(JSRuntime *rt, JSShape *sh)
@@ -9781,6 +9865,21 @@ static JSProperty *add_property(JSContext *ctx,
 {
     JSShape *sh, *new_sh;
 
+    QJS_LOGE("add_property: ENTER p=%p prop=%d", (void*)p, prop);
+    if (!p) {
+        QJS_LOGE("add_property: ERROR - p is NULL!");
+        return NULL;
+    }
+    if ((uintptr_t)p < 0x1000) {
+        QJS_LOGE("add_property: ERROR - p is invalid %p!", (void*)p);
+        return NULL;
+    }
+    QJS_LOGE("add_property: p->shape=%p", (void*)p->shape);
+    if (!p->shape) {
+        QJS_LOGE("add_property: ERROR - p->shape is NULL!");
+        return NULL;
+    }
+
     if (unlikely(__JS_AtomIsTaggedInt(prop))) {
         /* update is_std_array_prototype */
         if (unlikely(p->is_std_array_prototype)) {
@@ -10264,47 +10363,68 @@ int JS_SetPropertyInternal(JSContext *ctx, JSValueConst obj,
     uint32_t tag;
     JSPropertyDescriptor desc;
     int ret;
+    
+    QJS_LOGE("JS_SetPropertyInternal: ENTER prop=%d", prop);
+    QJS_LOGE("JS_SetPropertyInternal: obj tag=%u this_obj tag=%u", 
+             (unsigned)JS_VALUE_GET_TAG(obj), (unsigned)JS_VALUE_GET_TAG(this_obj));
+    
 #if 0
     printf("JS_SetPropertyInternal: "); print_atom(ctx, prop); printf("\n");
 #endif
     tag = JS_VALUE_GET_TAG(this_obj);
+    QJS_LOGE("JS_SetPropertyInternal: tag=%u JS_TAG_OBJECT=%d", (unsigned)tag, JS_TAG_OBJECT);
     if (unlikely(tag != JS_TAG_OBJECT)) {
-        if (JS_VALUE_GET_TAG(obj) == JS_TAG_OBJECT) {
+        QJS_LOGE("JS_SetPropertyInternal: not an object (tag=%u != %d), checking obj tag", (unsigned)tag, JS_TAG_OBJECT);
+        uint32_t obj_tag = JS_VALUE_GET_TAG(obj);
+        QJS_LOGE("JS_SetPropertyInternal: obj_tag=%u", (unsigned)obj_tag);
+        if (obj_tag == JS_TAG_OBJECT) {
+            QJS_LOGE("JS_SetPropertyInternal: obj is object, going to prototype_lookup");
             p = NULL;
             p1 = JS_VALUE_GET_OBJ(obj);
             goto prototype_lookup;
         } else {
+            QJS_LOGE("JS_SetPropertyInternal: obj is not object (tag=%u), switch on this_obj tag", (unsigned)obj_tag);
             switch(tag) {
             case JS_TAG_NULL:
-                
+                QJS_LOGE("JS_SetPropertyInternal: tag is NULL, throwing error");
                 JS_ThrowTypeErrorAtom(ctx, "cannot set property '%s' of null", prop);
                 return -1;
             case JS_TAG_UNDEFINED:
-                
+                QJS_LOGE("JS_SetPropertyInternal: tag is UNDEFINED, throwing error");
                 JS_ThrowTypeErrorAtom(ctx, "cannot set property '%s' of undefined", prop);
                 return -1;
             default:
+                QJS_LOGE("JS_SetPropertyInternal: default case, calling JS_GetPrototypePrimitive");
                 /* even on a primitive type we can have setters on the prototype */
                 p = NULL;
                 p1 = JS_VALUE_GET_OBJ(JS_GetPrototypePrimitive(ctx, obj));
+                QJS_LOGE("JS_SetPropertyInternal: JS_GetPrototypePrimitive returned p1=%p", (void*)p1);
                 goto prototype_lookup;
             }
         }
     } else {
+        QJS_LOGE("JS_SetPropertyInternal: getting objects from values");
         p = JS_VALUE_GET_OBJ(this_obj);
         p1 = JS_VALUE_GET_OBJ(obj);
+        QJS_LOGE("JS_SetPropertyInternal: p=%p p1=%p", (void*)p, (void*)p1);
         if (unlikely(p != p1))
             goto retry2;
     }
 
     /* fast path if obj == this_obj */
  retry:
+    QJS_LOGE("JS_SetPropertyInternal: calling find_own_property p1=%p prop=%d", (void*)p1, prop);
     prs = find_own_property(&pr, p1, prop);
+    QJS_LOGE("JS_SetPropertyInternal: find_own_property returned prs=%p pr=%p", (void*)prs, (void*)pr);
     if (prs) {
-        if (likely((prs->flags & (JS_PROP_TMASK | JS_PROP_WRITABLE |
-                                  JS_PROP_LENGTH)) == JS_PROP_WRITABLE)) {
+        QJS_LOGE("JS_SetPropertyInternal: prs is non-null, checking flags prs->flags=0x%x", prs ? prs->flags : 0);
+        uint32_t flag_check = prs->flags & (JS_PROP_TMASK | JS_PROP_WRITABLE | JS_PROP_LENGTH);
+        QJS_LOGE("JS_SetPropertyInternal: flag_check=0x%x JS_PROP_WRITABLE=0x%x", flag_check, JS_PROP_WRITABLE);
+        if (likely(flag_check == JS_PROP_WRITABLE)) {
             /* fast case */
+            QJS_LOGE("JS_SetPropertyInternal: fast path, pr=%p pr->u.value=...", (void*)pr);
             set_value(ctx, &pr->u.value, val);
+            QJS_LOGE("JS_SetPropertyInternal: fast path done");
             return TRUE;
         } else if (prs->flags & JS_PROP_LENGTH) {
             assert(p->class_id == JS_CLASS_ARRAY);
@@ -10330,8 +10450,10 @@ int JS_SetPropertyInternal(JSContext *ctx, JSValueConst obj,
             goto read_only_prop;
         }
     }
+    QJS_LOGE("JS_SetPropertyInternal: property not found, entering for loop p1=%p", (void*)p1);
 
     for(;;) {
+        QJS_LOGE("JS_SetPropertyInternal: checking p1->is_exotic=%d", p1 ? p1->is_exotic : -1);
         if (p1->is_exotic) {
             if (p1->fast_array) {
                 if (__JS_AtomIsTaggedInt(prop)) {
@@ -10426,7 +10548,9 @@ int JS_SetPropertyInternal(JSContext *ctx, JSValueConst obj,
                 }
             }
         }
+        QJS_LOGE("JS_SetPropertyInternal: accessing p1->shape p1=%p shape=%p", (void*)p1, (void*)(p1 ? p1->shape : NULL));
         p1 = p1->shape->proto;
+        QJS_LOGE("JS_SetPropertyInternal: got proto p1=%p", (void*)p1);
     prototype_lookup:
         if (!p1)
             break;
