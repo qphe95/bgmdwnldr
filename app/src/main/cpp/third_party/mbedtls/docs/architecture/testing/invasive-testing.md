@@ -231,7 +231,7 @@ If there's code that we want to have in the product for testing, but not in prod
 
 Some properties can be tested through runtime instrumentation: have the compiler or a similar tool inject something into the binary.
 
-* Sanitizers check for certain bad usage patterns (ASan, MSan, UBSan, Valgrind).
+* Sanitizers check for certain bad usage patterns (MSan, UBSan, Valgrind).
 * We can inject external libraries at link time. This can be a way to make system functions fail.
 
 | Requirement | Analysis |
@@ -283,7 +283,7 @@ Rationale: this cannot be tested by adding C code, because the danger is that th
 
 Goal: test the absence of memory leaks.
 
-Solution ([instrumentation](#runtime-instrumentation)): run tests with ASan. (We also use Valgrind, but it's slower than ASan, so we favor ASan.)
+Solution ([instrumentation](#runtime-instrumentation)): run tests with Valgrind.
 
 Since we run many test jobs with a memory leak detector, each test function or test program must clean up after itself. Use the cleanup code (after the `exit` label in test functions) to free any memory that the function may have allocated.
 

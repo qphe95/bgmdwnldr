@@ -13,15 +13,13 @@ component_test_m32_no_asm () {
     # Build without assembly, so as to use portable C code (in a 32-bit
     # build) and not the i386-specific inline assembly.
     #
-    # Note that we require gcc, because clang Asan builds fail to link for
-    # this target (cannot find libclang_rt.lsan-i386.a - this is a known clang issue).
-    msg "build: i386, make, gcc, no asm (ASan build)" # ~ 30s
+    msg "build: i386, make, gcc, no asm" # ~ 30s
     scripts/config.py full
     scripts/config.py unset MBEDTLS_HAVE_ASM
     scripts/config.py unset MBEDTLS_AESNI_C # AESNI for 32-bit is tested in test_aesni_m32
-    $MAKE_COMMAND CC=gcc CFLAGS="$ASAN_CFLAGS -m32" LDFLAGS="-m32 $ASAN_CFLAGS"
+    $MAKE_COMMAND CC=gcc CFLAGS="-m32" LDFLAGS="-m32"
 
-    msg "test: i386, make, gcc, no asm (ASan build)"
+    msg "test: i386, make, gcc, no asm"
     $MAKE_COMMAND test
 }
 
@@ -35,12 +33,12 @@ support_test_m32_no_asm () {
 component_test_m32_o2 () {
     # Build with optimization, to use the i386 specific inline assembly
     # and go faster for tests.
-    msg "build: i386, make, gcc -O2 (ASan build)" # ~ 30s
+    msg "build: i386, make, gcc -O2" # ~ 30s
     scripts/config.py full
     scripts/config.py unset MBEDTLS_AESNI_C # AESNI for 32-bit is tested in test_aesni_m32
-    $MAKE_COMMAND CC=gcc CFLAGS="$ASAN_CFLAGS -m32" LDFLAGS="-m32 $ASAN_CFLAGS"
+    $MAKE_COMMAND CC=gcc CFLAGS="-m32" LDFLAGS="-m32"
 
-    msg "test: i386, make, gcc -O2 (ASan build)"
+    msg "test: i386, make, gcc -O2"
     $MAKE_COMMAND test
 
     msg "test ssl-opt.sh, i386, make, gcc-O2"
@@ -52,18 +50,18 @@ support_test_m32_o2 () {
 }
 
 component_test_m32_everest () {
-    msg "build: i386, Everest ECDH context (ASan build)" # ~ 6 min
+    msg "build: i386, Everest ECDH context" # ~ 6 min
     scripts/config.py set MBEDTLS_ECDH_VARIANT_EVEREST_ENABLED
     scripts/config.py unset MBEDTLS_AESNI_C # AESNI for 32-bit is tested in test_aesni_m32
-    $MAKE_COMMAND CC=gcc CFLAGS="$ASAN_CFLAGS -m32" LDFLAGS="-m32 $ASAN_CFLAGS"
+    $MAKE_COMMAND CC=gcc CFLAGS="-m32" LDFLAGS="-m32"
 
-    msg "test: i386, Everest ECDH context - main suites (inc. selftests) (ASan build)" # ~ 50s
+    msg "test: i386, Everest ECDH context - main suites (inc. selftests)" # ~ 50s
     $MAKE_COMMAND test
 
-    msg "test: i386, Everest ECDH context - ECDH-related part of ssl-opt.sh (ASan build)" # ~ 5s
+    msg "test: i386, Everest ECDH context - ECDH-related part of ssl-opt.sh" # ~ 5s
     tests/ssl-opt.sh -f ECDH
 
-    msg "test: i386, Everest ECDH context - compat.sh with some ECDH ciphersuites (ASan build)" # ~ 3 min
+    msg "test: i386, Everest ECDH context - compat.sh with some ECDH ciphersuites" # ~ 3 min
     # Exclude some symmetric ciphers that are redundant here to gain time.
     tests/compat.sh -f ECDH -V NO -e 'ARIA\|CAMELLIA\|CHACHA'
 }

@@ -51,7 +51,7 @@ EXCLUDE_FROM_FULL = frozenset([
     'MBEDTLS_ENTROPY_NO_SOURCES_OK', # security control
     'MBEDTLS_HAVE_SSE2', # hardware dependency
     'MBEDTLS_MEMORY_BACKTRACE', # depends on MEMORY_BUFFER_ALLOC_C
-    'MBEDTLS_MEMORY_BUFFER_ALLOC_C', # makes sanitizers (e.g. ASan) less effective
+    'MBEDTLS_MEMORY_BUFFER_ALLOC_C', # makes sanitizers less effective
     'MBEDTLS_MEMORY_DEBUG', # depends on MEMORY_BUFFER_ALLOC_C
     'MBEDTLS_NO_64BIT_MULTIPLICATION', # influences anything that uses bignum
     'MBEDTLS_NO_UDBL_DIVISION', # influences anything that uses bignum

@@ -206,12 +206,6 @@ Most of them are available for gcc and clang, though some are compiler-specific:
 - `Release`. This generates the default code without any unnecessary
   information in the binary files.
 - `Debug`. This generates debug information and disables optimization of the code.
-- `ASan`. This instruments the code with AddressSanitizer to check for memory
-  errors. (This includes LeakSanitizer, with recent version of gcc and clang.)
-  (With recent version of clang, this mode also instruments the code with
-  UndefinedSanitizer to check for undefined behaviour.)
-- `ASanDbg`. Same as ASan but slower, with debug information and better stack
-  traces.
 - `MemSan`. This instruments the code with MemorySanitizer to check for
   uninitialised memory reads. Experimental, needs recent clang on Linux/x86\_64.
 - `MemSanDbg`. Same as MemSan but slower, with debug information, better stack

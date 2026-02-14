@@ -13,7 +13,7 @@ component_test_config_suite_b () {
     msg "build: configs/config-suite-b.h"
     MBEDTLS_CONFIG="configs/config-suite-b.h"
     CRYPTO_CONFIG="configs/crypto-config-suite-b.h"
-    CC=$ASAN_CC cmake -DMBEDTLS_CONFIG_FILE="$MBEDTLS_CONFIG" -DTF_PSA_CRYPTO_CONFIG_FILE="$CRYPTO_CONFIG" -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -DMBEDTLS_CONFIG_FILE="$MBEDTLS_CONFIG" -DTF_PSA_CRYPTO_CONFIG_FILE="$CRYPTO_CONFIG" -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: configs/config-suite-b.h - unit tests"
@@ -34,15 +34,15 @@ component_test_config_suite_b () {
 }
 
 component_test_no_renegotiation () {
-    msg "build: Default + !MBEDTLS_SSL_RENEGOTIATION (ASan build)" # ~ 6 min
+    msg "build: Default + !MBEDTLS_SSL_RENEGOTIATION" # ~ 6 min
     scripts/config.py unset MBEDTLS_SSL_RENEGOTIATION
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
-    msg "test: !MBEDTLS_SSL_RENEGOTIATION - main suites (inc. selftests) (ASan build)" # ~ 50s
+    msg "test: !MBEDTLS_SSL_RENEGOTIATION - main suites (inc. selftests)" # ~ 50s
     make test
 
-    msg "test: !MBEDTLS_SSL_RENEGOTIATION - ssl-opt.sh (ASan build)" # ~ 6 min
+    msg "test: !MBEDTLS_SSL_RENEGOTIATION - ssl-opt.sh" # ~ 6 min
     tests/ssl-opt.sh
 }
 
@@ -137,7 +137,7 @@ component_test_config_thread () {
     msg "build: configs/config-thread.h"
     MBEDTLS_CONFIG="configs/config-thread.h"
     CRYPTO_CONFIG="configs/crypto-config-thread.h"
-    CC=$ASAN_CC cmake -DMBEDTLS_CONFIG_FILE="$MBEDTLS_CONFIG" -DTF_PSA_CRYPTO_CONFIG_FILE="$CRYPTO_CONFIG" -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -DMBEDTLS_CONFIG_FILE="$MBEDTLS_CONFIG" -DTF_PSA_CRYPTO_CONFIG_FILE="$CRYPTO_CONFIG" -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: configs/config-thread.h - unit tests"
@@ -151,7 +151,7 @@ component_test_tls1_2_ccm_psk () {
     msg "build: configs/config-ccm-psk-tls1_2.h"
     MBEDTLS_CONFIG="configs/config-ccm-psk-tls1_2.h"
     CRYPTO_CONFIG="configs/crypto-config-ccm-psk-tls1_2.h"
-    CC=$ASAN_CC cmake -DMBEDTLS_CONFIG_FILE="$MBEDTLS_CONFIG" -DTF_PSA_CRYPTO_CONFIG_FILE="$CRYPTO_CONFIG" -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -DMBEDTLS_CONFIG_FILE="$MBEDTLS_CONFIG" -DTF_PSA_CRYPTO_CONFIG_FILE="$CRYPTO_CONFIG" -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: configs/config-ccm-psk-tls1_2.h - unit tests"
@@ -165,7 +165,7 @@ component_test_tls1_2_ccm_psk_dtls () {
     msg "build: configs/config-ccm-psk-dtls1_2.h"
     MBEDTLS_CONFIG="configs/config-ccm-psk-dtls1_2.h"
     CRYPTO_CONFIG="configs/crypto-config-ccm-psk-tls1_2.h"
-    CC=$ASAN_CC cmake -DMBEDTLS_CONFIG_FILE="$MBEDTLS_CONFIG" -DTF_PSA_CRYPTO_CONFIG_FILE="$CRYPTO_CONFIG" -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -DMBEDTLS_CONFIG_FILE="$MBEDTLS_CONFIG" -DTF_PSA_CRYPTO_CONFIG_FILE="$CRYPTO_CONFIG" -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: configs/config-ccm-psk-dtls1_2.h - unit tests"
@@ -186,10 +186,10 @@ component_test_tls1_2_ccm_psk_dtls () {
 }
 
 component_test_small_ssl_out_content_len () {
-    msg "build: small SSL_OUT_CONTENT_LEN (ASan build)"
+    msg "build: small SSL_OUT_CONTENT_LEN"
     scripts/config.py set MBEDTLS_SSL_IN_CONTENT_LEN 16384
     scripts/config.py set MBEDTLS_SSL_OUT_CONTENT_LEN 4096
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: small SSL_OUT_CONTENT_LEN - ssl-opt.sh MFL and large packet tests"
@@ -197,10 +197,10 @@ component_test_small_ssl_out_content_len () {
 }
 
 component_test_small_ssl_in_content_len () {
-    msg "build: small SSL_IN_CONTENT_LEN (ASan build)"
+    msg "build: small SSL_IN_CONTENT_LEN"
     scripts/config.py set MBEDTLS_SSL_IN_CONTENT_LEN 4096
     scripts/config.py set MBEDTLS_SSL_OUT_CONTENT_LEN 16384
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: small SSL_IN_CONTENT_LEN - ssl-opt.sh MFL tests"
@@ -210,7 +210,7 @@ component_test_small_ssl_in_content_len () {
 component_test_small_ssl_dtls_max_buffering () {
     msg "build: small MBEDTLS_SSL_DTLS_MAX_BUFFERING #0"
     scripts/config.py set MBEDTLS_SSL_DTLS_MAX_BUFFERING 1000
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: small MBEDTLS_SSL_DTLS_MAX_BUFFERING #0 - ssl-opt.sh specific reordering test"
@@ -220,7 +220,7 @@ component_test_small_ssl_dtls_max_buffering () {
 component_test_small_mbedtls_ssl_dtls_max_buffering () {
     msg "build: small MBEDTLS_SSL_DTLS_MAX_BUFFERING #1"
     scripts/config.py set MBEDTLS_SSL_DTLS_MAX_BUFFERING 190
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: small MBEDTLS_SSL_DTLS_MAX_BUFFERING #1 - ssl-opt.sh specific reordering test"
@@ -284,20 +284,20 @@ component_build_no_ssl_cli () {
 
 component_test_no_max_fragment_length () {
     # Run max fragment length tests with MFL disabled
-    msg "build: default config except MFL extension (ASan build)" # ~ 30s
+    msg "build: default config except MFL extension" # ~ 30s
     scripts/config.py unset MBEDTLS_SSL_MAX_FRAGMENT_LENGTH
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: ssl-opt.sh, MFL-related tests"
     tests/ssl-opt.sh -f "Max fragment length"
 }
 
-component_test_asan_remove_peer_certificate () {
-    msg "build: default config with MBEDTLS_SSL_KEEP_PEER_CERTIFICATE disabled (ASan build)"
+component_test_remove_peer_certificate () {
+    msg "build: default config with MBEDTLS_SSL_KEEP_PEER_CERTIFICATE disabled"
     scripts/config.py unset MBEDTLS_SSL_KEEP_PEER_CERTIFICATE
     scripts/config.py unset MBEDTLS_SSL_PROTO_TLS1_3
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: !MBEDTLS_SSL_KEEP_PEER_CERTIFICATE"
@@ -314,11 +314,11 @@ component_test_asan_remove_peer_certificate () {
 }
 
 component_test_no_max_fragment_length_small_ssl_out_content_len () {
-    msg "build: no MFL extension, small SSL_OUT_CONTENT_LEN (ASan build)"
+    msg "build: no MFL extension, small SSL_OUT_CONTENT_LEN"
     scripts/config.py unset MBEDTLS_SSL_MAX_FRAGMENT_LENGTH
     scripts/config.py set MBEDTLS_SSL_IN_CONTENT_LEN 16384
     scripts/config.py set MBEDTLS_SSL_OUT_CONTENT_LEN 4096
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: MFL tests (disabled MFL extension case) & large packet tests"
@@ -329,9 +329,9 @@ component_test_no_max_fragment_length_small_ssl_out_content_len () {
 }
 
 component_test_variable_ssl_in_out_buffer_len () {
-    msg "build: MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH enabled (ASan build)"
+    msg "build: MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH enabled"
     scripts/config.py set MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
     msg "test: MBEDTLS_SSL_VARIABLE_BUFFER_LENGTH enabled"
@@ -380,18 +380,18 @@ component_test_when_no_ciphersuites_have_mac () {
 }
 
 component_test_tls12_only () {
-    msg "build: default config without MBEDTLS_SSL_PROTO_TLS1_3, cmake, gcc, ASan"
+    msg "build: default config without MBEDTLS_SSL_PROTO_TLS1_3, cmake, gcc"
     scripts/config.py unset MBEDTLS_SSL_PROTO_TLS1_3
-    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
-    msg "test: main suites (inc. selftests) (ASan build)"
+    msg "test: main suites (inc. selftests)"
     make test
 
-    msg "test: ssl-opt.sh (ASan build)"
+    msg "test: ssl-opt.sh"
     tests/ssl-opt.sh
 
-    msg "test: compat.sh (ASan build)"
+    msg "test: compat.sh"
     tests/compat.sh
 }
 
@@ -576,7 +576,7 @@ component_test_tls13_no_padding () {
     msg "build: default config plus early data minus padding"
     scripts/config.py set MBEDTLS_SSL_CID_TLS1_3_PADDING_GRANULARITY 1
     scripts/config.py set MBEDTLS_SSL_EARLY_DATA
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
     msg "test: default config plus early data minus padding"
     make test
@@ -588,7 +588,7 @@ component_test_tls13_no_compatibility_mode () {
     msg "build: default config plus early data minus middlebox compatibility mode"
     scripts/config.py unset MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE
     scripts/config.py set   MBEDTLS_SSL_EARLY_DATA
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
     msg "test: default config plus early data minus middlebox compatibility mode"
     make test
@@ -601,7 +601,7 @@ component_test_full_minus_session_tickets () {
     scripts/config.py full
     scripts/config.py unset MBEDTLS_SSL_SESSION_TICKETS
     scripts/config.py unset MBEDTLS_SSL_EARLY_DATA
-    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
     msg "test: full config without session tickets"
     make test

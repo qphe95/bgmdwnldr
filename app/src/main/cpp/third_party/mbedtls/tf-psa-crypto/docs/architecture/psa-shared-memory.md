@@ -321,25 +321,18 @@ There are several different ways that poisoning could be implemented:
 
 1. Using Valgrind's memcheck tool. Valgrind provides a macro `VALGRIND_MAKE_MEM_NO_ACCESS` that allows manual memory poisoning. Valgrind memory poisoning is already used for constant-flow testing in Mbed TLS.
 2. Using Memory Sanitizer (MSan), which allows us to mark memory as uninitialized. This is also used for constant-flow testing. It is suitable for input buffers only, since it allows us to detect when a poisoned buffer is read but not when it is written.
-3. Using Address Sanitizer (ASan). This provides `ASAN_POISON_MEMORY_REGION` which marks memory as inaccessible.
-4. Allocating buffers separate pages and calling `mprotect()` to set pages as inaccessible. This has the disadvantage that we will have to manually ensure that buffers sit in their own pages, which likely means making a copy.
-5. Filling buffers with random data, keeping a copy of the original. For input buffers, keep a copy of the original and copy it back once the PSA function returns. For output buffers, fill them with random data and keep a separate copy of it. In the memory poisoning hooks, compare the copy of random data with the original to ensure that the output buffer has not been written directly.
+3. Allocating buffers separate pages and calling `mprotect()` to set pages as inaccessible. This has the disadvantage that we will have to manually ensure that buffers sit in their own pages, which likely means making a copy.
+4. Filling buffers with random data, keeping a copy of the original. For input buffers, keep a copy of the original and copy it back once the PSA function returns. For output buffers, fill them with random data and keep a separate copy of it. In the memory poisoning hooks, compare the copy of random data with the original to ensure that the output buffer has not been written directly.
 
 Approach (2) is insufficient for the full testing we require as we need to be able to check both input and output buffers.
 
 Approach (5) is simple and requires no extra tooling. It is likely to have good performance as it does not use any sanitizers. However, it requires the memory poisoning test hooks to maintain extra copies of the buffers, which seems difficult to implement in practice. Additionally, it does not precisely test the property we want to validate, so we are relying on the tests to fail if given random data as input. It is possible (if unlikely) that the PSA function will access the poisoned buffer without causing the test to fail. This becomes more likely when we consider test cases that call PSA functions on incorrect inputs to check that the correct error is returned. For these reasons, this memory poisoning approach seems unsuitable.
 
-All three remaining approaches are suitable for our purposes. However, approach (4) is more complex than the other two. To implement it, we would need to allocate poisoned buffers in separate memory pages. They would require special handling and test code would likely have to be designed around this special handling.
+The remaining approaches are suitable for our purposes. However, approach (3) is more complex than approach (1). To implement it, we would need to allocate poisoned buffers in separate memory pages. They would require special handling and test code would likely have to be designed around this special handling.
 
-Meanwhile, approaches (1) and (3) are much more convenient. We are simply required to call a special macro on some buffer that was allocated by us and the sanitizer takes care of everything else. Of these two, ASan appears to have a limitation related to buffer alignment. From code comments quoted in [the documentation](https://github.com/google/sanitizers/wiki/AddressSanitizerManualPoisoning):
+Meanwhile, approach (1) is much more convenient. We are simply required to call a special macro on some buffer that was allocated by us and Valgrind takes care of everything else. Valgrind does not appear to have any limitation related to buffer alignment (unless Valgrind is simply more poorly documented). However, running tests under Valgrind causes a significant slowdown.
 
-> This function is not guaranteed to poison the whole region - it may poison only subregion of [addr, addr+size) due to ASan alignment restrictions.
-
-Specifically, ASan will round the buffer size down to 8 bytes before poisoning due to details of its implementation. For more information on this, see [Microsoft documentation of this feature](https://learn.microsoft.com/en-us/cpp/sanitizers/asan-runtime?view=msvc-170#alignment-requirements-for-addresssanitizer-poisoning).
-
-It should be possible to work around this by manually rounding buffer lengths up to the nearest multiple of 8 in the poisoning function, although it's remotely possible that this will cause other problems. Valgrind does not appear to have this limitation (unless Valgrind is simply more poorly documented). However, running tests under Valgrind causes a much greater slowdown compared with ASan. As a result, it would be beneficial to implement support for both Valgrind and ASan, to give the extra flexibility to choose either performance or accuracy as required. This should be simple as both have very similar memory poisoning interfaces.
-
-**Design decision: Implement memory poisoning tests with both Valgrind's memcheck and ASan manual poisoning.**
+**Design decision: Implement memory poisoning tests with Valgrind's memcheck.**
 
 ##### Validation with new tests
 
@@ -619,7 +612,7 @@ To this end, the macros above are defined conditionally on a new config option, 
 
 ### Implementation of copying validation
 
-As discussed in the [design exploration of copying validation](#validation-of-copying), the best strategy for validation of copies appears to be validation by memory poisoning, implemented using Valgrind and ASan.
+As discussed in the [design exploration of copying validation](#validation-of-copying), the best strategy for validation of copies appears to be validation by memory poisoning, implemented using Valgrind.
 
 To perform memory poisoning, we must implement the functions alluded to in [Validation of copying by memory poisoning](#validation-of-copying-by-memory-poisoning):
 ```c
@@ -628,8 +621,8 @@ void mbedtls_test_memory_unpoison(const unsigned char *ptr, size_t size);
 ```
 This should poison or unpoison the given buffer, respectively.
 
-* `mbedtls_test_memory_poison()` is equivalent to calling `VALGRIND_MAKE_MEM_NOACCESS(ptr, size)` or `ASAN_POISON_MEMORY_REGION(ptr, size)`.
-* `mbedtls_test_memory_unpoison()` is equivalent to calling `VALGRIND_MAKE_MEM_DEFINED(ptr, size)` or `ASAN_UNPOISON_MEMORY_REGION(ptr, size)`.
+* `mbedtls_test_memory_poison()` is equivalent to calling `VALGRIND_MAKE_MEM_NOACCESS(ptr, size)`.
+* `mbedtls_test_memory_unpoison()` is equivalent to calling `VALGRIND_MAKE_MEM_DEFINED(ptr, size)`.
 
 The PSA copying function must then have test hooks implemented as outlined in [Validation of copying by memory poisoning](#validation-of-copying-by-memory-poisoning).
 
@@ -669,9 +662,7 @@ Poisoning code is added to these test wrappers where relevant in order to pre-po
 
 #### Configuration of poisoning tests
 
-Since the memory poisoning tests will require the use of interfaces specific to the sanitizers used to poison memory, they must only be enabled when we are building with ASan or Valgrind. For now, we can auto-detect ASan at compile-time and set an option: `MBEDTLS_TEST_MEMORY_CAN_POISON`. When this option is enabled, we build with memory-poisoning support. This enables transparent testing with ASan without needing any extra configuration options.
-
-Auto-detection and memory-poisoning with Valgrind is left for future work.
+Since the memory poisoning tests will require the use of interfaces specific to Valgrind used to poison memory, they must only be enabled when we are building with Valgrind. Auto-detection and memory-poisoning with Valgrind is left for future work.
 
 #### Validation of validation for copying
 

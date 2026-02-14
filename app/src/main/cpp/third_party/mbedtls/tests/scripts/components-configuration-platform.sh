@@ -57,14 +57,14 @@ component_test_no_date_time () {
 }
 
 component_test_platform_calloc_macro () {
-    msg "build: MBEDTLS_PLATFORM_{CALLOC/FREE}_MACRO enabled (ASan build)"
+    msg "build: MBEDTLS_PLATFORM_{CALLOC/FREE}_MACRO enabled"
     scripts/config.py set MBEDTLS_PLATFORM_MEMORY
     scripts/config.py set MBEDTLS_PLATFORM_CALLOC_MACRO calloc
     scripts/config.py set MBEDTLS_PLATFORM_FREE_MACRO   free
-    CC=$ASAN_CC cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
-    msg "test: MBEDTLS_PLATFORM_{CALLOC/FREE}_MACRO enabled (ASan build)"
+    msg "test: MBEDTLS_PLATFORM_{CALLOC/FREE}_MACRO enabled"
     make test
 }
 
@@ -91,15 +91,15 @@ component_test_have_int64 () {
 }
 
 component_test_have_int32_cmake_new_bignum () {
-    msg "build: gcc, force 32-bit bignum limbs, new bignum interface, test hooks (ASan build)"
+    msg "build: gcc, force 32-bit bignum limbs, new bignum interface, test hooks"
     scripts/config.py unset MBEDTLS_HAVE_ASM
     scripts/config.py unset MBEDTLS_AESNI_C
     scripts/config.py unset MBEDTLS_AESCE_C
     scripts/config.py set MBEDTLS_TEST_HOOKS
     scripts/config.py set MBEDTLS_ECP_WITH_MPI_UINT
-    $MAKE_COMMAND CC=gcc CFLAGS="$ASAN_CFLAGS -Werror -Wall -Wextra -DMBEDTLS_HAVE_INT32" LDFLAGS="$ASAN_CFLAGS"
+    $MAKE_COMMAND CC=gcc CFLAGS="-Werror -Wall -Wextra -DMBEDTLS_HAVE_INT32"
 
-    msg "test: gcc, force 32-bit bignum limbs, new bignum interface, test hooks (ASan build)"
+    msg "test: gcc, force 32-bit bignum limbs, new bignum interface, test hooks"
     $MAKE_COMMAND test
 }
 

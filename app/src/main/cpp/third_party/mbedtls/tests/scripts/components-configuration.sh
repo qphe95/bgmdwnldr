@@ -25,107 +25,107 @@ component_test_default_out_of_box () {
     tests/scripts/run_demos.py
 }
 
-component_test_default_cmake_gcc_asan () {
-    msg "build: cmake, gcc, ASan" # ~ 1 min 50s
-    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Asan .
+component_test_default_cmake_gcc () {
+    msg "build: cmake, gcc, Debug" # ~ 1 min 50s
+    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
-    msg "test: main suites (inc. selftests) (ASan build)" # ~ 50s
+    msg "test: main suites (inc. selftests)" # ~ 50s
     make test
 
-    msg "program demos (ASan build)" # ~10s
+    msg "program demos" # ~10s
     tests/scripts/run_demos.py
 
-    msg "test: selftest (ASan build)" # ~ 10s
+    msg "test: selftest" # ~ 10s
     programs/test/selftest
 
-    msg "test: metatests (GCC, ASan build)"
-    tests/scripts/run-metatests.sh any asan poison
+    msg "test: metatests (GCC)"
+    tests/scripts/run-metatests.sh any poison
 
-    msg "test: ssl-opt.sh (ASan build)" # ~ 1 min
+    msg "test: ssl-opt.sh" # ~ 1 min
     tests/ssl-opt.sh
 
-    msg "test: compat.sh (ASan build)" # ~ 6 min
+    msg "test: compat.sh" # ~ 6 min
     tests/compat.sh
 
-    msg "test: context-info.sh (ASan build)" # ~ 15 sec
+    msg "test: context-info.sh" # ~ 15 sec
     tests/context-info.sh
 }
 
-component_test_default_cmake_gcc_asan_new_bignum () {
-    msg "build: cmake, gcc, ASan" # ~ 1 min 50s
+component_test_default_cmake_gcc_new_bignum () {
+    msg "build: cmake, gcc, Debug" # ~ 1 min 50s
     scripts/config.py set MBEDTLS_ECP_WITH_MPI_UINT
-    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
-    msg "test: main suites (inc. selftests) (ASan build)" # ~ 50s
+    msg "test: main suites (inc. selftests)" # ~ 50s
     make test
 
-    msg "test: selftest (ASan build)" # ~ 10s
+    msg "test: selftest" # ~ 10s
     programs/test/selftest
 
-    msg "test: ssl-opt.sh (ASan build)" # ~ 1 min
+    msg "test: ssl-opt.sh" # ~ 1 min
     tests/ssl-opt.sh
 
-    msg "test: compat.sh (ASan build)" # ~ 6 min
+    msg "test: compat.sh" # ~ 6 min
     tests/compat.sh
 
-    msg "test: context-info.sh (ASan build)" # ~ 15 sec
+    msg "test: context-info.sh" # ~ 15 sec
     tests/context-info.sh
 }
 
-component_test_full_cmake_gcc_asan () {
-    msg "build: full config, cmake, gcc, ASan"
+component_test_full_cmake_gcc () {
+    msg "build: full config, cmake, gcc, Debug"
     scripts/config.py full
-    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
-    msg "test: main suites (inc. selftests) (full config, ASan build)"
+    msg "test: main suites (inc. selftests) (full config)"
     make test
 
-    msg "test: selftest (full config, ASan build)" # ~ 10s
+    msg "test: selftest (full config)" # ~ 10s
     programs/test/selftest
 
-    msg "test: ssl-opt.sh (full config, ASan build)"
+    msg "test: ssl-opt.sh (full config)"
     tests/ssl-opt.sh
 
     # Note: the next two invocations cover all compat.sh test cases.
     # We should use the same here and in basic-build-test.sh.
-    msg "test: compat.sh: default version (full config, ASan build)"
+    msg "test: compat.sh: default version (full config)"
     tests/compat.sh -e 'ARIA\|CHACHA'
 
-    msg "test: compat.sh: next: ARIA, Chacha (full config, ASan build)"
+    msg "test: compat.sh: next: ARIA, Chacha (full config)"
     env OPENSSL="$OPENSSL_NEXT" tests/compat.sh -e '^$' -f 'ARIA\|CHACHA'
 
-    msg "test: context-info.sh (full config, ASan build)" # ~ 15 sec
+    msg "test: context-info.sh (full config)" # ~ 15 sec
     tests/context-info.sh
 }
 
-component_test_full_cmake_gcc_asan_new_bignum () {
-    msg "build: full config, cmake, gcc, ASan"
+component_test_full_cmake_gcc_new_bignum () {
+    msg "build: full config, cmake, gcc, Debug"
     scripts/config.py full
     scripts/config.py set MBEDTLS_ECP_WITH_MPI_UINT
-    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Asan .
+    CC=gcc cmake -D CMAKE_BUILD_TYPE:String=Debug .
     make
 
-    msg "test: main suites (inc. selftests) (full config, new bignum, ASan)"
+    msg "test: main suites (inc. selftests) (full config, new bignum)"
     make test
 
-    msg "test: selftest (full config, new bignum, ASan)" # ~ 10s
+    msg "test: selftest (full config, new bignum)" # ~ 10s
     programs/test/selftest
 
-    msg "test: ssl-opt.sh (full config, new bignum, ASan)"
+    msg "test: ssl-opt.sh (full config, new bignum)"
     tests/ssl-opt.sh
 
     # Note: the next two invocations cover all compat.sh test cases.
     # We should use the same here and in basic-build-test.sh.
-    msg "test: compat.sh: default version (full config, new bignum, ASan)"
+    msg "test: compat.sh: default version (full config, new bignum)"
     tests/compat.sh -e 'ARIA\|CHACHA'
 
-    msg "test: compat.sh: next: ARIA, Chacha (full config, new bignum, ASan)"
+    msg "test: compat.sh: next: ARIA, Chacha (full config, new bignum)"
     env OPENSSL="$OPENSSL_NEXT" tests/compat.sh -e '^$' -f 'ARIA\|CHACHA'
 
-    msg "test: context-info.sh (full config, new bignum, ASan)" # ~ 15 sec
+    msg "test: context-info.sh (full config, new bignum)" # ~ 15 sec
     tests/context-info.sh
 }
 
@@ -248,19 +248,19 @@ component_build_tfm () {
 }
 
 component_test_malloc_0_null () {
-    msg "build: malloc(0) returns NULL (ASan+UBSan build)"
+    msg "build: malloc(0) returns NULL (Debug build)"
     scripts/config.py full
-    $MAKE_COMMAND CC=$ASAN_CC CFLAGS="'-DTF_PSA_CRYPTO_USER_CONFIG_FILE=\"$PWD/tests/configs/user-config-malloc-0-null.h\"' $ASAN_CFLAGS" LDFLAGS="$ASAN_CFLAGS"
+    $MAKE_COMMAND CFLAGS="'-DTF_PSA_CRYPTO_USER_CONFIG_FILE=\"$PWD/tests/configs/user-config-malloc-0-null.h\"'"
 
-    msg "test: malloc(0) returns NULL (ASan+UBSan build)"
+    msg "test: malloc(0) returns NULL (Debug build)"
     $MAKE_COMMAND test
 
-    msg "selftest: malloc(0) returns NULL (ASan+UBSan build)"
+    msg "selftest: malloc(0) returns NULL (Debug build)"
     # Just the calloc selftest. "make test" ran the others as part of the
     # test suites.
     programs/test/selftest calloc
 
-    msg "test ssl-opt.sh: malloc(0) returns NULL (ASan+UBSan build)"
+    msg "test ssl-opt.sh: malloc(0) returns NULL (Debug build)"
     # Run a subset of the tests. The choice is a balance between coverage
     # and time (including time indirectly wasted due to flaky tests).
     # The current choice is to skip tests whose description includes

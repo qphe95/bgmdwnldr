@@ -110,8 +110,6 @@ There are many different build types available with CMake. Most of them are avai
 -   `Release`. This generates the default code without any unnecessary information in the binary files.
 -   `Debug`. This generates debug information and disables optimization of the code.
 -   `Coverage`. This generates code coverage information in addition to debug information.
--   `ASan`. This instruments the code with AddressSanitizer to check for memory errors. (This includes LeakSanitizer, with recent version of gcc and clang.) (With recent version of clang, this mode also instruments the code with UndefinedSanitizer to check for undefined behaviour.)
--   `ASanDbg`. Same as ASan but slower, with debug information and better stack traces.
 -   `MemSan`. This instruments the code with MemorySanitizer to check for uninitialised memory reads.
 -   `MemSanDbg`. Same as MemSan but slower, with debug information, better stack traces and origin tracking.
 -   `Check`. This activates the compiler warnings that depend on optimization and treats all warnings as errors.
@@ -215,7 +213,7 @@ For machines with a Unix shell and OpenSSL (and optionally GnuTLS) installed, ad
 -   `tests/ssl-opt.sh` runs integration tests for various TLS options (renegotiation, resumption, etc.) and tests interoperability of these options with other implementations.
 -   `tests/compat.sh` tests interoperability of every ciphersuite with other implementations.
 -   `tests/scripts/depends.py` tests builds in configurations with a single curve, key exchange, hash, cipher, or pkalg on.
--   `tests/scripts/all.sh` runs a combination of the above tests, plus some more, with various build options (such as ASan, full `mbedtls_config.h`, etc).
+-   `tests/scripts/all.sh` runs a combination of the above tests, plus some more, with various build options (such as full `mbedtls_config.h`, etc).
 
 Instead of manually installing the required versions of all tools required for testing, it is possible to use the Docker images from our CI systems, as explained in [our testing infrastructure repository](https://github.com/Mbed-TLS/mbedtls-test/blob/main/README.md#quick-start).
 

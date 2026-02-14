@@ -628,7 +628,7 @@ int mbedtls_entropy_self_test(int verbose)
 
     /*
      * To test that mbedtls_entropy_func writes correct number of bytes:
-     * - use the whole buffer and rely on ASan to detect overruns
+     * - use the whole buffer and rely on sanitizers to detect overruns
      * - collect entropy 8 times and OR the result in an accumulator:
      *   any byte should then be 0 with probably 2^(-64), so requiring
      *   each of the 32 or 64 bytes to be non-zero has a false failure rate

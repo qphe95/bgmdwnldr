@@ -53,7 +53,7 @@ and reaching more error cases by exploiting knowledge of how the RNG is used).
   branches except four; three of them are reached by open-box testing using a
 rigged RNG; the last branch could only be reached by computing a discrete log
 on P-256... See `coverage.sh`.
-- Testing also uses dynamic analysis: valgrind, ASan, MemSan, UBSan.
+- Testing also uses dynamic analysis: valgrind, MemSan, UBSan.
 
 **Code quality:**
 

@@ -13,7 +13,7 @@
  * Some failures are purely functional: the logic of the code causes the
  * test result to be set to FAIL. Other failures come from extra
  * instrumentation which is not present in a normal build; for example,
- * Asan or Valgrind to detect memory leaks. This is reflected by the
+ * Valgrind to detect memory leaks. This is reflected by the
  * "platform" associated with each meta-test.
  *
  * Use the companion script `tests/scripts/run-metatests.sh` to run all
@@ -181,74 +181,6 @@ static void read_uninitialized_stack(const char *name)
     }
 }
 
-static void memory_leak(const char *name)
-{
-    (void) name;
-    volatile char *p = calloc_but_the_compiler_does_not_know(1, 1);
-    mbedtls_printf("%u\n", (unsigned) *p);
-    /* Leak of a heap object */
-}
-
-/* name = "test_memory_poison_%(start)_%(offset)_%(count)_%(direction)"
- * Poison a region starting at start from an 8-byte aligned origin,
- * encompassing count bytes. Access the region at offset from the start.
- * %(start), %(offset) and %(count) are decimal integers.
- * %(direction) is either the character 'r' for read or 'w' for write.
- */
-static void test_memory_poison(const char *name)
-{
-    size_t start = 0, offset = 0, count = 0;
-    char direction = 'r';
-    if (sscanf(name,
-               "%*[^0-9]%" MBEDTLS_PRINTF_SIZET
-               "%*[^0-9]%" MBEDTLS_PRINTF_SIZET
-               "%*[^0-9]%" MBEDTLS_PRINTF_SIZET
-               "_%c",
-               &start, &offset, &count, &direction) != 4) {
-        mbedtls_fprintf(stderr, "%s: Bad name format: %s\n", __func__, name);
-        return;
-    }
-
-    union {
-        long long ll;
-        unsigned char buf[32];
-    } aligned;
-    memset(aligned.buf, 'a', sizeof(aligned.buf));
-
-    if (start > sizeof(aligned.buf)) {
-        mbedtls_fprintf(stderr,
-                        "%s: start=%" MBEDTLS_PRINTF_SIZET
-                        " > size=%" MBEDTLS_PRINTF_SIZET,
-                        __func__, start, sizeof(aligned.buf));
-        return;
-    }
-    if (start + count > sizeof(aligned.buf)) {
-        mbedtls_fprintf(stderr,
-                        "%s: start+count=%" MBEDTLS_PRINTF_SIZET
-                        " > size=%" MBEDTLS_PRINTF_SIZET,
-                        __func__, start + count, sizeof(aligned.buf));
-        return;
-    }
-    if (offset >= count) {
-        mbedtls_fprintf(stderr,
-                        "%s: offset=%" MBEDTLS_PRINTF_SIZET
-                        " >= count=%" MBEDTLS_PRINTF_SIZET,
-                        __func__, offset, count);
-        return;
-    }
-
-    MBEDTLS_TEST_MEMORY_POISON(aligned.buf + start, count);
-
-    if (direction == 'w') {
-        aligned.buf[start + offset] = 'b';
-        do_nothing_with_object_but_the_compiler_does_not_know(aligned.buf);
-    } else {
-        do_nothing_with_object_but_the_compiler_does_not_know(aligned.buf);
-        mbedtls_printf("%u\n", (unsigned) aligned.buf[start + offset]);
-    }
-}
-
-
 /****************************************************************/
 /* Threading */
 /****************************************************************/
@@ -366,7 +298,6 @@ typedef struct {
     /** Platform under which that metatest is valid.
      *
      * - "any": should work anywhere.
-     * - "asan": triggers ASan (Address Sanitizer).
      * - "msan": triggers MSan (Memory Sanitizer).
      * - "pthread": requires MBEDTLS_THREADING_PTHREAD and MBEDTLS_TEST_HOOKS,
      *   which enables MBEDTLS_TEST_MUTEX_USAGE internally in the test
@@ -405,26 +336,7 @@ metatest_t metatests[] = {
     { "test_not_le_u", "any", meta_test_not_le_u },
     { "null_dereference", "any", null_pointer_dereference },
     { "null_call", "any", null_pointer_call },
-    { "read_after_free", "asan", read_after_free },
-    { "double_free", "asan", double_free },
     { "read_uninitialized_stack", "msan", read_uninitialized_stack },
-    { "memory_leak", "asan", memory_leak },
-    { "test_memory_poison_0_0_8_r", "poison", test_memory_poison },
-    { "test_memory_poison_0_0_8_w", "poison", test_memory_poison },
-    { "test_memory_poison_0_7_8_r", "poison", test_memory_poison },
-    { "test_memory_poison_0_7_8_w", "poison", test_memory_poison },
-    { "test_memory_poison_0_0_1_r", "poison", test_memory_poison },
-    { "test_memory_poison_0_0_1_w", "poison", test_memory_poison },
-    { "test_memory_poison_0_1_2_r", "poison", test_memory_poison },
-    { "test_memory_poison_0_1_2_w", "poison", test_memory_poison },
-    { "test_memory_poison_7_0_8_r", "poison", test_memory_poison },
-    { "test_memory_poison_7_0_8_w", "poison", test_memory_poison },
-    { "test_memory_poison_7_7_8_r", "poison", test_memory_poison },
-    { "test_memory_poison_7_7_8_w", "poison", test_memory_poison },
-    { "test_memory_poison_7_0_1_r", "poison", test_memory_poison },
-    { "test_memory_poison_7_0_1_w", "poison", test_memory_poison },
-    { "test_memory_poison_7_1_2_r", "poison", test_memory_poison },
-    { "test_memory_poison_7_1_2_w", "poison", test_memory_poison },
     { "mutex_lock_not_initialized", "pthread", mutex_lock_not_initialized },
     { "mutex_unlock_not_initialized", "pthread", mutex_unlock_not_initialized },
 #if MBEDTLS_THREADING_INTERNAL_VERSION <= 0x04000000

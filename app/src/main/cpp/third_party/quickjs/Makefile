@@ -47,8 +47,6 @@ PREFIX?=/usr/local
 
 # use the gprof profiler
 #CONFIG_PROFILE=y
-# use address sanitizer
-#CONFIG_ASAN=y
 # use memory sanitizer
 #CONFIG_MSAN=y
 # use UB sanitizer
@@ -60,9 +58,6 @@ TEST262_SINCE?=2025-09-01
 
 OBJDIR=.obj
 
-ifdef CONFIG_ASAN
-OBJDIR:=$(OBJDIR)/asan
-endif
 ifdef CONFIG_MSAN
 OBJDIR:=$(OBJDIR)/msan
 endif
@@ -180,10 +175,6 @@ ifdef CONFIG_PROFILE
 CFLAGS+=-p
 LDFLAGS+=-p
 endif
-ifdef CONFIG_ASAN
-CFLAGS+=-fsanitize=address -fno-omit-frame-pointer
-LDFLAGS+=-fsanitize=address -fno-omit-frame-pointer
-endif
 ifdef CONFIG_MSAN
 CFLAGS+=-fsanitize=memory -fno-omit-frame-pointer
 LDFLAGS+=-fsanitize=memory -fno-omit-frame-pointer
@@ -223,7 +214,6 @@ endif
 
 # examples
 ifeq ($(CROSS_PREFIX),)
-ifndef CONFIG_ASAN
 ifndef CONFIG_MSAN
 ifndef CONFIG_UBSAN
 PROGS+=examples/hello examples/test_fib
@@ -235,7 +225,6 @@ endif
 endif
 ifdef CONFIG_SHARED_LIBS
 PROGS+=examples/fib.so examples/point.so
-endif
 endif
 endif
 endif

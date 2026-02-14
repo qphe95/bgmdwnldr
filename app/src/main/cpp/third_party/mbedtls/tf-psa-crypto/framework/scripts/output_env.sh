@@ -14,7 +14,7 @@
 #   - type and version of the operating system
 #   - version of make and cmake
 #   - version of armcc, clang, gcc-arm and gcc compilers
-#   - version of libc, clang, asan and valgrind if installed
+#   - version of libc, clang, and valgrind if installed
 #   - version of gnuTLS and OpenSSL
 
 print_version()
@@ -172,15 +172,3 @@ echo
 print_version "$GNUTLS_SERV" "--version" "default" "head -n 1"
 echo
 
-echo " * Installed asan versions:"
-if type dpkg-query >/dev/null 2>/dev/null; then
-    if ! dpkg-query -f '${Status} ${Package}: ${Version}\n' -W 'libasan*' |
-         awk '$3 == "installed" && $4 !~ /-/ {print $4, $5}' |
-         grep .
-    then
-        echo "   No asan versions installed."
-    fi
-else
-    echo "  Unable to determine the asan version without dpkg."
-fi
-echo

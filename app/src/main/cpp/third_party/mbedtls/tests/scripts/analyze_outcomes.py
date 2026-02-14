@@ -240,7 +240,7 @@ class DriverVSReference_hash(outcome_analysis.DriverVSReference):
             re.compile(r'.*\bMBEDTLS_(MD5|RIPEMD160|SHA[0-9]+)_.*'),
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -279,7 +279,7 @@ class DriverVSReference_hmac(outcome_analysis.DriverVSReference):
             re.compile('PSA dispatch .* legacy only'),
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -311,7 +311,7 @@ class DriverVSReference_cipher_aead_cmac(outcome_analysis.DriverVSReference):
             re.compile(r'PEM read .*(AES|DES|\bencrypt).*'),
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -363,7 +363,7 @@ class DriverVSReference_ecp_light_only(outcome_analysis.DriverVSReference):
             re.compile(r'.*\bMBEDTLS_(ECDH|ECDSA|ECJPAKE|ECP)_.*'),
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -402,7 +402,7 @@ class DriverVSReference_no_ecp_at_all(outcome_analysis.DriverVSReference):
             re.compile(r'.*\bMBEDTLS_PK_PARSE_EC_COMPRESSED\b.*'),
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -441,7 +441,7 @@ class DriverVSReference_ecc_no_bignum(outcome_analysis.DriverVSReference):
             re.compile(r'.*\bMBEDTLS_PK_PARSE_EC_COMPRESSED\b.*'),
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -484,7 +484,7 @@ class DriverVSReference_ecc_ffdh_no_bignum(outcome_analysis.DriverVSReference):
             re.compile(r'.*\bMBEDTLS_PK_PARSE_EC_COMPRESSED\b.*'),
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -514,7 +514,7 @@ class DriverVSReference_ffdh_alg(outcome_analysis.DriverVSReference):
     DRIVER = 'test_psa_crypto_config_accel_ffdh'
     IGNORED_TESTS = {
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -544,7 +544,7 @@ class DriverVSReference_tfm_config(outcome_analysis.DriverVSReference):
             'Config: ECC: Weierstrass curves only',
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -574,7 +574,7 @@ class DriverVSReference_rsa(outcome_analysis.DriverVSReference):
             re.compile(r'.*\bMBEDTLS_GENPRIME\b.*')
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',
@@ -651,7 +651,7 @@ class DriverVSReference_block_cipher_dispatch(outcome_analysis.DriverVSReference
             'Low and high error',
         ],
         'test_suite_platform': [
-            # Incompatible with sanitizers (e.g. ASan). If the driver
+            # Incompatible with some test configurations. If the driver
             # component uses a sanitizer but the reference component
             # doesn't, we have a PASS vs SKIP mismatch.
             'Check mbedtls_calloc overallocation',

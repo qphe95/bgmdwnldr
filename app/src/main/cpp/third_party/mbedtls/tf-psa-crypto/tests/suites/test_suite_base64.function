@@ -93,7 +93,7 @@ void mbedtls_base64_decode(char *src_string, char *dst_string, int result)
     size_t len;
 
     /* Allocate exactly the size of the input, to ensure there's no buffer
-     * overread in builds with ASan. (src_string has at least one extra null
+     * overread in builds with sanitizers. (src_string has at least one extra null
      * character at the end.) */
     TEST_CALLOC(src, src_len);
     if (src_len != 0) {
@@ -101,7 +101,7 @@ void mbedtls_base64_decode(char *src_string, char *dst_string, int result)
     }
 
     /* Allocate exactly the size of the input, to ensure there's no buffer
-     * overflow in builds with ASan. */
+     * overflow in builds with sanitizers. */
     TEST_CALLOC(dst, dst_size);
 
     /* Test normal operation */

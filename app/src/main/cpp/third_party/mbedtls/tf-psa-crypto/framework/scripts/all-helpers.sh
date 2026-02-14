@@ -96,7 +96,7 @@ helper_libtestdriver1_adjust_config() {
     fi
 }
 
-# Build the drivers library libtestdriver1.a (with ASan).
+# Build the drivers library libtestdriver1.a.
 #
 # Parameters:
 # 1. a space-separated list of things to accelerate;
@@ -104,11 +104,11 @@ helper_libtestdriver1_adjust_config() {
 # Here "things" are PSA_WANT_ symbols but with PSA_WANT_ removed.
 helper_libtestdriver1_make_drivers() {
     loc_accel_flags=$( echo "$1 ${2-}" | sed 's/[^ ]* */-DLIBTESTDRIVER1_MBEDTLS_PSA_ACCEL_&/g' )
-    make CC=$ASAN_CC -C tests libtestdriver1.a CFLAGS=" $ASAN_CFLAGS $loc_accel_flags" LDFLAGS="$ASAN_CFLAGS"
+    make -C tests libtestdriver1.a CFLAGS=" $loc_accel_flags" LDFLAGS=""
 }
 
 # Build the main libraries, programs and tests,
-# linking to the drivers library (with ASan).
+# linking to the drivers library.
 #
 # Parameters:
 # 1. a space-separated list of things to accelerate;
@@ -122,7 +122,7 @@ helper_libtestdriver1_make_main() {
     # we need flags both with and without the LIBTESTDRIVER1_ prefix
     loc_accel_flags=$( echo "$loc_accel_list" | sed 's/[^ ]* */-DLIBTESTDRIVER1_MBEDTLS_PSA_ACCEL_&/g' )
     loc_accel_flags="$loc_accel_flags $( echo "$loc_accel_list" | sed 's/[^ ]* */-DMBEDTLS_PSA_ACCEL_&/g' )"
-    $MAKE_COMMAND CC=$ASAN_CC CFLAGS="$ASAN_CFLAGS -I../tests/include -I../framework/tests/include -I../tests -I../../tests -DPSA_CRYPTO_DRIVER_TEST -DMBEDTLS_TEST_LIBTESTDRIVER1 $loc_accel_flags" LDFLAGS="-ltestdriver1 $ASAN_CFLAGS" "$@"
+    $MAKE_COMMAND CFLAGS="-I../tests/include -I../framework/tests/include -I../tests -I../../tests -DPSA_CRYPTO_DRIVER_TEST -DMBEDTLS_TEST_LIBTESTDRIVER1 $loc_accel_flags" LDFLAGS="-ltestdriver1" "$@"
 }
 
 ################################################################
@@ -190,11 +190,11 @@ helper_psasim_build() {
     shift
     TARGET_LIB=${TARGET}_libs
 
-    make -C $PSASIM_PATH CFLAGS="$ASAN_CFLAGS" LDFLAGS="$ASAN_CFLAGS" $TARGET_LIB "$@"
+    make -C $PSASIM_PATH $TARGET_LIB "$@"
 
     # Build also the server application after its libraries have been built.
     if [ "$TARGET" == "server" ]; then
-        make -C $PSASIM_PATH CFLAGS="$ASAN_CFLAGS" LDFLAGS="$ASAN_CFLAGS" test/psa_server
+        make -C $PSASIM_PATH test/psa_server
     fi
 }
 

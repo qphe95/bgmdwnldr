@@ -48,7 +48,7 @@
 #   * Perl
 #   * GNU Make
 #   * CMake
-#   * GCC and Clang (recent enough for using ASan with gcc and MemSan with clang, or valgrind)
+#   * GCC and Clang (recent enough for using MemSan with clang, or valgrind)
 #   * G++
 #   * arm-gcc and mingw-gcc
 #   * ArmCC 6 (aka armclang), unless invoked with --no-armcc
@@ -253,14 +253,7 @@ pre_initialize_variables () {
     # Include more verbose output for failing tests run by CMake or make
     export CTEST_OUTPUT_ON_FAILURE=1
 
-    # CFLAGS and LDFLAGS for Asan builds that don't use CMake
-    # default to -O2, use -Ox _after_ this if you want another level
-    ASAN_CFLAGS='-O2 -Werror -fsanitize=address,undefined -fno-sanitize-recover=all'
-    # Normally, tests should use this compiler for ASAN testing
-    ASAN_CC=clang
-
     # Platform tests have an allocation that returns null
-    export ASAN_OPTIONS="allocator_may_return_null=1"
     export MSAN_OPTIONS="allocator_may_return_null=1"
 
     # Gather the list of available components. These are the functions

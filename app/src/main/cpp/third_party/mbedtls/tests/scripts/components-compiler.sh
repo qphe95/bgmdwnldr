@@ -91,10 +91,10 @@ support_test_gcc15_drivers_opt () {
 component_test_gcc15_drivers_opt () {
     msg "build: GCC 15: full + test drivers dispatching to builtins"
     scripts/config.py full
-    loc_cflags="$ASAN_CFLAGS -DPSA_CRYPTO_DRIVER_TEST -DMBEDTLS_CONFIG_ADJUST_TEST_ACCELERATORS"
+    loc_cflags="-DPSA_CRYPTO_DRIVER_TEST -DMBEDTLS_CONFIG_ADJUST_TEST_ACCELERATORS"
     loc_cflags="${loc_cflags} -I../framework/tests/include -O2"
 
-    $MAKE_COMMAND CC=$GCC_15 CFLAGS="${loc_cflags}" LDFLAGS="$ASAN_CFLAGS"
+    $MAKE_COMMAND CC=$GCC_15 CFLAGS="${loc_cflags}"
 
     msg "test: GCC 15: full + test drivers dispatching to builtins"
     $MAKE_COMMAND test

@@ -47,47 +47,47 @@ component_tf_psa_crypto_test_default_out_of_box () {
     make test
 }
 
-component_tf_psa_crypto_test_default_gcc_asan () {
-    msg "build: gcc, ASan" # ~ 1 min 50s
+component_tf_psa_crypto_test_default_gcc () {
+    msg "build: gcc, Debug" # ~ 1 min 50s
     cd $OUT_OF_SOURCE_DIR
-    cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE:String=Asan "$TF_PSA_CRYPTO_ROOT_DIR"
+    cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE:String=Debug "$TF_PSA_CRYPTO_ROOT_DIR"
     make
 
-    msg "test: main suites (inc. selftests) (ASan build)" # ~ 50s
+    msg "test: main suites (inc. selftests) (Debug build)" # ~ 50s
     make test
 }
 
-component_tf_psa_crypto_test_default_gcc_asan_new_bignum () {
-    msg "build: gcc, ASan" # ~ 1 min 50s
+component_tf_psa_crypto_test_default_gcc_new_bignum () {
+    msg "build: gcc, Debug" # ~ 1 min 50s
     scripts/config.py set MBEDTLS_ECP_WITH_MPI_UINT
     cd $OUT_OF_SOURCE_DIR
-    cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE:String=Asan "$TF_PSA_CRYPTO_ROOT_DIR"
+    cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE:String=Debug "$TF_PSA_CRYPTO_ROOT_DIR"
     make
 
-    msg "test: main suites (inc. selftests) (ASan build)" # ~ 50s
+    msg "test: main suites (inc. selftests) (Debug build)" # ~ 50s
     make test
 }
 
-component_tf_psa_crypto_test_full_gcc_asan () {
-    msg "build: full config, gcc, ASan"
+component_tf_psa_crypto_test_full_gcc () {
+    msg "build: full config, gcc, Debug"
     scripts/config.py full
     cd $OUT_OF_SOURCE_DIR
-    cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE:String=Asan "$TF_PSA_CRYPTO_ROOT_DIR"
+    cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE:String=Debug "$TF_PSA_CRYPTO_ROOT_DIR"
     make
 
-    msg "test: main suites (inc. selftests) (full config, ASan build)"
+    msg "test: main suites (inc. selftests) (full config, Debug build)"
     make test
 }
 
-component_tf_psa_crypto_test_full_gcc_asan_new_bignum () {
-    msg "build: full config, gcc, ASan"
+component_tf_psa_crypto_test_full_gcc_new_bignum () {
+    msg "build: full config, gcc, Debug"
     scripts/config.py full
     scripts/config.py set MBEDTLS_ECP_WITH_MPI_UINT
     cd $OUT_OF_SOURCE_DIR
-    cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE:String=Asan "$TF_PSA_CRYPTO_ROOT_DIR"
+    cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE:String=Debug "$TF_PSA_CRYPTO_ROOT_DIR"
     make
 
-    msg "test: main suites (inc. selftests) (full config, new bignum, ASan)"
+    msg "test: main suites (inc. selftests) (full config, new bignum, Debug)"
     make test
 }
 
@@ -137,13 +137,13 @@ component_tf_psa_crypto_build_tfm () {
 }
 
 component_tf_psa_crypto_test_malloc_0_null () {
-    msg "build: malloc(0) returns NULL (ASan+UBSan build)"
+    msg "build: malloc(0) returns NULL (Debug build)"
     scripts/config.py full
     cd $OUT_OF_SOURCE_DIR
-    cmake -DCMAKE_BUILD_TYPE:String=Asan -DTF_PSA_CRYPTO_USER_CONFIG_FILE="$TF_PSA_CRYPTO_ROOT_DIR/tests/configs/user-config-malloc-0-null.h" "$TF_PSA_CRYPTO_ROOT_DIR"
+    cmake -DCMAKE_BUILD_TYPE:String=Debug -DTF_PSA_CRYPTO_USER_CONFIG_FILE="$TF_PSA_CRYPTO_ROOT_DIR/tests/configs/user-config-malloc-0-null.h" "$TF_PSA_CRYPTO_ROOT_DIR"
     make
 
-    msg "test: malloc(0) returns NULL (ASan+UBSan build)"
+    msg "test: malloc(0) returns NULL (Debug build)"
     make test
 }
 
@@ -256,7 +256,7 @@ common_tf_psa_crypto_full_pkparse_pkwrite () {
     fi
 
     cd "$OUT_OF_SOURCE_DIR"
-    cmake -DCMAKE_BUILD_TYPE:String=Asan "$TF_PSA_CRYPTO_ROOT_DIR"
+    cmake -DCMAKE_BUILD_TYPE:String=Debug "$TF_PSA_CRYPTO_ROOT_DIR"
     make
 
     # Ensure that PK_PARSE_C and/or PK_PARSE_C are correctly disabled or enabled

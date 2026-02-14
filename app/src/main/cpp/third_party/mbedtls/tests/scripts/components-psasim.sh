@@ -53,12 +53,12 @@ component_test_psasim() {
     helper_psasim_build client
 
     msg "build basic psasim client"
-    make -C $PSASIM_PATH CFLAGS="$ASAN_CFLAGS" LDFLAGS="$ASAN_CFLAGS" test/psa_client_base
+    make -C $PSASIM_PATH test/psa_client_base
     msg "test basic psasim client"
     $PSASIM_PATH/test/run_test.sh psa_client_base
 
     msg "build full psasim client"
-    make -C $PSASIM_PATH CFLAGS="$ASAN_CFLAGS" LDFLAGS="$ASAN_CFLAGS" test/psa_client_full
+    make -C $PSASIM_PATH test/psa_client_full
     msg "test full psasim client"
     $PSASIM_PATH/test/run_test.sh psa_client_full
 
@@ -83,7 +83,7 @@ component_test_suite_with_psasim()
     helper_psasim_build client
 
     msg "build test suites"
-    $MAKE_COMMAND PSASIM=1 CFLAGS="$ASAN_CFLAGS" LDFLAGS="$ASAN_CFLAGS" tests
+    $MAKE_COMMAND PSASIM=1 tests
 
     helper_psasim_server start
 

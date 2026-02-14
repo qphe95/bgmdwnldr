@@ -262,10 +262,7 @@ typedef enum {
 
 typedef enum OPCodeEnum OPCodeEnum;
 
-/* 
- * Fixed-size handle arrays to replace linked lists (context_list, job_list, weakref_list)
- * Maximum 10,000 elements each - throws error if exceeded
- */
+/* Maximum handle array size */
 #define JS_MAX_HANDLE_ARRAY_SIZE 10000
 
 typedef struct {
@@ -289,11 +286,10 @@ struct JSRuntime {
     int class_count;    /* size of class_array */
     JSClass *class_array;
 
-    /* Handle arrays replacing linked lists for ASAN safety */
-    JSHandleArray context_handles;  /* Replaces context_list */
-    JSHandleArray job_handles;      /* Replaces job_list */
-    JSHandleArray weakref_handles;  /* Replaces weakref_list */
-    JSHandleArray gc_handles;       /* Replaces gc_obj_list */
+    JSHandleArray context_handles;
+    JSHandleArray job_handles;
+    JSHandleArray weakref_handles;
+    JSHandleArray gc_handles;
     JSHandleArray atom_handles;     /* Atom root set - atoms are GC roots */
     
     /* list of GCHeader.link. */
@@ -1767,7 +1763,6 @@ JSRuntime *JS_NewRuntime(void)
 
     QJS_LOGI("JS_NewRuntime: Starting initialization...");
 
-    /* Initialize handle arrays (replacing linked lists for ASAN safety) */
     if (js_handle_array_init(rt, &rt->context_handles) < 0) {
         QJS_LOGE("JS_NewRuntime: context_handles init failed");
         goto fail;
@@ -2070,13 +2065,6 @@ static inline void js_free_string(JSRuntime *rt, JSString *str)
 {
     /* No-op: mark-and-sweep GC handles string lifecycle */
     (void)rt;
-    (void)str;
-}
-
-/* ASAN fix: Initialize the link field to prevent false positives.
- * No longer needed since GCHeader is separate from JSString. */
-static inline void js_string_init_link(JSString *str)
-{
     (void)str;
 }
 
@@ -2650,7 +2638,6 @@ void JS_FreeContext(JSContext *ctx)
         QJS_LOGE("JS_FreeContext: regexp_result_shape freed");
     }
 
-    /* Remove from handle array (replaces context_list linked list) */
     js_handle_array_remove(&rt->context_handles, ctx);
     remove_gc_object(ctx);
     js_free_rt(ctx->rt, ctx);
@@ -2897,8 +2884,6 @@ static int JS_ResizeAtomHash(JSRuntime *rt, int new_hash_size)
     //    JS_DumpAtoms(rt);
     return 0;
 }
-
-/* Handle array implementations (replacing linked lists for ASAN safety) */
 
 static int js_handle_array_init(JSRuntime *rt, JSHandleArray *arr)
 {
@@ -5700,13 +5685,9 @@ static no_inline int resize_properties(JSContext *ctx, JSShape **psh,
     if (!sh_alloc)
         return -1;
     sh = get_shape_from_alloc(sh_alloc, new_hash_size);
-    /* ASAN fix: Skip linked list - objects tracked by handle */
-    /* list_del(&old_sh->header.link); */
     /* copy all the shape properties */
     memcpy(sh, old_sh,
            sizeof(JSShape) + sizeof(sh->prop[0]) * old_sh->prop_count);
-    /* ASAN fix: Skip linked list - objects tracked by handle */
-    /* list_add_tail(&sh->header.link, &ctx->rt->gc_obj_list); */
 
     if (new_hash_size != (sh->prop_hash_mask + 1)) {
         /* resize the hash table and the properties */
@@ -5760,11 +5741,7 @@ static int compact_properties(JSContext *ctx, JSObject *p)
     if (!sh_alloc)
         return -1;
     sh = get_shape_from_alloc(sh_alloc, new_hash_size);
-    /* ASAN fix: Skip linked list - objects tracked by handle */
-    /* list_del(&old_sh->header.link); */
     memcpy(sh, old_sh, sizeof(JSShape));
-    /* ASAN fix: Skip linked list - objects tracked by handle */
-    /* list_add_tail(&sh->header.link, &ctx->rt->gc_obj_list); */
 
     memset(prop_hash_end(sh) - new_hash_size, 0,
            sizeof(prop_hash_end(sh)[0]) * new_hash_size);
@@ -6967,7 +6944,6 @@ static void add_gc_object(JSRuntime *rt, GCHeader *h,
     h->mark = 0;
     h->gc_obj_type = type;
     QJS_LOGI("add_gc_object: calling js_handle_array_add...");
-    /* Add to handle array for ASAN-safe tracking */
     if (js_handle_array_add(rt, &rt->gc_handles, h) < 0) {
         QJS_LOGE("add_gc_object: js_handle_array_add failed!");
         abort();  /* Crash with clear message */
@@ -21566,23 +21542,12 @@ static void __async_func_free(JSRuntime *rt, JSAsyncFunctionState *s)
     
 
     remove_gc_object(s);
-    /* ASAN fix: Skip linked list operations */
-    /*
-    if (rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES ) {
-        gc_header(s)->link.next = &rt->gc_zero_ref_count_list;
-        gc_header(s)->link.prev = rt->gc_zero_ref_count_list.prev;
-        rt->gc_zero_ref_count_list.prev->next = &gc_header(s)->link;
-        rt->gc_zero_ref_count_list.prev = &gc_header(s)->link;
-    } else {
-    */
     js_free_rt(rt, s);
-    /* } */
 }
 
 static void async_func_free(JSRuntime *rt, JSAsyncFunctionState *s)
 {
     /* ref_count removed - always free now */
-    /* ASAN fix: Skip linked list operations */
     js_free_rt(rt, s);
 }
 
@@ -30488,7 +30453,6 @@ static void js_free_module_def(JSRuntime *rt, JSModuleDef *m)
         list_del(&m->link);
     }
     remove_gc_object(m);
-    /* ASAN fix: Skip linked list operations */
     js_free_rt(rt, m);
 }
 
@@ -37051,7 +37015,6 @@ static void free_function_bytecode(JSRuntime *rt, JSFunctionBytecode *b)
     }
 
     remove_gc_object(b);
-    /* ASAN fix: Skip linked list operations */
     js_free_rt(rt, b);
 }
 

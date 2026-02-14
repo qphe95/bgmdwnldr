@@ -127,7 +127,7 @@ find_package(Threads)
 # If this is the root project add longer list of available CMAKE_BUILD_TYPE values
 if(NOT MBEDTLS_AS_SUBPROJECT)
     set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE}
-        CACHE STRING "Choose the type of build: None Debug Release Coverage ASan ASanDbg MemSan MemSanDbg Check CheckFull TSan TSanDbg"
+        CACHE STRING "Choose the type of build: None Debug Release Coverage MemSan MemSanDbg Check CheckFull TSan TSanDbg"
         FORCE)
 endif()
 
@@ -231,23 +231,6 @@ function(set_gnu_base_compile_options target)
     target_compile_options(${target} PRIVATE $<$<CONFIG:Debug>:-O0 -g3>)
     target_compile_options(${target} PRIVATE $<$<CONFIG:Coverage>:-O0 -g3 --coverage>)
     set_target_properties(${target} PROPERTIES LINK_FLAGS_COVERAGE "--coverage")
-    # Old GCC versions hit a performance problem with test_suite_pkwrite
-    # "Private keey write check EC" tests when building with Asan+UBSan
-    # and -O3: those tests take more than 100x time than normal, with
-    # test_suite_pkwrite taking >3h on the CI. Observed with GCC 5.4 on
-    # Ubuntu 16.04 x86_64 and GCC 6.5 on Ubuntu 18.04 x86_64.
-    # GCC 7.5 and above on Ubuntu 18.04 appear fine.
-    # To avoid the performance problem, we use -O2 when GCC version is lower than 7.0.
-    # It doesn't slow down much even with modern compiler versions.
-    target_compile_options(${target} PRIVATE $<$<CONFIG:ASan>:-fsanitize=address -fno-common -fsanitize=undefined -fno-sanitize-recover=all>)
-    if (GCC_VERSION VERSION_LESS 7.0)
-        target_compile_options(${target} PRIVATE $<$<CONFIG:ASan>:-O2>)
-    else()
-        target_compile_options(${target} PRIVATE $<$<CONFIG:ASan>:-O3>)
-    endif()
-    set_target_properties(${target} PROPERTIES LINK_FLAGS_ASAN "-fsanitize=address -fsanitize=undefined")
-    target_compile_options(${target} PRIVATE $<$<CONFIG:ASanDbg>:-fsanitize=address -fno-common -fsanitize=undefined -fno-sanitize-recover=all -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls>)
-    set_target_properties(${target} PROPERTIES LINK_FLAGS_ASANDBG "-fsanitize=address -fsanitize=undefined")
     target_compile_options(${target} PRIVATE $<$<CONFIG:TSan>:-fsanitize=thread -O3>)
     set_target_properties(${target} PROPERTIES LINK_FLAGS_TSAN "-fsanitize=thread")
     target_compile_options(${target} PRIVATE $<$<CONFIG:TSanDbg>:-fsanitize=thread -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls>)
@@ -266,10 +249,6 @@ function(set_clang_base_compile_options target)
     target_compile_options(${target} PRIVATE $<$<CONFIG:Debug>:-O0 -g3>)
     target_compile_options(${target} PRIVATE $<$<CONFIG:Coverage>:-O0 -g3 --coverage>)
     set_target_properties(${target} PROPERTIES LINK_FLAGS_COVERAGE "--coverage")
-    target_compile_options(${target} PRIVATE $<$<CONFIG:ASan>:-fsanitize=address -fno-common -fsanitize=undefined -fno-sanitize-recover=all -O3>)
-    set_target_properties(${target} PROPERTIES LINK_FLAGS_ASAN "-fsanitize=address -fsanitize=undefined")
-    target_compile_options(${target} PRIVATE $<$<CONFIG:ASanDbg>:-fsanitize=address -fno-common -fsanitize=undefined -fno-sanitize-recover=all -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls>)
-    set_target_properties(${target} PROPERTIES LINK_FLAGS_ASANDBG "-fsanitize=address -fsanitize=undefined")
     target_compile_options(${target} PRIVATE $<$<CONFIG:MemSan>:-fsanitize=memory>)
     set_target_properties(${target} PROPERTIES LINK_FLAGS_MEMSAN "-fsanitize=memory")
     target_compile_options(${target} PRIVATE $<$<CONFIG:MemSanDbg>:-fsanitize=memory -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls -fsanitize-memory-track-origins=2>)

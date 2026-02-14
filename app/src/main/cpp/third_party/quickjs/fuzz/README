@@ -7,7 +7,7 @@ Build QuickJS with libFuzzer support as follows:
 
 This can be extended with sanitizer support to improve efficacy:
 
-  CONFIG_CLANG=y CONFIG_ASAN=y make libfuzzer
+  CONFIG_CLANG=y CONFIG_MSAN=y make libfuzzer
 
 
 Currently, there are three fuzzing targets defined: fuzz_eval, fuzz_compile and fuzz_regexp.

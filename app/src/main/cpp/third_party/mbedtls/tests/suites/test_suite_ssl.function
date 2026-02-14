@@ -2650,7 +2650,7 @@ void ssl_serialize_session_save_buf_size(int ticket_len, char *crt_file,
 
     /* Try all possible bad lengths */
     for (bad_len = 1; bad_len < good_len; bad_len++) {
-        /* Allocate exact size so that asan/valgrind can detect any overwrite */
+        /* Allocate exact size so that valgrind can detect any overwrite */
         mbedtls_free(buf);
         buf = NULL;
         TEST_CALLOC(buf, bad_len);
@@ -2715,7 +2715,7 @@ void ssl_serialize_session_load_buf_size(int ticket_len, char *crt_file,
 
     /* Try all possible bad lengths */
     for (bad_len = 0; bad_len < good_len; bad_len++) {
-        /* Allocate exact size so that asan/valgrind can detect any overread */
+        /* Allocate exact size so that valgrind can detect any overread */
         mbedtls_free(bad_buf);
         bad_buf = NULL;
         TEST_CALLOC_NONNULL(bad_buf, bad_len);

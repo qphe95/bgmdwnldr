@@ -574,7 +574,7 @@
 
 /* Disable buffer-based memory allocator. This isn't strictly required,
  * but using the native allocator is faster and works better with
- * memory management analysis frameworks such as ASan. */
+ * memory management analysis frameworks such as Valgrind. */
 #undef MBEDTLS_MEMORY_BUFFER_ALLOC_C
 
 // This macro is enabled in TFM Medium but is disabled here because it is
