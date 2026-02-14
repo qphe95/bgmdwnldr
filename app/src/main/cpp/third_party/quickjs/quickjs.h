@@ -280,6 +280,17 @@ static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int64_t d)
 
 #endif /* !JS_NAN_BOXING */
 
+/* ============================================================================
+ * Reference Counting Stubs for Mark-and-Sweep GC
+ * ============================================================================
+ * These are no-ops since we're using mark-and-sweep GC with shadow stack
+ */
+struct JSRuntime;
+struct JSContext;
+static inline JSValue JS_DupValue(struct JSContext *ctx, JSValueConst v) { (void)ctx; return (JSValue)v; }
+static inline void JS_FreeValue(struct JSContext *ctx, JSValue v) { (void)ctx; (void)v; }
+static inline void JS_FreeValueRT(struct JSRuntime *rt, JSValue v) { (void)rt; (void)v; }
+
 #define JS_VALUE_IS_BOTH_INT(v1, v2) ((JS_VALUE_GET_TAG(v1) | JS_VALUE_GET_TAG(v2)) == 0)
 #define JS_VALUE_IS_BOTH_FLOAT(v1, v2) (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(v1)) && JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(v2)))
 

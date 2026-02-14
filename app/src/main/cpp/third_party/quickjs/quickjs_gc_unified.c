@@ -12,16 +12,10 @@
 #include <assert.h>
 #include <android/log.h>
 #include "quickjs_gc_unified.h"
+#include "quickjs.h"  /* For JSValue access in gc_mark_shadow_stack */
 
 /* Forward declaration from quickjs.c */
 struct JSRuntime;
-
-typedef struct JSMallocState {
-    size_t malloc_count;
-    size_t malloc_size;
-    size_t malloc_limit;
-    void *opaque; /* user opaque */
-} JSMallocState;
 
 #define LOG_TAG "GCUnified"
 #define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -100,6 +94,9 @@ bool gc_init(void) {
     g_gc.gc_threshold = GC_DEFAULT_THRESHOLD;
     g_gc.rt = NULL;
     
+    /* Initialize shadow stack for C-level JSValue tracking */
+    gc_shadow_stack_init();
+    
     g_gc.initialized = true;
     
     LOG_INFO("Unified GC initialized: %zu MB heap, %u initial handles, threshold=%zu KB",
@@ -113,6 +110,9 @@ bool gc_is_initialized(void) {
 }
 
 void gc_cleanup(void) {
+    /* Cleanup shadow stack first */
+    gc_shadow_stack_cleanup();
+    
     if (g_gc.heap) {
         free(g_gc.heap);
         g_gc.heap = NULL;
@@ -464,6 +464,9 @@ static void gc_mark(void) {
             }
         }
     }
+    
+    /* Mark from shadow stack (C-level JSValue references) */
+    gc_mark_shadow_stack();
 }
 
 /* Compact phase - move live objects together */
@@ -577,4 +580,219 @@ size_t gc_used(void) {
 size_t gc_available(void) {
     if (!g_gc.initialized) return 0;
     return g_gc.heap_size - atomic_load(&g_gc.bump.offset);
+}
+
+/* ============================================================================
+ * REFERENCE COUNTING STUBS
+ * ============================================================================
+ * 
+ * JS_DupValue, JS_FreeValue, and JS_FreeValueRT are defined as inline
+ * no-ops in quickjs.h since we're using mark-and-sweep GC.
+ * The shadow stack handles object lifetime management.
+ */
+
+/* ============================================================================
+ * SHADOW STACK IMPLEMENTATION
+ * ============================================================================
+ * 
+ * The shadow stack tracks JSValue references held by C code. This prevents
+ * garbage collection of values that are still in use by C code but not
+ * reachable from the JS root set.
+ */
+
+/* Initialize shadow stack (called by gc_init) */
+void gc_shadow_stack_init(void) {
+    g_gc.shadow_stack = NULL;
+    g_gc.shadow_stack_pool = NULL;
+    memset(&g_gc.shadow_stats, 0, sizeof(g_gc.shadow_stats));
+    LOG_INFO("Shadow stack initialized");
+}
+
+/* Cleanup shadow stack (called by gc_cleanup) */
+void gc_shadow_stack_cleanup(void) {
+    /* Free all pool entries */
+    GCShadowStackEntry *entry = g_gc.shadow_stack_pool;
+    while (entry) {
+        GCShadowStackEntry *next = entry->pool_next;
+        free(entry);
+        entry = next;
+    }
+    
+    /* Free all active stack entries */
+    entry = g_gc.shadow_stack;
+    while (entry) {
+        GCShadowStackEntry *next = entry->next;
+        free(entry);
+        entry = next;
+    }
+    
+    g_gc.shadow_stack = NULL;
+    g_gc.shadow_stack_pool = NULL;
+    
+    LOG_INFO("Shadow stack cleaned up (max_depth=%u)", g_gc.shadow_stats.max_depth);
+}
+
+/* Push a JSValue onto the shadow stack (registers as GC root) */
+void gc_push_jsvalue(JSContext *ctx, void *slot, const char *file, int line, const char *var_name) {
+    (void)ctx; /* May be used in future for per-context stacks */
+    
+    if (!slot) {
+        LOG_WARN("gc_push_jsvalue: NULL slot");
+        return;
+    }
+    
+    /* Get entry from pool or allocate new */
+    GCShadowStackEntry *entry = g_gc.shadow_stack_pool;
+    if (entry) {
+        g_gc.shadow_stack_pool = entry->pool_next;
+        g_gc.shadow_stats.pool_hits++;
+    } else {
+        entry = malloc(sizeof(GCShadowStackEntry));
+        if (!entry) {
+            LOG_ERROR("gc_push_jsvalue: failed to allocate entry");
+            return;
+        }
+        g_gc.shadow_stats.pool_misses++;
+    }
+    
+    entry->value_slot = slot;
+    entry->pool_next = NULL;
+    
+    #ifdef GC_DEBUG
+    entry->file = file;
+    entry->line = line;
+    entry->var_name = var_name;
+    #endif
+    
+    /* Push onto stack */
+    entry->next = g_gc.shadow_stack;
+    g_gc.shadow_stack = entry;
+    
+    /* Update stats */
+    g_gc.shadow_stats.current_depth++;
+    g_gc.shadow_stats.total_pushes++;
+    
+    if (g_gc.shadow_stats.current_depth > g_gc.shadow_stats.max_depth) {
+        g_gc.shadow_stats.max_depth = g_gc.shadow_stats.current_depth;
+    }
+    
+    LOG_INFO("JS_GC_PUSH: %s @ %s:%d (depth=%u)", 
+             var_name ? var_name : "?", 
+             file ? file : "?", 
+             line,
+             g_gc.shadow_stats.current_depth);
+}
+
+/* Pop a JSValue from the shadow stack */
+void gc_pop_jsvalue(JSContext *ctx, void *slot) {
+    (void)ctx;
+    
+    if (!slot) {
+        LOG_WARN("gc_pop_jsvalue: NULL slot");
+        return;
+    }
+    
+    /* Find entry with matching slot */
+    GCShadowStackEntry **pp = &g_gc.shadow_stack;
+    while (*pp) {
+        GCShadowStackEntry *entry = *pp;
+        if (entry->value_slot == slot) {
+            /* Remove from stack */
+            *pp = entry->next;
+            
+            /* Return to pool */
+            entry->next = NULL;
+            entry->pool_next = g_gc.shadow_stack_pool;
+            g_gc.shadow_stack_pool = entry;
+            
+            /* Update stats */
+            g_gc.shadow_stats.current_depth--;
+            g_gc.shadow_stats.total_pops++;
+            
+            LOG_INFO("JS_GC_POP: depth=%u", g_gc.shadow_stats.current_depth);
+            return;
+        }
+        pp = &(*pp)->next;
+    }
+    
+    /* Entry not found - mismatched push/pop */
+    LOG_WARN("JS_GC_POP: slot %p not found on shadow stack (mismatched push/pop?)", (void*)slot);
+}
+
+/* Mark all shadow stack entries during GC */
+void gc_mark_shadow_stack(void) {
+    uint32_t marked_count = 0;
+    
+    for (GCShadowStackEntry *entry = g_gc.shadow_stack; entry; entry = entry->next) {
+        JSValue *val = entry->value_slot;
+        if (!val) continue;
+        
+        /* Check if value is an object that needs marking */
+        /* JSValue tag indicates the type - objects have specific tag values */
+        /* For QuickJS: tag < 0 indicates reference types (objects, strings, etc.) */
+        if (val->tag < 0) {
+            void *ptr = val->u.ptr;
+            if (ptr && gc_ptr_is_valid(ptr)) {
+                GCHeader *hdr = gc_header(ptr);
+                if (hdr && hdr->size > 0) {
+                    hdr->mark = 1;
+                    marked_count++;
+                    
+                    #ifdef GC_DEBUG
+                    LOG_INFO("gc_mark_shadow_stack: marked %s from %s:%d", 
+                             entry->var_name ? entry->var_name : "?",
+                             entry->file ? entry->file : "?",
+                             entry->line);
+                    #endif
+                }
+            }
+        }
+    }
+    
+    if (marked_count > 0) {
+        LOG_INFO("gc_mark_shadow_stack: marked %u values from shadow stack", marked_count);
+    }
+}
+
+/* Get shadow stack statistics */
+void gc_shadow_stack_stats(GCShadowStackStats *stats) {
+    if (stats) {
+        memcpy(stats, &g_gc.shadow_stats, sizeof(GCShadowStackStats));
+    }
+}
+
+/* Validate shadow stack consistency */
+bool gc_shadow_stack_validate(char *error_buffer, size_t error_len) {
+    #define ERROR(fmt, ...) do { \
+        if (error_buffer && error_len > 0) { \
+            snprintf(error_buffer, error_len, fmt, ##__VA_ARGS__); \
+        } \
+        return false; \
+    } while(0)
+    
+    /* Count entries in stack */
+    uint32_t count = 0;
+    for (GCShadowStackEntry *entry = g_gc.shadow_stack; entry; entry = entry->next) {
+        count++;
+        /* Check for NULL slots */
+        if (!entry->value_slot) {
+            ERROR("Shadow stack entry %u has NULL slot", count);
+        }
+    }
+    
+    /* Verify count matches stats */
+    if (count != g_gc.shadow_stats.current_depth) {
+        ERROR("Shadow stack count mismatch: counted=%u, stats=%u", 
+              count, g_gc.shadow_stats.current_depth);
+    }
+    
+    return true;
+    #undef ERROR
+}
+
+/* Auto-cleanup helper for scoped values (used by macro) */
+void gc_auto_pop_helper(void **slot) {
+    if (slot && *slot) {
+        gc_pop_jsvalue(NULL, *slot);
+    }
 }

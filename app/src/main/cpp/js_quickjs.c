@@ -10,6 +10,7 @@
 #include "quickjs_gc_unified.h"
 #include "browser_stubs.h"
 #include "html_dom.h"
+#include "js_value_helpers.h"
 /* Using unified GC allocator from quickjs_gc_unified.h */
 
 #define LOG_TAG "js_quickjs"
@@ -41,8 +42,15 @@ static int g_captured_url_count = 0;
 static pthread_mutex_t g_url_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Record a captured URL
+// BUG FIX #1: Fixed buffer overflow using memcpy with explicit length validation
 void record_captured_url(const char *url) {
-    if (!url || strlen(url) == 0) return;
+    if (!url) return;
+    
+    size_t url_len = strlen(url);
+    if (url_len == 0 || url_len >= URL_MAX_LEN) {
+        LOG_WARN("URL too long or empty: %zu bytes", url_len);
+        return;
+    }
     
     pthread_mutex_lock(&g_url_mutex);
     
@@ -54,10 +62,10 @@ void record_captured_url(const char *url) {
         }
     }
     
-    // Add new URL
+    // Add new URL using memcpy for safe copy
     if (g_captured_url_count < MAX_CAPTURED_URLS) {
-        strncpy(g_captured_urls[g_captured_url_count], url, URL_MAX_LEN - 1);
-        g_captured_urls[g_captured_url_count][URL_MAX_LEN - 1] = '\0';
+        memcpy(g_captured_urls[g_captured_url_count], url, url_len);
+        g_captured_urls[g_captured_url_count][url_len] = '\0';
         g_captured_url_count++;
         LOG_INFO("Captured URL: %.100s...", url);
     }
@@ -714,6 +722,7 @@ static char* extract_attr(const char *html, const char *tag_end, const char *att
 }
 
 // Create DOM nodes from parsed HTML document
+// BUG FIX #2: Using shadow stack to track JSValues instead of manual JS_FreeValue
 static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) {
     if (!ctx || !doc) return 0;
     
@@ -725,47 +734,55 @@ static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) 
         
         while (node) {
             if (node->type == HTML_NODE_ELEMENT) {
-                /* Create the element */
-                JSValue elem = html_create_element_js(ctx, node->tag_name, node->attributes);
-                
-                if (!JS_IsNull(elem) && !JS_IsException(elem)) {
-                    /* Check for video elements specifically */
-                    if (strcasecmp(node->tag_name, "video") == 0) {
-                        LOG_INFO("Creating video element from parsed HTML");
-                        
-                        /* Extract src attribute if present */
-                        HtmlAttribute *attr = node->attributes;
-                        while (attr) {
-                            if (strcasecmp(attr->name, "src") == 0 && attr->value[0]) {
-                                JS_SetPropertyStr(ctx, elem, "src", JS_NewString(ctx, attr->value));
-                                record_captured_url(attr->value);
-                            }
-                            if (strcasecmp(attr->name, "id") == 0 && attr->value[0]) {
-                                JS_SetPropertyStr(ctx, elem, "id", JS_NewString(ctx, attr->value));
-                            }
-                            attr = attr->next;
-                        }
-                        
-                        count++;
-                    }
+                /* Use scope to auto-track all JSValues */
+                JS_SCOPE_BEGIN(ctx)
+                {
+                    /* Create the element */
+                    JS_SCOPE_VALUE(ctx, elem, html_create_element_js(ctx, node->tag_name, node->attributes));
                     
-                    /* Add to document.body */
-                    JSValue body = JS_GetPropertyStr(ctx, JS_GetGlobalObject(ctx), "document");
-                    if (!JS_IsUndefined(body) && !JS_IsNull(body)) {
-                        JSValue doc_body = JS_GetPropertyStr(ctx, body, "body");
-                        if (!JS_IsUndefined(doc_body) && !JS_IsNull(doc_body)) {
-                            JSValue appendChild = JS_GetPropertyStr(ctx, doc_body, "appendChild");
-                            if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
-                                JSValue args[1] = { elem };
-                                JS_Call(ctx, appendChild, doc_body, 1, args);
-
+                    if (!JS_IsNull(elem) && !JS_IsException(elem)) {
+                        /* Check for video elements specifically */
+                        if (strcasecmp(node->tag_name, "video") == 0) {
+                            LOG_INFO("Creating video element from parsed HTML");
+                            
+                            /* Extract src attribute if present */
+                            HtmlAttribute *attr = node->attributes;
+                            while (attr) {
+                                if (strcasecmp(attr->name, "src") == 0 && attr->value[0]) {
+                                    JS_SCOPE_VALUE(ctx, src_val, JS_NewString(ctx, attr->value));
+                                    JS_SetPropertyStr(ctx, elem, "src", src_val);
+                                    record_captured_url(attr->value);
+                                }
+                                if (strcasecmp(attr->name, "id") == 0 && attr->value[0]) {
+                                    JS_SCOPE_VALUE(ctx, id_val, JS_NewString(ctx, attr->value));
+                                    JS_SetPropertyStr(ctx, elem, "id", id_val);
+                                }
+                                attr = attr->next;
                             }
-
+                            
+                            count++;
                         }
-
+                        
+                        /* Add to document.body */
+                        JS_SCOPE_VALUE(ctx, global, JS_GetGlobalObject(ctx));
+                        JS_SCOPE_VALUE(ctx, body, JS_GetPropertyStr(ctx, global, "document"));
+                        
+                        if (!JS_IsUndefined(body) && !JS_IsNull(body)) {
+                            JS_SCOPE_VALUE(ctx, doc_body, JS_GetPropertyStr(ctx, body, "body"));
+                            
+                            if (!JS_IsUndefined(doc_body) && !JS_IsNull(doc_body)) {
+                                JS_SCOPE_VALUE(ctx, appendChild, JS_GetPropertyStr(ctx, doc_body, "appendChild"));
+                                
+                                if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
+                                    JSValue args[1] = { elem };
+                                    JS_SCOPE_VALUE(ctx, result, JS_Call(ctx, appendChild, doc_body, 1, args));
+                                    (void)result; /* Result tracked by scope, ignore for logic */
+                                }
+                            }
+                        }
                     }
-
                 }
+                JS_SCOPE_END(ctx);
             }
             node = node->next_sibling;
         }
@@ -775,6 +792,7 @@ static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) 
 }
 
 // Parse HTML and create elements from <video> tags using the proper DOM parser
+// BUG FIX #3: Using shadow stack to track JSValues instead of manual JS_FreeValue
 static int create_video_elements_from_html(JSContext *ctx, const char *html) {
     if (!html) return 0;
     
@@ -798,53 +816,60 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
     for (int i = 0; i < video_count; i++) {
         HtmlNode *node = video_nodes[i];
         
-        /* Create video element */
-        JSValue video = js_video_constructor(ctx, JS_NULL, 0, NULL);
-        
-        if (!JS_IsException(video)) {
-            /* Extract and set attributes */
-            HtmlAttribute *attr = node->attributes;
-            while (attr) {
-                if (strcasecmp(attr->name, "id") == 0 && attr->value[0]) {
-                    JS_SetPropertyStr(ctx, video, "id", JS_NewString(ctx, attr->value));
-                } else if (strcasecmp(attr->name, "src") == 0 && attr->value[0]) {
-                    JS_SetPropertyStr(ctx, video, "src", JS_NewString(ctx, attr->value));
-                    record_captured_url(attr->value);
-                } else if (strcasecmp(attr->name, "class") == 0 && attr->value[0]) {
-                    JS_SetPropertyStr(ctx, video, "className", JS_NewString(ctx, attr->value));
-                }
-                attr = attr->next;
-            }
+        /* Use scope to auto-track all JSValues for this iteration */
+        JS_SCOPE_BEGIN(ctx)
+        {
+            /* Create video element */
+            JS_SCOPE_VALUE(ctx, video, js_video_constructor(ctx, JS_NULL, 0, NULL));
             
-            /* If no ID set but one exists in JS, use a default */
-            JSValue id_prop = JS_GetPropertyStr(ctx, video, "id");
-            const char *current_id = JS_ToCString(ctx, id_prop);
-            if (!current_id || !current_id[0]) {
-                char default_id[32];
-                snprintf(default_id, sizeof(default_id), "video_%d", i);
-                JS_SetPropertyStr(ctx, video, "id", JS_NewString(ctx, default_id));
-            }
-            JS_FreeCString(ctx, current_id);
+            if (!JS_IsException(video)) {
+                /* Extract and set attributes */
+                HtmlAttribute *attr = node->attributes;
+                while (attr) {
+                    if (strcasecmp(attr->name, "id") == 0 && attr->value[0]) {
+                        JS_SCOPE_VALUE(ctx, id_val, JS_NewString(ctx, attr->value));
+                        JS_SetPropertyStr(ctx, video, "id", id_val);
+                    } else if (strcasecmp(attr->name, "src") == 0 && attr->value[0]) {
+                        JS_SCOPE_VALUE(ctx, src_val, JS_NewString(ctx, attr->value));
+                        JS_SetPropertyStr(ctx, video, "src", src_val);
+                        record_captured_url(attr->value);
+                    } else if (strcasecmp(attr->name, "class") == 0 && attr->value[0]) {
+                        JS_SCOPE_VALUE(ctx, class_val, JS_NewString(ctx, attr->value));
+                        JS_SetPropertyStr(ctx, video, "className", class_val);
+                    }
+                    attr = attr->next;
+                }
+                
+                /* If no ID set but one exists in JS, use a default */
+                JS_SCOPE_VALUE(ctx, id_prop, JS_GetPropertyStr(ctx, video, "id"));
+                const char *current_id = JS_ToCString(ctx, id_prop);
+                if (!current_id || !current_id[0]) {
+                    char default_id[32];
+                    snprintf(default_id, sizeof(default_id), "video_%d", i);
+                    JS_SCOPE_VALUE(ctx, default_id_val, JS_NewString(ctx, default_id));
+                    JS_SetPropertyStr(ctx, video, "id", default_id_val);
+                }
+                JS_FreeCString(ctx, current_id);
 
-            /* Add to document.body */
-            JSValue global = JS_GetGlobalObject(ctx);
-            JSValue doc = JS_GetPropertyStr(ctx, global, "document");
-            JSValue body = JS_GetPropertyStr(ctx, doc, "body");
-            
-            if (!JS_IsUndefined(body) && !JS_IsNull(body)) {
-                JSValue appendChild = JS_GetPropertyStr(ctx, body, "appendChild");
-                if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
-                    JSValue args[1] = { video };
-                    JS_Call(ctx, appendChild, body, 1, args);
-
-                    created++;
+                /* Add to document.body */
+                JS_SCOPE_VALUE(ctx, global, JS_GetGlobalObject(ctx));
+                JS_SCOPE_VALUE(ctx, doc_obj, JS_GetPropertyStr(ctx, global, "document"));
+                JS_SCOPE_VALUE(ctx, body, JS_GetPropertyStr(ctx, doc_obj, "body"));
+                
+                if (!JS_IsUndefined(body) && !JS_IsNull(body)) {
+                    JS_SCOPE_VALUE(ctx, appendChild, JS_GetPropertyStr(ctx, body, "appendChild"));
+                    
+                    if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
+                        JSValue args[1] = { video };
+                        JS_SCOPE_VALUE(ctx, result, JS_Call(ctx, appendChild, body, 1, args));
+                        (void)result; /* Result tracked by scope */
+                        
+                        created++;
+                    }
                 }
             }
-
-
-
-
         }
+        JS_SCOPE_END(ctx);
     }
     
     LOG_INFO("Created %d video elements from parsed HTML", created);
@@ -1227,10 +1252,15 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
 
     // Get captured URLs
     pthread_mutex_lock(&g_url_mutex);
+    // BUG FIX #5: Safe string copy using memcpy with proper length validation
     out_result->captured_url_count = g_captured_url_count;
     for (int i = 0; i < g_captured_url_count && i < JS_MAX_CAPTURED_URLS; i++) {
-        strncpy(out_result->captured_urls[i], g_captured_urls[i], JS_MAX_URL_LEN - 1);
-        out_result->captured_urls[i][JS_MAX_URL_LEN - 1] = '\0';
+        size_t len = strlen(g_captured_urls[i]);
+        if (len >= JS_MAX_URL_LEN) {
+            len = JS_MAX_URL_LEN - 1;
+        }
+        memcpy(out_result->captured_urls[i], g_captured_urls[i], len);
+        out_result->captured_urls[i][len] = '\0';
     }
     pthread_mutex_unlock(&g_url_mutex);
     
@@ -1248,7 +1278,12 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     return out_result->status == JS_EXEC_SUCCESS;
 }
 
+// BUG FIX #4: Added parameter validation before locking mutex
 int js_quickjs_get_captured_urls(char urls[][JS_MAX_URL_LEN], int max_urls) {
+    if (!urls || max_urls <= 0) {
+        return 0;
+    }
+    
     pthread_mutex_lock(&g_url_mutex);
     int count = 0;
     for (int i = 0; i < g_captured_url_count && i < max_urls && i < MAX_CAPTURED_URLS; i++) {

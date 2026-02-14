@@ -17,9 +17,16 @@
 extern "C" {
 #endif
 
-/* Forward declaration for JSRuntime (used by gc_alloc_js_object) */
+/* Forward declarations for QuickJS types */
 struct JSRuntime;
 typedef struct JSRuntime JSRuntime;
+struct JSContext;
+typedef struct JSContext JSContext;
+
+/* Note: JSValue is defined in quickjs.h - must include that header to use
+ * functions that take/return JSValue. We don't define it here to avoid
+ * conflicts. Shadow stack functions take void* for value_slot which will
+ * be cast to JSValue* by the macros in js_value_helpers.h. */
 
 /* Total GC heap size - 512MB */
 #define GC_HEAP_SIZE (512 * 1024 * 1024)
@@ -92,6 +99,50 @@ typedef struct GCHandleEntry {
     uint32_t gen;           /* Generation for debugging */
 } GCHandleEntry;
 
+/* ============================================================================
+ * SHADOW STACK - For tracking C-level JSValue references
+ * ============================================================================
+ * 
+ * The shadow stack tracks JSValue variables held by C code. When the GC runs,
+ * it treats these as additional roots, preventing collection of values that
+ * are still in use by C code.
+ * 
+ * Usage:
+ *   JSValue val = JS_GetPropertyStr(ctx, obj, "foo");
+ *   JS_GC_PUSH(ctx, val);  // Register as GC root
+ *   // ... use val ...
+ *   JS_GC_POP(ctx, val);   // Unregister when done
+ * 
+ * Or use the scoped helper:
+ *   JS_GC_SCOPED(ctx, val, JS_GetPropertyStr(ctx, obj, "foo"));
+ *   // ... use val ...
+ *   // automatically popped when val goes out of scope
+ */
+
+/* Shadow stack entry - tracks a single JSValue variable */
+/* Note: value_slot is void* to avoid needing JSValue definition here.
+ * The actual type is JSValue* - casts are handled by macros. */
+typedef struct GCShadowStackEntry {
+    void *value_slot;              /* Pointer to the C variable holding JSValue */
+    struct GCShadowStackEntry *next;  /* Next entry in stack (linked list) */
+    struct GCShadowStackEntry *pool_next; /* Next entry in free pool */
+    #ifdef GC_DEBUG
+    const char *file;              /* Source file where push occurred */
+    int line;                      /* Line number */
+    const char *var_name;          /* Variable name */
+    #endif
+} GCShadowStackEntry;
+
+/* Shadow stack statistics */
+typedef struct GCShadowStackStats {
+    uint32_t current_depth;        /* Current stack depth */
+    uint32_t max_depth;            /* Maximum depth reached */
+    uint32_t total_pushes;         /* Total push operations */
+    uint32_t total_pops;           /* Total pop operations */
+    uint32_t pool_hits;            /* Allocations from pool */
+    uint32_t pool_misses;          /* Allocations from malloc */
+} GCShadowStackStats;
+
 /* Bump allocator region */
 typedef struct GCBumpRegion {
     uint8_t *base;
@@ -130,6 +181,11 @@ typedef struct GCState {
     size_t bytes_allocated;     /* Current allocated bytes (for GC trigger) */
     size_t gc_threshold;        /* Threshold for triggering GC */
     struct JSRuntime *rt;       /* Pointer to runtime for updating malloc_state */
+    
+    /* Shadow stack for tracking C-level JSValue roots */
+    GCShadowStackEntry *shadow_stack;      /* Head of active stack */
+    GCShadowStackEntry *shadow_stack_pool; /* Free list for reuse */
+    GCShadowStackStats shadow_stats;       /* Statistics */
     
     /* Initialized? */
     bool initialized;
@@ -230,6 +286,68 @@ static inline size_t gc_alloc_size(void *ptr) {
     GCHeader *hdr = gc_header(ptr);
     return hdr->size;
 }
+
+/* ============================================================================
+ * Shadow Stack API
+ * ============================================================================
+ */
+
+/* Initialize shadow stack (called by gc_init) */
+void gc_shadow_stack_init(void);
+
+/* Cleanup shadow stack (called by gc_cleanup) */
+void gc_shadow_stack_cleanup(void);
+
+/* Push a JSValue onto the shadow stack (registers as GC root) */
+/* value_slot should point to a JSValue variable */
+void gc_push_jsvalue(JSContext *ctx, void *value_slot, const char *file, int line, const char *var_name);
+
+/* Pop a JSValue from the shadow stack */
+void gc_pop_jsvalue(JSContext *ctx, void *value_slot);
+
+/* Mark all shadow stack entries during GC (internal use) */
+void gc_mark_shadow_stack(void);
+
+/* Get shadow stack statistics */
+void gc_shadow_stack_stats(GCShadowStackStats *stats);
+
+/* Validate shadow stack consistency (for debugging) */
+bool gc_shadow_stack_validate(char *error_buffer, size_t error_len);
+
+/* Auto-cleanup helper for scoped values (used by JS_GC_SCOPED macro) */
+/* Takes void** to avoid needing JSValue definition in this header */
+void gc_auto_pop_helper(void **slot);
+
+/* Internal auto-pop wrapper for attribute cleanup */
+static inline void gc_auto_pop_wrapper(void ***slot_ptr) {
+    if (slot_ptr && *slot_ptr) {
+        gc_auto_pop_helper(*slot_ptr);
+    }
+}
+
+/* ============================================================================
+ * Convenience Macros
+ * ============================================================================
+ */
+
+/* Push a JSValue onto the shadow stack */
+#define JS_GC_PUSH(ctx, var) \
+    gc_push_jsvalue(ctx, &var, __FILE__, __LINE__, #var)
+
+/* Pop a JSValue from the shadow stack */
+#define JS_GC_POP(ctx, var) \
+    gc_pop_jsvalue(ctx, &var)
+
+/* Scoped JSValue that auto-pops when going out of scope
+ * Usage: JS_GC_SCOPED(ctx, myval, JS_GetPropertyStr(ctx, obj, "foo"));
+ */
+#define JS_GC_SCOPED(ctx, name, init_expr) \
+    JSValue name = (init_expr); \
+    JS_GC_PUSH(ctx, name); \
+    __attribute__((cleanup(gc_auto_pop_wrapper))) JSValue * _gc_scope_ptr_##name = &_gc_scope_##name; \
+    JSValue * _gc_scope_##name = &name; \
+    (void)_gc_scope_ptr_##name; \
+    (void)_gc_scope_##name
 
 #ifdef __cplusplus
 }
