@@ -1,0 +1,76 @@
+# Advanced LLDB Commands for bgmdwnldr Debugging
+#
+# Usage:
+# 1. Start the app: ./debug_lldb.sh
+# 2. In another terminal:
+#    lldb -o "command script import lldb_advanced_debug.py" -s lldb_advanced_commands.txt
+
+# Settings
+settings set target.async false
+settings set target.x86-disassembly-flavor intel
+settings set frame-format "frame #${frame.index}: ${frame.pc}{ ${module.file.basename}`${function.name-with-args}{${file.basename}:${line.number}}\n"
+
+# Connect to device
+platform select remote-android
+platform connect connect://localhost:5039
+
+# Get PID and attach
+script import subprocess; pid = subprocess.check_output(["adb", "shell", "pidof", "com.bgmdwldr.vulkan"]).decode().strip(); print(f"Attaching to PID: {pid}"); lldb.debugger.HandleCommand(f"attach -p {pid}")
+
+# Load the advanced debugging module
+command script import lldb_advanced_debug.py
+
+# Set up comprehensive debugging
+setup_debug
+
+# Set breakpoints on critical functions that may have bugs
+# These breakpoints will use scripted callbacks
+
+# Memory allocation tracking
+breakpoint set -n malloc -N "malloc_tracker"
+breakpoint set -n free -N "free_tracker"
+breakpoint set -n realloc -N "realloc_tracker"
+
+# QuickJS critical functions
+breakpoint set -n JS_Call -N "js_call_tracker"
+breakpoint set -n JS_SetPropertyStr -N "js_setprop_tracker"
+breakpoint set -n JS_GetPropertyStr -N "js_getprop_tracker"
+
+# Threading functions
+breakpoint set -n pthread_mutex_lock -N "mutex_lock_tracker"
+breakpoint set -n pthread_mutex_unlock -N "mutex_unlock_tracker"
+breakpoint set -n pthread_create -N "thread_create_tracker"
+
+# Application-specific functions with potential issues
+breakpoint set -n js_quickjs_exec_scripts -N "js_exec_tracker"
+breakpoint set -n record_captured_url -N "url_capture_tracker"
+breakpoint set -n html_extract_media_url -N "html_extract_tracker"
+
+# Set conditional breakpoints for specific issues
+# Break on malloc of large sizes (potential memory bloat)
+breakpoint set -n malloc -c "(size_t)$x0 > 10000000"
+
+# Break on errors (functions returning NULL/0)
+breakpoint set -n js_quickjs_exec_scripts
+
+# Continue execution
+continue
+
+# When a breakpoint hits, these commands will help diagnose:
+# - bt all              : Backtrace all threads
+# - frame variable      : Show local variables
+# - register read       : Show register values
+# - memory read $sp-64 $sp+64 : Show stack memory
+# - thread list         : List all threads
+# - thread backtrace all: Backtrace all threads
+
+# Advanced inspection commands:
+# - jsvalue <addr>      : Inspect QuickJS JSValue
+# - htmlnode <addr>     : Inspect HTML node
+# - memscan <start> <size> <pattern> : Scan memory
+# - memleak_check       : Check for memory leaks
+# - threadcheck         : Check thread safety
+
+# Watchpoint examples (set these after hitting relevant breakpoints):
+# - watchpoint set expression -w write -- &g_captured_url_count
+# - watchpoint set expression -w write -- <address_of_interest>

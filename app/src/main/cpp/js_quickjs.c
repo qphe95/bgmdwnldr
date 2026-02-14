@@ -83,10 +83,11 @@ typedef struct {
 static void js_xhr_finalizer(JSRuntime *rt, JSValue val) {
     XMLHttpRequest *xhr = JS_GetOpaque(val, js_xhr_class_id);
     if (xhr) {
-
-
-
-
+        // Free JSValue fields to prevent memory leaks
+        JS_FreeValueRT(rt, xhr->headers);
+        JS_FreeValueRT(rt, xhr->onload);
+        JS_FreeValueRT(rt, xhr->onerror);
+        JS_FreeValueRT(rt, xhr->onreadystatechange);
         free(xhr);
     }
 }
@@ -218,7 +219,14 @@ typedef struct {
 static void js_video_finalizer(JSRuntime *rt, JSValue val) {
     HTMLVideoElement *vid = JS_GetOpaque(val, js_video_class_id);
     if (vid) {
-        // Callback values are freed by mark-and-sweep GC
+        // Free all event handler references that were duped in setters
+        // These must be freed to prevent memory leaks
+        JS_FreeValueRT(rt, vid->onloadstart);
+        JS_FreeValueRT(rt, vid->onloadedmetadata);
+        JS_FreeValueRT(rt, vid->oncanplay);
+        JS_FreeValueRT(rt, vid->onplay);
+        JS_FreeValueRT(rt, vid->onplaying);
+        JS_FreeValueRT(rt, vid->onerror);
         free(vid);
     }
 }
@@ -371,16 +379,20 @@ static JSValue js_video_get_network_state(JSContext *ctx, JSValueConst this_val)
 }
 
 // Generic getter/setter for event callbacks
+// NOTE: Proper reference counting is critical here. When storing a JSValue
+// in the C struct, we must dup it to prevent use-after-free when the
+// original value is garbage collected.
 #define DEFINE_VIDEO_EVENT_HANDLER(name, field) \
     static JSValue js_video_get_##name(JSContext *ctx, JSValueConst this_val) { \
         HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
         if (!vid) return JS_EXCEPTION; \
-        return vid->field; \
+        return JS_DupValue(ctx, vid->field); \
     } \
     static JSValue js_video_set_##name(JSContext *ctx, JSValueConst this_val, JSValueConst val) { \
         HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
         if (!vid) return JS_EXCEPTION; \
-        vid->field = val; \
+        JS_FreeValue(ctx, vid->field); \
+        vid->field = JS_DupValue(ctx, val); \
         return JS_UNDEFINED; \
     }
 
@@ -552,8 +564,8 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     
     // Skip if window doesn't exist or isn't an object
     if (JS_IsUndefined(window_obj) || JS_IsNull(window_obj) || !JS_IsObject(window_obj)) {
-
-
+        JS_FreeValue(ctx, window_obj);
+        JS_FreeValue(ctx, global);
         return;
     }
     
@@ -561,16 +573,16 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     // We check this by comparing using JS_StrictEq which returns 1 if equal
     int is_equal = JS_StrictEq(ctx, window_obj, global);
     if (is_equal == 1) {
-
-
+        JS_FreeValue(ctx, window_obj);
+        JS_FreeValue(ctx, global);
         return;
     }
     
     // Skip internal properties
     const char *prop_name = JS_AtomToCString(ctx, var_name);
     if (!prop_name) {
-
-
+        JS_FreeValue(ctx, window_obj);
+        JS_FreeValue(ctx, global);
         return;
     }
     
@@ -585,8 +597,8 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
         strcmp(prop_name, "document") == 0 ||
         strcmp(prop_name, "console") == 0) {
         JS_FreeCString(ctx, prop_name);
-
-
+        JS_FreeValue(ctx, window_obj);
+        JS_FreeValue(ctx, global);
         return;
     }
     
@@ -599,29 +611,26 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
         if (!JS_IsException(val)) {
             // Skip undefined values - the callback may be called during closure
             // creation before the variable is actually initialized
-            if (JS_IsUndefined(val)) {
-
-            } else {
-                // Reference counting:
-                // 1. global object holds a reference to the value
-                // 2. val from JS_GetProperty is another reference (caller-owned)
-                // 3. We dup val to create val_dup (third reference)
-                // 4. We free val (back to global's reference + val_dup)
-                // 5. JS_SetProperty consumes val_dup (back to global's reference)
-                JSValue val_dup = val;
-
-                if (JS_SetProperty(ctx, window_obj, var_name, val_dup) < 0) {
-                    // SetProperty failed, free our duped reference to avoid leak
-
+            if (!JS_IsUndefined(val)) {
+                // Proper reference counting:
+                // 1. JS_GetProperty returns a new reference (val)
+                // 2. JS_SetProperty consumes the reference we pass to it
+                // 3. We don't need val after setting, so pass it directly
+                if (JS_SetProperty(ctx, window_obj, var_name, val) < 0) {
+                    // SetProperty failed, free the reference to avoid leak
+                    JS_FreeValue(ctx, val);
                 }
-                // If successful, val_dup reference is now owned by window_obj
+                // If successful, val reference is now owned by window_obj
+            } else {
+                // val is undefined, free the reference
+                JS_FreeValue(ctx, val);
             }
         }
     }
     
     JS_FreeCString(ctx, prop_name);
-
-
+    JS_FreeValue(ctx, window_obj);
+    JS_FreeValue(ctx, global);
 }
 
 // Initialize browser environment
