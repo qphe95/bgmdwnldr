@@ -22,7 +22,7 @@ adb forward tcp:5039 tcp:5039
 
 # Start app in debug mode (will wait for debugger)
 echo "[2/6] Starting app with debugger wait..."
-adb shell "ASAN_OPTIONS=detect_leaks=0" am start -D -n com.bgmdwldr.vulkan/.MainActivity
+adb shell am start -D -n com.bgmdwldr.vulkan/.MainActivity
 
 # Wait for app to initialize
 sleep 3
@@ -45,9 +45,6 @@ platform connect connect://localhost:5039
 attach -p $PID
 
 # We should be stopped at debugger entry
-# Continue to let ASAN initialize
-continue
-
 # Wait for shape address to appear in logs
 script import time
 script print("Waiting for app to initialize...")

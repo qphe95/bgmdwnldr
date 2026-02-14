@@ -3,7 +3,7 @@
 # Start the app
 adb shell am force-stop com.bgmdwldr.vulkan
 adb logcat -c
-adb shell "ASAN_OPTIONS=detect_leaks=0" am start -n com.bgmdwldr.vulkan/.MainActivity
+adb shell am start -n com.bgmdwldr.vulkan/.MainActivity
 
 # Wait for app to start and get PID
 sleep 2

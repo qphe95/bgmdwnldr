@@ -11,7 +11,7 @@ sleep 1
 
 # Start the app in debug mode (wait for debugger)
 echo "[1/6] Starting app in debug mode..."
-adb shell "ASAN_OPTIONS=detect_leaks=0" am start -D -n com.bgmdwldr.vulkan/.MainActivity
+adb shell am start -D -n com.bgmdwldr.vulkan/.MainActivity
 
 # Wait for app to start
 sleep 3

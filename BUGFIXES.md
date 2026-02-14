@@ -308,14 +308,7 @@ JS_SCOPE_END(ctx)
 
 ## Testing Recommendations
 
-1. **Run with ASAN**:
-   ```bash
-   ./setup_asan.sh
-   ./rebuild.sh
-   ./wrap_with_asan.sh
-   ```
-
-2. **Monitor Shadow Stack Statistics**:
+1. **Monitor Shadow Stack Statistics**:
    ```c
    GCShadowStackStats stats;
    gc_shadow_stack_stats(&stats);
@@ -323,12 +316,12 @@ JS_SCOPE_END(ctx)
             stats.current_depth, stats.max_depth, stats.total_pushes);
    ```
 
-3. **Check for Leaks in Logcat**:
+2. **Check for Leaks in Logcat**:
    ```bash
    adb logcat | grep -E "(shadow stack|GC|Leak)"
    ```
 
-4. **Validate Shadow Stack Consistency** (debug builds):
+3. **Validate Shadow Stack Consistency** (debug builds):
    ```c
    char error[256];
    if (!gc_shadow_stack_validate(error, sizeof(error))) {
@@ -357,6 +350,5 @@ To prevent similar bugs in the future:
 3. **Run static analysis tools**:
    - clang-static-analyzer
    - cppcheck
-   - ASAN/MSAN/UBSAN
 
 4. **Monitor shadow stack depth** in production to detect potential leaks
