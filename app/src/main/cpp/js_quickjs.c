@@ -13,10 +13,7 @@
 #include "js_value_helpers.h"
 /* Using unified GC allocator from quickjs_gc_unified.h */
 
-#define LOG_TAG "js_quickjs"
-#define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOG_ERROR(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOG_WARN(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+/* Debug logging removed - using LLDB for debugging */
 
 #define MAX_CAPTURED_URLS 64
 
@@ -48,7 +45,6 @@ void record_captured_url(const char *url) {
     
     size_t url_len = strlen(url);
     if (url_len == 0 || url_len >= URL_MAX_LEN) {
-        LOG_WARN("URL too long or empty: %zu bytes", url_len);
         return;
     }
     
@@ -67,7 +63,6 @@ void record_captured_url(const char *url) {
         memcpy(g_captured_urls[g_captured_url_count], url, url_len);
         g_captured_urls[g_captured_url_count][url_len] = '\0';
         g_captured_url_count++;
-        LOG_INFO("Captured URL: %.100s...", url);
     }
     
     pthread_mutex_unlock(&g_url_mutex);
@@ -311,14 +306,10 @@ static JSValue js_video_set_src(JSContext *ctx, JSValueConst this_val, JSValueCo
     
     const char *src = JS_ToCString(ctx, val);
     if (src) {
-        LOG_INFO("HTMLVideoElement: video.src SET to: %.100s%s (element id=%s)",
-                 src, strlen(src) > 100 ? "..." : "",
-                 vid->id[0] != '\0' ? vid->id : "(none)");
         strncpy(vid->src, src, sizeof(vid->src) - 1);
         vid->src[sizeof(vid->src) - 1] = '\0';
         record_captured_url(src);
     } else {
-        LOG_INFO("HTMLVideoElement: video.src SET to null/empty");
         vid->src[0] = '\0';
     }
     JS_FreeCString(ctx, src);
@@ -539,15 +530,8 @@ static JSValue js_dummy_function(JSContext *ctx, JSValueConst this_val, int argc
     return JS_UNDEFINED;
 }
 
-// Native logging function for JavaScript debugging
+// Native logging function for JavaScript debugging (disabled - using LLDB)
 static JSValue js_bgmdwnldr_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    if (argc > 0) {
-        const char *msg = JS_ToCString(ctx, argv[0]);
-        if (msg) {
-            __android_log_print(ANDROID_LOG_INFO, "js_debug", "%s", msg);
-            JS_FreeCString(ctx, msg);
-        }
-    }
     return JS_UNDEFINED;
 }
 
@@ -555,7 +539,6 @@ static JSValue js_console_log(JSContext *ctx, JSValueConst this_val, int argc, J
     for (int i = 0; i < argc; i++) {
         const char *str = JS_ToCString(ctx, argv[i]);
         if (str) {
-            LOG_INFO("JS: %s", str);
             JS_FreeCString(ctx, str);
         }
     }
@@ -643,23 +626,19 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
 
 // Initialize browser environment
 static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
-    LOG_INFO("Getting global object...");
     JSValue global = JS_GetGlobalObject(ctx);
     
     // Register native logging function
-    LOG_INFO("Registering native logging...");
     JS_SetPropertyStr(ctx, global, "__bgmdwnldr_log", 
         JS_NewCFunction(ctx, js_bgmdwnldr_log, "__bgmdwnldr_log", 1));
     
     // Initialize all browser stubs (DOM, window, document, XMLHttpRequest, etc.)
     // This sets up constructors, prototype chains, and document.body
-    LOG_INFO("Initializing browser stubs...");
     init_browser_stubs(ctx, global);
     
     // Note: This QuickJS uses garbage collection, no need to free values explicitly
     (void)global;  // Suppress unused warning
     
-    LOG_INFO("Browser environment initialized");
 }
 
 // Static initializer for class IDs using GCC constructor attribute
@@ -677,11 +656,9 @@ bool js_quickjs_init(void) {
     // Initialize unified GC first - all memory comes from here
     if (!gc_is_initialized()) {
         if (!gc_init()) {
-            LOG_ERROR("Failed to initialize unified GC");
             return false;
         }
     }
-    LOG_INFO("QuickJS GC subsystem initialized, used: %zu bytes", gc_used());
     return true;
 }
 
@@ -743,7 +720,6 @@ static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) 
                     if (!JS_IsNull(elem) && !JS_IsException(elem)) {
                         /* Check for video elements specifically */
                         if (strcasecmp(node->tag_name, "video") == 0) {
-                            LOG_INFO("Creating video element from parsed HTML");
                             
                             /* Extract src attribute if present */
                             HtmlAttribute *attr = node->attributes;
@@ -796,12 +772,10 @@ static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) 
 static int create_video_elements_from_html(JSContext *ctx, const char *html) {
     if (!html) return 0;
     
-    LOG_INFO("Parsing HTML with DOM parser...");
     
     /* Parse the HTML document */
     HtmlDocument *doc = html_parse(html, strlen(html));
     if (!doc) {
-        LOG_ERROR("Failed to parse HTML document");
         return 0;
     }
     
@@ -809,7 +783,6 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
     HtmlNode *video_nodes[64];
     int video_count = html_document_get_elements_by_tag(doc, "video", video_nodes, 64);
     
-    LOG_INFO("Found %d video elements in parsed HTML", video_count);
     
     /* Create video elements from the parsed DOM */
     int created = 0;
@@ -872,7 +845,6 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
         JS_SCOPE_END(ctx);
     }
     
-    LOG_INFO("Created %d video elements from parsed HTML", created);
     
     /* Free the parsed document */
     html_document_free(doc);
@@ -885,7 +857,6 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
                              AAssetManager *asset_mgr,
                              JsExecResult *out_result) {
     if (!scripts || script_count <= 0 || !out_result) {
-        LOG_ERROR("Invalid arguments to js_quickjs_exec_scripts");
         return false;
     }
     
@@ -900,57 +871,43 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     
     // Initialize GC first (must happen before any other QuickJS calls)
     if (!js_quickjs_init()) {
-        LOG_ERROR("Failed to initialize QuickJS (GC init failed)");
         return false;
     }
     
     // Create runtime using unified GC allocator
-    LOG_INFO("Creating QuickJS runtime with unified GC...");
     
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) {
-        LOG_ERROR("Failed to create QuickJS runtime");
         return false;
     }
-    LOG_INFO("QuickJS runtime created successfully with stack allocator");
     
     // Set limits after successful runtime creation
-    LOG_INFO("Setting memory limits...");
     JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
     JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
     
     // Create context - this initializes built-in objects
-    LOG_INFO("Creating QuickJS context...");
     JSContext *ctx = JS_NewContext(rt);
-    LOG_INFO("JS_NewContext returned: %p", (void*)ctx);
     
     if (!ctx) {
-        LOG_ERROR("Failed to create QuickJS context");
         JS_FreeRuntime(rt);
         return false;
     }
     
-    LOG_INFO("Registering custom classes...");
     // NOW register custom classes after context is created
     JSClassDef xhr_def = {"XMLHttpRequest", .finalizer = js_xhr_finalizer};
     JSClassDef video_def = {"HTMLVideoElement", .finalizer = js_video_finalizer};
     if (JS_NewClass(rt, js_xhr_class_id, &xhr_def) < 0) {
-        LOG_ERROR("Failed to register XMLHttpRequest class");
     }
     if (JS_NewClass(rt, js_video_class_id, &video_def) < 0) {
-        LOG_ERROR("Failed to register HTMLVideoElement class");
     }
     
     // Initialize full browser environment with all necessary APIs
-    LOG_INFO("Initializing browser environment...");
     init_browser_environment(ctx, asset_mgr);
-    LOG_INFO("Browser environment done");
 
     // Parse HTML and create video elements BEFORE loading scripts
     // This handles Scenario B: HTML has <video> tags directly
     if (html && strlen(html) > 0) {
         int video_count = create_video_elements_from_html(ctx, html);
-        LOG_INFO("Created %d video elements from HTML parsing", video_count);
     }
     
     // Also create default video element for Scenario A: JS creates video element
@@ -972,12 +929,10 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         "}\n"
     ;
     
-    LOG_INFO("Creating default video element...");
     JSValue default_result = JS_Eval(ctx, default_video_js, strlen(default_video_js), "<default_video>", 0);
     if (JS_IsException(default_result)) {
         JSValue exception = JS_GetException(ctx);
         const char *error = JS_ToCString(ctx, exception);
-        LOG_ERROR("Default video error: %s", error ? error : "unknown");
         JS_FreeCString(ctx, error);
 
     }
@@ -994,7 +949,6 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         char filename[64];
         snprintf(filename, sizeof(filename), "<script_%d>", i);
         
-        LOG_INFO("Executing script %d/%d (%zu bytes)", i + 1, script_count, script_lens[i]);
         
         // Wrap scripts that tend to fail in try-catch so they don't crash the whole execution
         // The signature decryption function might still be set up even if some parts fail
@@ -1022,35 +976,14 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         if (JS_IsException(result)) {
             JSValue exception = JS_GetException(ctx);
             const char *error = JS_ToCString(ctx, exception);
-            LOG_ERROR("Script %d execution error: %s", i, error ? error : "unknown");
-            
-            // Log first 200 chars of failing script for debugging
-            if (script_lens[i] > 0) {
-                char preview[201];
-                size_t preview_len = script_lens[i] < 200 ? script_lens[i] : 200;
-                memcpy(preview, scripts[i], preview_len);
-                preview[preview_len] = '\0';
-                // Replace newlines with spaces for single-line log
-                for (size_t j = 0; j < preview_len; j++) {
-                    if (preview[j] == '\n' || preview[j] == '\r') preview[j] = ' ';
-                }
-                LOG_ERROR("Script %d content: %.200s%s", i, preview, script_lens[i] > 200 ? "..." : "");
-            }
             
             // Get stack trace for debugging
             JSValue stack_val = JS_GetPropertyStr(ctx, exception, "stack");
             const char *stack = JS_ToCString(ctx, stack_val);
-            if (stack && strstr(error, "es5Shimmed")) {
-                LOG_ERROR("=== STACK TRACE for es5Shimmed error (Script %d) ===", i);
-                LOG_ERROR("%s", stack);
-                LOG_ERROR("=== END STACK TRACE ===");
-            } else if (stack) {
-                LOG_ERROR("Stack trace (Script %d): %.500s%s", i, stack, strlen(stack) > 500 ? "..." : "");
-            }
+            (void)stack; /* Silence unused warning when debugging disabled */
             
             // Dump script content around error position for Script 2
             if (i == 2 && error) {
-                LOG_ERROR("=== SCRIPT %d CONTENT (find .prototype) ===", i);
                 // Search for .prototype in the script
                 char *proto_ptr = strstr(scripts[i], ".prototype");
                 int count = 0;
@@ -1065,70 +998,11 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
                     for (size_t j = 0; j < len; j++) {
                         if (context[j] == '\n' || context[j] == '\r') context[j] = ' ';
                     }
-                    LOG_ERROR("SCRIPT%d-PROTO%d: %s", i, count, context);
                     
                     // Find next occurrence
                     proto_ptr = strstr(proto_ptr + 1, ".prototype");
                     count++;
                 }
-                LOG_ERROR("=== END SCRIPT %d PROTO search ===", i);
-            }
-            
-            // For prototype errors, analyze stack trace
-            if (error && strstr(error, "prototype of undefined") && stack) {
-                LOG_ERROR("=== ANALYZING PROTOTYPE ERROR for Script %d ===", i);
-                LOG_ERROR("Stack: %s", stack);
-                
-                // Try to find line number in stack trace (format: <script_2>:101:199)
-                char line_num_str[32] = {0};
-                const char *script_tag = strstr(stack, filename);
-                if (script_tag) {
-                    const char *colon = strchr(script_tag, ':');
-                    if (colon) {
-                        int line_num = atoi(colon + 1);
-                        LOG_ERROR("Error at line %d", line_num);
-                        
-                        // Extract that line from script
-                        if (line_num > 0 && scripts[i]) {
-                            const char *p = scripts[i];
-                            int current_line = 1;
-                            while (*p && current_line < line_num) {
-                                if (*p == '\n') current_line++;
-                                p++;
-                            }
-                            if (current_line == line_num) {
-                                const char *line_end = strchr(p, '\n');
-                                if (!line_end) line_end = p + strlen(p);
-                                size_t line_len = line_end - p;
-                                if (line_len > 200) line_len = 200;
-                                char line_buf[201];
-                                memcpy(line_buf, p, line_len);
-                                line_buf[line_len] = '\0';
-                                LOG_ERROR("Line %d content: %s", line_num, line_buf);
-                            }
-                        }
-                    }
-                }
-            }
-            // For Script 9 (main player), dump context around errors
-            if (i == 9 && error) {
-                LOG_ERROR("=== SCRIPT 9 ERROR ANALYSIS ===");
-                // Dump at multiple offsets to find the error location
-                // Error is at line 7875:45, which is approximately character position ~280000
-                size_t error_pos = 289574; // From previous touchAction search
-                if (error_pos < script_lens[i]) {
-                    // Dump 200 chars before and after error position
-                    size_t start = (error_pos > 200) ? error_pos - 200 : 0;
-                    size_t len = (script_lens[i] - start > 400) ? 400 : script_lens[i] - start;
-                    char context[401];
-                    memcpy(context, scripts[i] + start, len);
-                    context[len] = '\0';
-                    for (size_t j = 0; j < len; j++) {
-                        if (context[j] == '\n' || context[j] == '\r') context[j] = ' ';
-                    }
-                    LOG_ERROR("SCRIPT9-CONTEXT: %s", context);
-                }
-                LOG_ERROR("=== END SCRIPT 9 ANALYSIS ===");
             }
             
             JS_FreeCString(ctx, stack);
@@ -1137,7 +1011,6 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
 
         } else {
             success_count++;
-            LOG_INFO("Script %d executed successfully", i);
             
             // After base.js (script 0) executes, check what it created
             if (i == 0 && script_lens[i] > 1000000) {
@@ -1160,7 +1033,6 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
 
     }
     
-    LOG_INFO("Executed %d/%d scripts successfully", success_count, script_count);
     
     // After scripts load, dispatch DOMContentLoaded to trigger player initialization
     // The video element and ytInitialPlayerResponse were already set up before scripts loaded
@@ -1240,12 +1112,10 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         "console.log('=== END DISCOVERY ===');\n"
     ;
     
-    LOG_INFO("Triggering DOMContentLoaded...");
     JSValue init_result = JS_Eval(ctx, init_player_js, strlen(init_player_js), "<init_player>", 0);
     if (JS_IsException(init_result)) {
         JSValue exception = JS_GetException(ctx);
         const char *error = JS_ToCString(ctx, exception);
-        LOG_ERROR("Player init error: %s", error ? error : "unknown");
         JS_FreeCString(ctx, error);
 
     }
@@ -1264,9 +1134,7 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     }
     pthread_mutex_unlock(&g_url_mutex);
     
-    LOG_INFO("Captured %d URLs from JS execution", out_result->captured_url_count);
     for (int i = 0; i < out_result->captured_url_count; i++) {
-        LOG_INFO("  URL %d: %.100s...", i, out_result->captured_urls[i]);
     }
     
     out_result->status = (success_count > 0) ? JS_EXEC_SUCCESS : JS_EXEC_ERROR;

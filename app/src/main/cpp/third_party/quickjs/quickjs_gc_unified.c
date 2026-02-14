@@ -17,10 +17,7 @@
 /* Forward declaration from quickjs.c */
 struct JSRuntime;
 
-#define LOG_TAG "GCUnified"
-#define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOG_ERROR(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOG_WARN(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+/* Debug logging removed - using LLDB for debugging */
 
 /* Global GC instance - lives in BSS */
 GCState g_gc = {0};
@@ -42,7 +39,6 @@ bool gc_init(void) {
     /* Allocate the heap */
     g_gc.heap = malloc(GC_HEAP_SIZE);
     if (!g_gc.heap) {
-        LOG_ERROR("Failed to allocate %zu byte heap", (size_t)GC_HEAP_SIZE);
         return false;
     }
     
@@ -74,7 +70,6 @@ bool gc_init(void) {
     if (handle_table_size + root_size > GC_HEAP_SIZE) {
         free(g_gc.heap);
         g_gc.heap = NULL;
-        LOG_ERROR("Heap too small for initial structures");
         return false;
     }
     
@@ -98,10 +93,6 @@ bool gc_init(void) {
     gc_shadow_stack_init();
     
     g_gc.initialized = true;
-    
-    LOG_INFO("Unified GC initialized: %zu MB heap, %u initial handles, threshold=%zu KB",
-             (size_t)GC_HEAP_SIZE / (1024*1024), GC_INITIAL_HANDLES, 
-             g_gc.gc_threshold / 1024);
     return true;
 }
 
@@ -118,7 +109,6 @@ void gc_cleanup(void) {
         g_gc.heap = NULL;
     }
     memset(&g_gc, 0, sizeof(g_gc));
-    LOG_INFO("Unified GC cleaned up");
 }
 
 /* Bug #2 fix: Set runtime pointer for malloc_state updates */
@@ -129,7 +119,6 @@ void gc_set_runtime(struct JSRuntime *rt) {
 /* Bug #2 fix: Set GC threshold */
 void gc_set_threshold(size_t threshold) {
     g_gc.gc_threshold = threshold;
-    LOG_INFO("GC threshold set to %zu KB", threshold / 1024);
 }
 
 /* Bug #2 fix: Check if GC should run based on memory pressure */
@@ -174,8 +163,6 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
         
         if (new_offset > g_gc.heap_size) {
             /* Out of memory - offset not bumped yet, no corruption */
-            LOG_ERROR("GC heap exhausted! Need %zu, have %zu", 
-                      total_size, g_gc.heap_size - old_offset);
             return NULL;
         }
         /* Try to reserve space - only succeeds if offset hasn't changed */
@@ -222,7 +209,6 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
             if (g_gc.handle_count >= g_gc.handle_capacity) {
                 /* Need to grow handle table - but it's in GC memory! */
                 /* For now, just fail if we run out of handles */
-                LOG_ERROR("Handle table full (%u handles)", g_gc.handle_capacity);
                 return NULL;
             }
             handle = g_gc.handle_count++;
@@ -272,9 +258,7 @@ GCHandle gc_alloc_handle(size_t size, GCType type) {
 extern int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_type, GCHandleArrayType array_type);
 
 void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHandleArrayType array_type) {
-    LOG_INFO("gc_alloc_js_object_ex: size=%zu type=%d rt=%p array=%d", size, js_gc_obj_type, (void*)rt, array_type);
     if (!g_gc.initialized || !rt) {
-        LOG_ERROR("gc_alloc_js_object_ex: not initialized or rt is NULL");
         return NULL;
     }
     
@@ -285,7 +269,6 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
     if (old_offset + total_size > g_gc.heap_size) {
         /* Out of memory - rollback */
         atomic_fetch_sub(&g_gc.bump.offset, total_size);
-        LOG_ERROR("GC heap exhausted in gc_alloc_js_object_ex!");
         return NULL;
     }
     
@@ -324,7 +307,6 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
         return NULL;
     }
     
-    LOG_INFO("gc_alloc_js_object_ex: SUCCESS user_ptr=%p total_size=%zu", user_ptr, total_size);
     
     /* Update stats */
     g_gc.total_bytes += total_size;
@@ -422,7 +404,6 @@ size_t gc_total_size(void *ptr) {
 void gc_add_root(GCHandle handle) {
     if (handle == GC_HANDLE_NULL) return;
     if (g_gc.root_count >= g_gc.root_capacity) {
-        LOG_ERROR("Root set full");
         return;
     }
     g_gc.roots[g_gc.root_count++] = handle;
@@ -496,8 +477,6 @@ static void gc_compact(void) {
         
         /* Validate size to prevent corruption */
         if (hdr->size < sizeof(GCHeader) || hdr->size > g_gc.heap_size) {
-            LOG_ERROR("GC corruption: invalid object size %u at offset %zu", 
-                      hdr->size, (size_t)(read - g_gc.heap));
             /* Skip minimum to try to recover */
             read += MIN_OBJECT_SIZE;
             continue;
@@ -541,14 +520,10 @@ static void gc_compact(void) {
 void gc_run(void) {
     if (!g_gc.initialized) return;
     
-    LOG_INFO("GC running: %zu bytes allocated before", g_gc.bytes_allocated);
     
     g_gc.gc_count++;
     gc_mark();
     gc_compact();
-    
-    LOG_INFO("GC complete: %zu bytes allocated after, %zu used",
-             g_gc.bytes_allocated, gc_used());
 }
 
 void gc_reset(void) {
@@ -569,7 +544,6 @@ void gc_reset(void) {
     /* Bug #2 fix: Reset bytes_allocated */
     g_gc.bytes_allocated = 0;
     
-    LOG_INFO("GC reset");
 }
 
 size_t gc_used(void) {
@@ -605,7 +579,6 @@ void gc_shadow_stack_init(void) {
     g_gc.shadow_stack = NULL;
     g_gc.shadow_stack_pool = NULL;
     memset(&g_gc.shadow_stats, 0, sizeof(g_gc.shadow_stats));
-    LOG_INFO("Shadow stack initialized");
 }
 
 /* Cleanup shadow stack (called by gc_cleanup) */
@@ -629,7 +602,6 @@ void gc_shadow_stack_cleanup(void) {
     g_gc.shadow_stack = NULL;
     g_gc.shadow_stack_pool = NULL;
     
-    LOG_INFO("Shadow stack cleaned up (max_depth=%u)", g_gc.shadow_stats.max_depth);
 }
 
 /* Push a JSValue onto the shadow stack (registers as GC root) */
@@ -637,7 +609,6 @@ void gc_push_jsvalue(JSContext *ctx, void *slot, const char *file, int line, con
     (void)ctx; /* May be used in future for per-context stacks */
     
     if (!slot) {
-        LOG_WARN("gc_push_jsvalue: NULL slot");
         return;
     }
     
@@ -649,7 +620,6 @@ void gc_push_jsvalue(JSContext *ctx, void *slot, const char *file, int line, con
     } else {
         entry = malloc(sizeof(GCShadowStackEntry));
         if (!entry) {
-            LOG_ERROR("gc_push_jsvalue: failed to allocate entry");
             return;
         }
         g_gc.shadow_stats.pool_misses++;
@@ -676,11 +646,6 @@ void gc_push_jsvalue(JSContext *ctx, void *slot, const char *file, int line, con
         g_gc.shadow_stats.max_depth = g_gc.shadow_stats.current_depth;
     }
     
-    LOG_INFO("JS_GC_PUSH: %s @ %s:%d (depth=%u)", 
-             var_name ? var_name : "?", 
-             file ? file : "?", 
-             line,
-             g_gc.shadow_stats.current_depth);
 }
 
 /* Pop a JSValue from the shadow stack */
@@ -688,7 +653,6 @@ void gc_pop_jsvalue(JSContext *ctx, void *slot) {
     (void)ctx;
     
     if (!slot) {
-        LOG_WARN("gc_pop_jsvalue: NULL slot");
         return;
     }
     
@@ -709,14 +673,12 @@ void gc_pop_jsvalue(JSContext *ctx, void *slot) {
             g_gc.shadow_stats.current_depth--;
             g_gc.shadow_stats.total_pops++;
             
-            LOG_INFO("JS_GC_POP: depth=%u", g_gc.shadow_stats.current_depth);
             return;
         }
         pp = &(*pp)->next;
     }
     
     /* Entry not found - mismatched push/pop */
-    LOG_WARN("JS_GC_POP: slot %p not found on shadow stack (mismatched push/pop?)", (void*)slot);
 }
 
 /* Mark all shadow stack entries during GC */
@@ -739,7 +701,6 @@ void gc_mark_shadow_stack(void) {
                     marked_count++;
                     
                     #ifdef GC_DEBUG
-                    LOG_INFO("gc_mark_shadow_stack: marked %s from %s:%d", 
                              entry->var_name ? entry->var_name : "?",
                              entry->file ? entry->file : "?",
                              entry->line);
@@ -750,7 +711,6 @@ void gc_mark_shadow_stack(void) {
     }
     
     if (marked_count > 0) {
-        LOG_INFO("gc_mark_shadow_stack: marked %u values from shadow stack", marked_count);
     }
 }
 

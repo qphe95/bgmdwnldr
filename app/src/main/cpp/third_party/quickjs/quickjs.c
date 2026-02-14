@@ -61,18 +61,11 @@ static inline void gc_assert_initialized(void) {
 #include "libunicode.h"
 #include "dtoa.h"
 
-#ifdef __ANDROID__
-#include <android/log.h>
-#define QJS_LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "QuickJS", __VA_ARGS__)
-#define QJS_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "QuickJS", __VA_ARGS__)
-#define QJS_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "QuickJS", __VA_ARGS__)
-#define QJS_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "QuickJS", __VA_ARGS__)
-#else
+/* Debug logging disabled - using LLDB for debugging */
 #define QJS_LOGD(...) do {} while(0)
 #define QJS_LOGI(...) do {} while(0)
 #define QJS_LOGW(...) do {} while(0)
 #define QJS_LOGE(...) do {} while(0)
-#endif
 
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
@@ -2281,24 +2274,12 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     JSContext *ctx;
     int i;
 
-    /* Log IMMEDIATELY on entry */
-    __android_log_print(ANDROID_LOG_ERROR, "QuickJS", "ENTRY JS_NewContextRaw rt=%p", (void*)rt);
-
-    /* Crash immediately with deliberate NULL deref to verify we can see logs */
-    volatile int *crash_test = NULL;
-    // *crash_test = 1;  /* Uncomment to test crash logging */
-    
-    QJS_LOGI("ENTER JS_NewContextRaw");
-    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "ENTER JS_NewContextRaw rt=%p", (void*)rt);
-    
     if (!rt) {
-        QJS_LOGE("rt is NULL!");
         return NULL;
     }
     
     /* Check if handle arrays are initialized */
     if (!rt->context_handles.handles) {
-        QJS_LOGE("context_handles.handles is NULL!");
         return NULL;
     }
     
