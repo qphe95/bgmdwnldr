@@ -658,6 +658,14 @@ bool js_quickjs_init(void) {
         if (!gc_init()) {
             return false;
         }
+    } else {
+        /* GC already initialized - reset it for fresh state.
+         * This is needed when js_quickjs_exec_scripts is called multiple times.
+         * The previous run may have left the GC in an inconsistent state. */
+        gc_cleanup();
+        if (!gc_init()) {
+            return false;
+        }
     }
     return true;
 }

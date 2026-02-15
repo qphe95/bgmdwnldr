@@ -2312,8 +2312,15 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
      * can find and resize this array when registering new classes */
     QJS_LOGI("STEP6");
     QJS_LOGI("STEP6: rt->class_count=%d", rt->class_count);
-    ctx->class_proto = js_malloc_rt(rt, sizeof(ctx->class_proto[0]) *
-                                    rt->class_count);
+    QJS_LOGI("STEP6: sizeof(ctx->class_proto[0])=%zu", sizeof(ctx->class_proto[0]));
+    QJS_LOGI("STEP6: total_size=%zu", sizeof(ctx->class_proto[0]) * rt->class_count);
+    QJS_LOGI("STEP6: calling js_malloc_rt...");
+    size_t proto_size = sizeof(ctx->class_proto[0]) * rt->class_count;
+    QJS_LOGI("STEP6: proto_size calculated=%zu", proto_size);
+    QJS_LOGI("STEP6: rt=%p", (void*)rt);
+    void *proto_ptr = js_malloc_rt(rt, proto_size);
+    QJS_LOGI("STEP6: js_malloc_rt returned %p", proto_ptr);
+    ctx->class_proto = proto_ptr;
     QJS_LOGI("STEP7");
     if (!ctx->class_proto) {
         js_handle_array_remove(&rt->context_handles, ctx);
@@ -9882,7 +9889,9 @@ static JSProperty *add_property(JSContext *ctx,
                 p->prop = new_prop;
             }
             p->shape = js_dup_shape(new_sh);
-            js_free_shape(ctx->rt, sh);
+            /* Don't free the old shape here - let GC collect it when unreachable.
+             * Other objects may still reference this shape through the shape hash table.
+             * The shape will be freed during GC if no objects reference it anymore. */
             return &p->prop[new_sh->prop_count - 1];
         } else if (0) {
             /* if the shape is shared, clone it */
@@ -9892,7 +9901,7 @@ static JSProperty *add_property(JSContext *ctx,
             /* hash the cloned shape */
             new_sh->is_hashed = TRUE;
             js_shape_hash_link(ctx->rt, new_sh);
-            js_free_shape(ctx->rt, p->shape);
+            /* Don't free old shape here - let GC collect it when unreachable */
             p->shape = new_sh;
         }
     }
@@ -56774,6 +56783,13 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
         return -1;
     }
     QJS_LOGI("JS_AddIntrinsicBasicObjects: OBJECT proto created");
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: obj tag=%d JS_TAG_OBJECT=%d", (int)JS_VALUE_GET_TAG(ctx->class_proto[JS_CLASS_OBJECT]), JS_TAG_OBJECT);
+    JSObject *p_test = JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_OBJECT]);
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: p_test=%p", (void*)p_test);
+    if (!p_test) {
+        QJS_LOGE("JS_AddIntrinsicBasicObjects: p_test is NULL! Cannot set immutable prototype.");
+        return -1;
+    }
     JS_SetImmutablePrototype(ctx, ctx->class_proto[JS_CLASS_OBJECT]);
 
     /* 2 more properties: caller and arguments */
