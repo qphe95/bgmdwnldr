@@ -108,6 +108,22 @@ typedef struct VulkanApp {
 
 static VulkanApp *g_app = NULL;
 
+// Input handling state for native text input
+typedef struct {
+    bool initialized;
+    // URL text buffer
+    char textBuffer[2048];
+    int textLength;
+    int cursorPos;
+    // Input state
+    bool inputActive;
+    bool keyboardVisible;
+    // URL box bounds (updated each frame)
+    float urlX0, urlY0, urlX1, urlY1;
+} NativeInputState;
+
+static NativeInputState g_input = {0};
+
 typedef struct Vertex {
     float pos[2];
     float uv[2];
@@ -1009,34 +1025,33 @@ static void ui_snapshot(VulkanApp *app, char *urlOut, size_t urlLen,
     pthread_mutex_unlock(&app->uiMutex);
 }
 
+// DEPRECATED: Use show_soft_keyboard/hide_soft_keyboard from new input system
 static void java_show_keyboard(VulkanApp *app, bool clearText) {
-    if (!app || !app->javaVm) {
-        return;
-    }
+    (void)clearText;
+    if (!app) return;
     JNIEnv *env = NULL;
-    if ((*app->javaVm)->GetEnv(app->javaVm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
-        if ((*app->javaVm)->AttachCurrentThread(app->javaVm, &env, NULL) != JNI_OK) {
-            return;
-        }
-    }
+    JavaVM *vm = app->javaVm ? app->javaVm : app->androidApp->activity->vm;
+    if (!vm) return;
+    
+    (*vm)->AttachCurrentThread(vm, &env, NULL);
+    if (!env) return;
+    
     jclass cls = (*env)->GetObjectClass(env, app->androidApp->activity->clazz);
-    jmethodID showMethod = (*env)->GetMethodID(env, cls, "showKeyboard", "(Z)V");
+    jmethodID showMethod = (*env)->GetMethodID(env, cls, "showKeyboard", "()V");
     if (showMethod) {
-        (*env)->CallVoidMethod(env, app->androidApp->activity->clazz, showMethod,
-                               clearText ? JNI_TRUE : JNI_FALSE);
+        (*env)->CallVoidMethod(env, app->androidApp->activity->clazz, showMethod);
     }
 }
 
 static void java_hide_keyboard(VulkanApp *app) {
-    if (!app || !app->javaVm) {
-        return;
-    }
+    if (!app) return;
     JNIEnv *env = NULL;
-    if ((*app->javaVm)->GetEnv(app->javaVm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
-        if ((*app->javaVm)->AttachCurrentThread(app->javaVm, &env, NULL) != JNI_OK) {
-            return;
-        }
-    }
+    JavaVM *vm = app->javaVm ? app->javaVm : app->androidApp->activity->vm;
+    if (!vm) return;
+    
+    (*vm)->AttachCurrentThread(vm, &env, NULL);
+    if (!env) return;
+    
     jclass cls = (*env)->GetObjectClass(env, app->androidApp->activity->clazz);
     jmethodID hideMethod = (*env)->GetMethodID(env, cls, "hideKeyboard", "()V");
     if (hideMethod) {
@@ -1184,7 +1199,9 @@ static void *worker_thread(void *arg) {
 }
 
 static void start_worker(VulkanApp *app) {
+    LOGI("start_worker called, workerRunning=%d", app->workerRunning ? 1 : 0);
     if (app->workerRunning) {
+        LOGI("start_worker: worker already running, returning");
         return;
     }
     WorkerArgs *args = (WorkerArgs *)malloc(sizeof(WorkerArgs));
@@ -1196,12 +1213,14 @@ static void start_worker(VulkanApp *app) {
     pthread_mutex_lock(&app->uiMutex);
     snprintf(args->url, sizeof(args->url), "%s", app->urlInput);
     pthread_mutex_unlock(&app->uiMutex);
+    LOGI("start_worker: URL='%s'", args->url);
     if (args->url[0] == '\0') {
         ui_set_status(app, "Enter a URL");
         free(args);
         return;
     }
     app->workerRunning = (pthread_create(&app->workerThread, NULL, worker_thread, args) == 0);
+    LOGI("start_worker: worker thread created, result=%d", app->workerRunning ? 1 : 0);
     if (!app->workerRunning) {
         ui_set_status(app, "Worker start failed");
         free(args);
@@ -1404,44 +1423,16 @@ static void update_text_vertices(VulkanApp *app) {
     app->vertexCount = count;
 }
 
+/**
+ * Native AInputEvent handler - DEPRECATED
+ * All input handling now goes through Java dispatchTouchEvent/dispatchKeyEvent
+ * which forward to nativeOnTouch/nativeOnKey JNI methods.
+ * This function remains for compatibility but returns 0 (not consumed).
+ */
 static int32_t handle_input(struct android_app *app, AInputEvent *event) {
-    VulkanApp *vk = (VulkanApp *)app->userData;
-    if (!vk || !vk->ready) {
-        return 0;
-    }
-    int32_t type = AInputEvent_getType(event);
-    if (type == AINPUT_EVENT_TYPE_MOTION) {
-        int32_t action = AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK;
-        if (action == AMOTION_EVENT_ACTION_DOWN) {
-            float x = AMotionEvent_getX(event, 0);
-            float y = AMotionEvent_getY(event, 0);
-            pthread_mutex_lock(&vk->uiMutex);
-            float x0 = vk->uiUrlX0;
-            float x1 = vk->uiUrlX1;
-            float y0 = vk->uiUrlY0;
-            float y1 = vk->uiUrlY1;
-            pthread_mutex_unlock(&vk->uiMutex);
-            if (x >= x0 && x <= x1 && y >= y0 && y <= y1) {
-                vk->inputActive = true;
-                java_show_keyboard(vk, false);
-                ui_set_status(vk, "Typing...");
-            } else if (vk->inputActive) {
-                java_hide_keyboard(vk);
-                vk->inputActive = false;
-                ui_set_status(vk, "Idle");
-            }
-            return 1;
-        }
-        return 0;
-    }
-    if (type == AINPUT_EVENT_TYPE_KEY) {
-        int32_t action = AKeyEvent_getAction(event);
-        if (action != AKEY_EVENT_ACTION_DOWN) {
-            return 0;
-        }
-        (void)event;
-        return 0;
-    }
+    (void)app;
+    (void)event;
+    // Input handling now done via Java -> JNI nativeOnTouch/nativeOnKey
     return 0;
 }
 
@@ -2035,31 +2026,19 @@ void android_main(struct android_app *app) {
 JNIEXPORT void JNICALL
 Java_com_bgmdwldr_vulkan_MainActivity_nativeOnTextChanged(JNIEnv *env, jclass clazz,
                                                           jstring text) {
+    // DEPRECATED: Use nativeOnKey for text input instead
+    // Kept for compatibility but does nothing
+    (void)env;
     (void)clazz;
-
-    if (!g_app || !text) {
-        return;
-    }
-    const char *utf = (*env)->GetStringUTFChars(env, text, NULL);
-    if (!utf) {
-        return;
-    }
-    pthread_mutex_lock(&g_app->uiMutex);
-    snprintf(g_app->urlInput, sizeof(g_app->urlInput), "%s", utf);
-    g_app->urlLen = strlen(g_app->urlInput);
-    pthread_mutex_unlock(&g_app->uiMutex);
-    (*env)->ReleaseStringUTFChars(env, text, utf);
+    (void)text;
 }
 
+// DEPRECATED JNI methods - replaced by nativeOnTouch and nativeOnKey
 JNIEXPORT void JNICALL
 Java_com_bgmdwldr_vulkan_MainActivity_nativeOnSubmit(JNIEnv *env, jclass clazz) {
     (void)env;
     (void)clazz;
-    if (!g_app) {
-        return;
-    }
-    g_app->inputActive = false;
-    start_worker(g_app);
+    // Handled by nativeOnKey now
 }
 
 JNIEXPORT void JNICALL
@@ -2067,13 +2046,8 @@ Java_com_bgmdwldr_vulkan_MainActivity_nativeOnFocus(JNIEnv *env, jclass clazz,
                                                     jboolean focused) {
     (void)env;
     (void)clazz;
-    if (!g_app) {
-        return;
-    }
-    g_app->inputActive = focused ? true : false;
-    if (!g_app->inputActive) {
-        ui_set_status(g_app, "Idle");
-    }
+    (void)focused;
+    // Handled by nativeOnTouch now
 }
 
 JNIEXPORT void JNICALL
@@ -2081,10 +2055,332 @@ Java_com_bgmdwldr_vulkan_MainActivity_nativeOnKeyboardHeight(JNIEnv *env, jclass
                                                              jint heightPx) {
     (void)env;
     (void)clazz;
-    if (!g_app) {
+    if (!g_app) return;
+    g_app->keyboardHeightPx = (float)heightPx;
+}
+
+/* ============================================================================
+ * NEW EVENT FORWARDING SYSTEM
+ * Java dispatches all input events here, native layer handles everything
+ * ============================================================================ */
+
+// Constants for MotionEvent actions (matching Android values)
+#define ACTION_DOWN     0
+#define ACTION_UP       1
+#define ACTION_MOVE     2
+#define ACTION_CANCEL   3
+
+// Constants for KeyEvent actions
+#define KEY_ACTION_DOWN 0
+#define KEY_ACTION_UP   1
+
+// Android key codes
+#define KEYCODE_ENTER   66
+#define KEYCODE_DEL     67
+#define KEYCODE_ESCAPE  111
+#define KEYCODE_SPACE   62
+#define KEYCODE_DPAD_LEFT  21
+#define KEYCODE_DPAD_RIGHT 22
+
+/**
+ * Update input state from VulkanApp UI bounds
+ * Called each frame to keep URL box coordinates synchronized
+ */
+static void update_input_bounds(void) {
+    if (!g_app) return;
+    
+    pthread_mutex_lock(&g_app->uiMutex);
+    g_input.urlX0 = g_app->uiUrlX0;
+    g_input.urlY0 = g_app->uiUrlY0;
+    g_input.urlX1 = g_app->uiUrlX1;
+    g_input.urlY1 = g_app->uiUrlY1;
+    
+    // Sync text buffer
+    if (g_app->urlInput[0] != '\0' && g_input.textBuffer[0] == '\0') {
+        // Copy from app to input (initialization)
+        strncpy(g_input.textBuffer, g_app->urlInput, sizeof(g_input.textBuffer) - 1);
+        g_input.textBuffer[sizeof(g_input.textBuffer) - 1] = '\0';
+        g_input.textLength = strlen(g_input.textBuffer);
+        g_input.cursorPos = g_input.textLength;
+    } else if (g_input.textBuffer[0] != '\0') {
+        // Copy from input to app (normal operation)
+        strncpy(g_app->urlInput, g_input.textBuffer, sizeof(g_app->urlInput) - 1);
+        g_app->urlInput[sizeof(g_app->urlInput) - 1] = '\0';
+        g_app->urlLen = g_input.textLength;
+    }
+    pthread_mutex_unlock(&g_app->uiMutex);
+}
+
+/**
+ * Check if touch is inside URL input box
+ */
+static bool is_inside_url_box(float x, float y) {
+    return (x >= g_input.urlX0 && x <= g_input.urlX1 &&
+            y >= g_input.urlY0 && y <= g_input.urlY1);
+}
+
+/**
+ * Show soft keyboard via JNI
+ */
+static void show_soft_keyboard(void) {
+    if (!g_app || !g_app->androidApp || !g_app->androidApp->activity) return;
+    
+    JNIEnv *env = NULL;
+    JavaVM *vm = g_app->javaVm;
+    if (!vm) {
+        // Try to get VM from activity
+        (*g_app->androidApp->activity->vm)->AttachCurrentThread(
+            g_app->androidApp->activity->vm, &env, NULL);
+        vm = g_app->androidApp->activity->vm;
+    } else {
+        (*vm)->AttachCurrentThread(vm, &env, NULL);
+    }
+    
+    if (!env) return;
+    
+    jclass cls = (*env)->GetObjectClass(env, g_app->androidApp->activity->clazz);
+    jmethodID showMethod = (*env)->GetMethodID(env, cls, "showKeyboard", "()V");
+    if (showMethod) {
+        (*env)->CallVoidMethod(env, g_app->androidApp->activity->clazz, showMethod);
+    }
+}
+
+/**
+ * Hide soft keyboard via JNI
+ */
+static void hide_soft_keyboard(void) {
+    if (!g_app || !g_app->androidApp || !g_app->androidApp->activity) return;
+    
+    JNIEnv *env = NULL;
+    JavaVM *vm = g_app->javaVm;
+    if (!vm) {
+        vm = g_app->androidApp->activity->vm;
+    }
+    
+    (*vm)->AttachCurrentThread(vm, &env, NULL);
+    if (!env) return;
+    
+    jclass cls = (*env)->GetObjectClass(env, g_app->androidApp->activity->clazz);
+    jmethodID hideMethod = (*env)->GetMethodID(env, cls, "hideKeyboard", "()V");
+    if (hideMethod) {
+        (*env)->CallVoidMethod(env, g_app->androidApp->activity->clazz, hideMethod);
+    }
+}
+
+/**
+ * Handle character input
+ */
+static void handle_character_input(char c) {
+    if (g_input.textLength >= (int)sizeof(g_input.textBuffer) - 1) {
+        return; // Buffer full
+    }
+    
+    // Insert at cursor position
+    if (g_input.cursorPos < g_input.textLength) {
+        // Shift text after cursor
+        memmove(&g_input.textBuffer[g_input.cursorPos + 1],
+                &g_input.textBuffer[g_input.cursorPos],
+                g_input.textLength - g_input.cursorPos);
+    }
+    
+    g_input.textBuffer[g_input.cursorPos] = c;
+    g_input.textLength++;
+    g_input.cursorPos++;
+    g_input.textBuffer[g_input.textLength] = '\0';
+    
+    LOGI("Input: '%c' -> buffer: '%s'", c, g_input.textBuffer);
+}
+
+/**
+ * Handle backspace
+ */
+static void handle_backspace(void) {
+    if (g_input.cursorPos <= 0 || g_input.textLength <= 0) {
         return;
     }
-    g_app->keyboardHeightPx = (float)heightPx;
+    
+    // Remove character before cursor
+    if (g_input.cursorPos < g_input.textLength) {
+        // Shift text after cursor
+        memmove(&g_input.textBuffer[g_input.cursorPos - 1],
+                &g_input.textBuffer[g_input.cursorPos],
+                g_input.textLength - g_input.cursorPos);
+    }
+    
+    g_input.cursorPos--;
+    g_input.textLength--;
+    g_input.textBuffer[g_input.textLength] = '\0';
+    
+    LOGI("Backspace -> buffer: '%s'", g_input.textBuffer);
+}
+
+/**
+ * Handle cursor movement
+ */
+static void handle_cursor_left(void) {
+    if (g_input.cursorPos > 0) {
+        g_input.cursorPos--;
+    }
+}
+
+static void handle_cursor_right(void) {
+    if (g_input.cursorPos < g_input.textLength) {
+        g_input.cursorPos++;
+    }
+}
+
+/**
+ * Handle submit (Enter key)
+ */
+static void handle_submit(void) {
+    LOGI("Submit triggered, URL: '%s'", g_input.textBuffer);
+    
+    if (!g_app) {
+        LOGE("handle_submit: g_app is NULL!");
+        return;
+    }
+    
+    // Copy to app buffer
+    pthread_mutex_lock(&g_app->uiMutex);
+    strncpy(g_app->urlInput, g_input.textBuffer, sizeof(g_app->urlInput) - 1);
+    g_app->urlInput[sizeof(g_app->urlInput) - 1] = '\0';
+    g_app->urlLen = strlen(g_app->urlInput);
+    pthread_mutex_unlock(&g_app->uiMutex);
+    
+    // Deactivate input
+    g_input.inputActive = false;
+    if (g_app) {
+        g_app->inputActive = false;
+    }
+    hide_soft_keyboard();
+    
+    // Start worker
+    start_worker(g_app);
+}
+
+/* ============================================================================
+ * JNI EVENT CALLBACKS (Called from Java)
+ * ============================================================================ */
+
+JNIEXPORT void JNICALL
+Java_com_bgmdwldr_vulkan_MainActivity_nativeOnTouch(JNIEnv *env, jclass clazz,
+                                                    jint action, jfloat x, jfloat y) {
+    (void)env;
+    (void)clazz;
+    
+    if (!g_app) return;
+    
+    // Update bounds first
+    update_input_bounds();
+    
+    switch (action) {
+        case ACTION_DOWN:
+            if (is_inside_url_box(x, y)) {
+                LOGI("Touch in URL box at (%.1f, %.1f)", x, y);
+                g_input.inputActive = true;
+                g_app->inputActive = true;
+                show_soft_keyboard();
+                ui_set_status(g_app, "Enter URL...");
+            } else if (g_input.inputActive) {
+                // Touch outside while typing - dismiss keyboard
+                LOGI("Touch outside URL box, dismissing keyboard");
+                g_input.inputActive = false;
+                g_app->inputActive = false;
+                hide_soft_keyboard();
+                ui_set_status(g_app, "Idle");
+            }
+            break;
+            
+        case ACTION_UP:
+            // Could handle tap-to-place-cursor here
+            break;
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_bgmdwldr_vulkan_MainActivity_nativeOnKey(JNIEnv *env, jclass clazz,
+                                                  jint keyCode, jint unicodeChar, jint action) {
+    (void)env;
+    (void)clazz;
+    
+    LOGI("nativeOnKey CALLED: code=%d, unicode=%d, action=%d", keyCode, unicodeChar, action);
+    
+    // Only process key down events for text input
+    if (action != KEY_ACTION_DOWN) {
+        LOGI("nativeOnKey: ignoring key up event");
+        return;
+    }
+    
+    if (!g_input.inputActive) {
+        LOGI("nativeOnKey: input not active");
+        // Only process Enter when not in input mode (to start download of existing URL)
+        if (keyCode == KEYCODE_ENTER && g_app && g_app->urlInput[0] != '\0') {
+            handle_submit();
+        }
+        return;
+    }
+    
+    LOGI("nativeOnKey: processing key code=%d, unicode=%d", keyCode, unicodeChar);
+    
+    switch (keyCode) {
+        case KEYCODE_ENTER:
+            handle_submit();
+            break;
+            
+        case KEYCODE_DEL:
+            handle_backspace();
+            break;
+            
+        case KEYCODE_DPAD_LEFT:
+            handle_cursor_left();
+            break;
+            
+        case KEYCODE_DPAD_RIGHT:
+            handle_cursor_right();
+            break;
+            
+        case KEYCODE_ESCAPE:
+            // Cancel input
+            g_input.inputActive = false;
+            if (g_app) g_app->inputActive = false;
+            hide_soft_keyboard();
+            ui_set_status(g_app, "Idle");
+            break;
+            
+        default:
+            // Regular character input
+            if (unicodeChar > 0 && unicodeChar < 128) {
+                handle_character_input((char)unicodeChar);
+            }
+            break;
+    }
+    
+    // Sync buffer back to app
+    if (g_app) {
+        pthread_mutex_lock(&g_app->uiMutex);
+        strncpy(g_app->urlInput, g_input.textBuffer, sizeof(g_app->urlInput) - 1);
+        g_app->urlInput[sizeof(g_app->urlInput) - 1] = '\0';
+        g_app->urlLen = g_input.textLength;
+        pthread_mutex_unlock(&g_app->uiMutex);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_bgmdwldr_vulkan_MainActivity_nativeOnKeyboardShown(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    g_input.keyboardVisible = true;
+    LOGI("Keyboard shown notification");
+}
+
+JNIEXPORT void JNICALL
+Java_com_bgmdwldr_vulkan_MainActivity_nativeOnKeyboardHidden(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    g_input.keyboardVisible = false;
+    g_input.inputActive = false;
+    if (g_app) g_app->inputActive = false;
+    LOGI("Keyboard hidden notification");
 }
 
 /* JNI callbacks for pure C download flow - no WebView */

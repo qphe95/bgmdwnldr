@@ -980,12 +980,21 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     
     // Execute all scripts
     int success_count = 0;
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", 
+        "[EXEC] Starting execution of %d scripts", script_count);
+    
     for (int i = 0; i < script_count; i++) {
-        if (!scripts[i] || script_lens[i] == 0) continue;
+        if (!scripts[i] || script_lens[i] == 0) {
+            __android_log_print(ANDROID_LOG_WARN, "js_quickjs", 
+                "[EXEC] Script %d is empty or NULL, skipping", i);
+            continue;
+        }
         
         char filename[64];
         snprintf(filename, sizeof(filename), "<script_%d>", i);
         
+        __android_log_print(ANDROID_LOG_INFO, "js_quickjs", 
+            "[EXEC] Executing script %d: %zu bytes", i, script_lens[i]);
         
         // Wrap scripts that tend to fail in try-catch so they don't crash the whole execution
         // The signature decryption function might still be set up even if some parts fail
@@ -1045,9 +1054,14 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
             JS_FreeCString(ctx, stack);
 
             JS_FreeCString(ctx, error);
+            
+            __android_log_print(ANDROID_LOG_WARN, "js_quickjs", 
+                "[EXEC] Script %d threw exception: %s", i, error ? error : "(null)");
 
         } else {
             success_count++;
+            __android_log_print(ANDROID_LOG_INFO, "js_quickjs", 
+                "[EXEC] Script %d executed successfully", i);
             
             // After base.js (script 0) executes, check what it created
             if (i == 0 && script_lens[i] > 1000000) {
@@ -1074,51 +1088,65 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     // After scripts load, dispatch DOMContentLoaded to trigger player initialization
     // The video element and ytInitialPlayerResponse were already set up before scripts loaded
     const char *init_player_js = 
+        "// Use native logging function if available\n"
+        "var _log = (typeof __bgmdwnldr_log !== 'undefined') ? __bgmdwnldr_log : console.log;\n"
+        "\n"
         "// Debug: Log all window properties that might be player-related\n"
         "var playerKeys = Object.keys(window).filter(function(k) {\n"
         "  return k.toLowerCase().indexOf('player') >= 0 || k.toLowerCase().indexOf('yt') >= 0 || k.toLowerCase().indexOf('decrypt') >= 0;\n"
         "});\n"
-        "console.log('Player/yt related globals: ' + playerKeys.join(', '));\n"
+        "_log('[JS_DISCOVERY] Player/yt related globals: ' + playerKeys.join(', '));\n"
         "\n"
         "// Check for specific player objects\n"
-        "console.log('window.player exists: ' + (typeof window.player));\n"
-        "console.log('window.ytPlayer exists: ' + (typeof window.ytPlayer));\n"
-        "console.log('window.yt exists: ' + (typeof window.yt));\n"
-        "console.log('window.ytcfg exists: ' + (typeof window.ytcfg));\n"
-        "console.log('window.ytsignals exists: ' + (typeof window.ytsignals));\n"
+        "_log('[JS_DISCOVERY] window.player exists: ' + (typeof window.player));\n"
+        "_log('[JS_DISCOVERY] window.ytPlayer exists: ' + (typeof window.ytPlayer));\n"
+        "_log('[JS_DISCOVERY] window.yt exists: ' + (typeof window.yt));\n"
+        "_log('[JS_DISCOVERY] window.ytcfg exists: ' + (typeof window.ytcfg));\n"
+        "_log('[JS_DISCOVERY] window.ytsignals exists: ' + (typeof window.ytsignals));\n"
         "\n"
         "// Dispatch DOMContentLoaded to trigger any player initialization\n"
         "if (typeof window !== 'undefined' && window.dispatchEvent) {\n"
         "  var readyEvent = { type: 'DOMContentLoaded', bubbles: true };\n"
         "  window.dispatchEvent(readyEvent);\n"
-        "  console.log('Dispatched DOMContentLoaded');\n"
+        "  _log('[JS_DISCOVERY] Dispatched DOMContentLoaded');\n"
         "}\n"
         "\n"
         "// Log what we have available\n"
         "if (typeof ytInitialPlayerResponse !== 'undefined') {\n"
-        "  console.log('ytInitialPlayerResponse is available');\n"
+        "  _log('[JS_DISCOVERY] ytInitialPlayerResponse is available');\n"
+        "  // Try to extract streamingData to see if URLs are there\n"
+        "  if (ytInitialPlayerResponse.streamingData) {\n"
+        "    var formats = ytInitialPlayerResponse.streamingData.formats || [];\n"
+        "    var adaptiveFormats = ytInitialPlayerResponse.streamingData.adaptiveFormats || [];\n"
+        "    _log('[JS_DISCOVERY] Found ' + formats.length + ' formats and ' + adaptiveFormats.length + ' adaptive formats');\n"
+        "    // Log first few URLs if available\n"
+        "    for (var i = 0; i < Math.min(3, formats.length); i++) {\n"
+        "      if (formats[i].url) _log('[JS_DISCOVERY] Format ' + i + ' URL: ' + formats[i].url.substring(0, 80) + '...');\n"
+        "      if (formats[i].signatureCipher) _log('[JS_DISCOVERY] Format ' + i + ' has signatureCipher');\n"
+        "    }\n"
+        "  }\n"
         "}\n"
         "if (document.getElementById('movie_player')) {\n"
-        "  console.log('movie_player element exists');\n"
+        "  _log('[JS_DISCOVERY] movie_player element exists');\n"
         "}\n"
         "\n"
         "// === DISCOVER PLAYER APIS ===\n"
-        "console.log('=== DISCOVERING PLAYER APIS ===');\n"
+        "_log('[JS_DISCOVERY] === DISCOVERING PLAYER APIS ===');\n"
         "\n"
         "// Check for yt object\n"
         "if (typeof yt !== 'undefined') {\n"
-        "  console.log('yt object found');\n"
+        "  _log('[JS_DISCOVERY] yt object found');\n"
         "  for (var key in yt) {\n"
-        "    console.log('  yt.' + key + ' = ' + typeof yt[key]);\n"
+        "    _log('[JS_DISCOVERY]   yt.' + key + ' = ' + typeof yt[key]);\n"
         "  }\n"
         "  if (yt.player) {\n"
-        "    console.log('yt.player found');\n"
+        "    _log('[JS_DISCOVERY] yt.player found');\n"
         "    for (var key in yt.player) {\n"
-        "      console.log('  yt.player.' + key + ' = ' + typeof yt.player[key]);\n"
+        "      _log('[JS_DISCOVERY]   yt.player.' + key + ' = ' + typeof yt.player[key]);\n"
         "    }\n"
         "  }\n"
         "} else {\n"
-        "  console.log('yt object NOT found');\n"
+        "  _log('[JS_DISCOVERY] yt object NOT found');\n"
         "}\n"
         "\n"
         "// Check for player-related globals\n"
@@ -1126,27 +1154,30 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         "for (var i = 0; i < playerGlobals.length; i++) {\n"
         "  var name = playerGlobals[i];\n"
         "  if (typeof window[name] !== 'undefined') {\n"
-        "    console.log('window.' + name + ' = ' + typeof window[name]);\n"
+        "    _log('[JS_DISCOVERY] window.' + name + ' = ' + typeof window[name]);\n"
         "  }\n"
         "}\n"
         "\n"
-        "// Check for decipher-related functions\n"
-        "console.log('=== LOOKING FOR DECIPHER FUNCTIONS ===');\n"
-        "var funcCount = 0;\n"
+        "// === CHECK FOR DECRYPT FUNCTIONS ===\n"
+        "_log('[JS_DISCOVERY] === CHECKING FOR DECRYPT FUNCTIONS ===');\n"
+        "var potentialDecryptors = [];\n"
         "for (var key in window) {\n"
-        "  if (typeof window[key] === 'function' && key.length < 10) {\n"
+        "  if (typeof window[key] === 'function' && key.length > 0 && key.length < 15) {\n"
         "    try {\n"
         "      var fnStr = window[key].toString();\n"
         "      // Look for signature manipulation patterns\n"
-        "      if (fnStr.indexOf('split') > -1 && fnStr.length < 500) {\n"
-        "        console.log('Potential func ' + key + ': ' + fnStr.substring(0, 100));\n"
-        "        funcCount++;\n"
-        "        if (funcCount > 5) break;\n"
+        "      if ((fnStr.indexOf('split') > -1 || fnStr.indexOf('reverse') > -1 || fnStr.indexOf('slice') > -1) && \n"
+        "          fnStr.length < 800 && fnStr.length > 100) {\n"
+        "        potentialDecryptors.push(key);\n"
+        "        if (potentialDecryptors.length <= 3) {\n"
+        "          _log('[JS_DISCOVERY] Potential decryptor ' + key + ': ' + fnStr.substring(0, 60) + '...');\n"
+        "        }\n"
         "      }\n"
         "    } catch(e) {}\n"
         "  }\n"
         "}\n"
-        "console.log('=== END DISCOVERY ===');\n"
+        "_log('[JS_DISCOVERY] Found ' + potentialDecryptors.length + ' potential decryptor functions');\n"
+        "_log('[JS_DISCOVERY] === END DISCOVERY ===');\n"
     ;
     
     JSValue init_result = JS_Eval(ctx, init_player_js, strlen(init_player_js), "<init_player>", 0);
@@ -1161,6 +1192,8 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     pthread_mutex_lock(&g_url_mutex);
     // BUG FIX #5: Safe string copy using memcpy with proper length validation
     out_result->captured_url_count = g_captured_url_count;
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", 
+        "[URL_CAPTURE_SUMMARY] Total URLs captured: %d", g_captured_url_count);
     for (int i = 0; i < g_captured_url_count && i < JS_MAX_CAPTURED_URLS; i++) {
         size_t len = strlen(g_captured_urls[i]);
         if (len >= JS_MAX_URL_LEN) {
@@ -1168,11 +1201,10 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         }
         memcpy(out_result->captured_urls[i], g_captured_urls[i], len);
         out_result->captured_urls[i][len] = '\0';
+        __android_log_print(ANDROID_LOG_INFO, "js_quickjs", 
+            "[URL_CAPTURED_%d] %s", i, out_result->captured_urls[i]);
     }
     pthread_mutex_unlock(&g_url_mutex);
-    
-    for (int i = 0; i < out_result->captured_url_count; i++) {
-    }
     
     out_result->status = (success_count > 0) ? JS_EXEC_SUCCESS : JS_EXEC_ERROR;
     
