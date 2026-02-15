@@ -50,13 +50,46 @@ static JSValue js_true(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
 }
 
 // Validation that actually tests if object can be used
+// Returns 1 if usable, 0 if not. Logs when corruption is detected.
 static int is_obj_usable(JSContext *ctx, JSValue obj) {
     if (!JS_IsObject(obj) || JS_IsException(obj)) return 0;
-    // Try to get prototype - this will fail if shape is corrupted
+    
     JSValue proto = JS_GetPrototype(ctx, obj);
     int usable = !JS_IsException(proto);
     JS_FreeValue(ctx, proto);
+    
+    if (!usable) {
+        LOG_ERROR("is_obj_usable: object is unusable (shape corrupted) - logged from find_own_property");
+    }
     return usable;
+}
+
+// Safe wrapper for JS_SetPropertyStr that validates objects first
+static int safe_set_property_str(JSContext *ctx, JSValueConst this_obj, 
+                                  const char *prop, JSValueConst val) {
+    if (!is_obj_usable(ctx, this_obj)) {
+        LOG_ERROR("safe_set_property_str: refusing to set property '%s' on unusable object", prop);
+        return -1;
+    }
+    return JS_SetPropertyStr(ctx, this_obj, prop, val);
+}
+
+// Safe wrapper for JS_GetPropertyStr that validates objects first
+static JSValue safe_get_property_str(JSContext *ctx, JSValueConst this_obj, const char *prop) {
+    if (!is_obj_usable(ctx, this_obj)) {
+        LOG_ERROR("safe_get_property_str: refusing to get property '%s' from unusable object", prop);
+        return JS_EXCEPTION;
+    }
+    return JS_GetPropertyStr(ctx, this_obj, prop);
+}
+
+// Safe wrapper for JS_NewCFunction that validates the context
+static JSValue safe_new_cfunction(JSContext *ctx, JSCFunction *func, const char *name, int argc) {
+    if (!ctx) {
+        LOG_ERROR("safe_new_cfunction: NULL context!");
+        return JS_EXCEPTION;
+    }
+    return JS_NewCFunction(ctx, func, name, argc);
 }
 
 // Helper to get a prototype from a constructor: Constructor.prototype
@@ -2498,6 +2531,14 @@ static const JSCFunctionListEntry js_dom_rect_read_only_proto_funcs[] = {
 // ============================================================================
 
 void init_browser_stubs(JSContext *ctx, JSValue global) {
+    /* CRITICAL: Validate that the global object is usable before proceeding.
+     * This catches shape corruption early via is_obj_usable() which tests
+     * JS_GetPrototype - if the shape is corrupted, this will fail. */
+    if (!is_obj_usable(ctx, global)) {
+        LOG_ERROR("init_browser_stubs: global object is not usable (shape may be corrupted)! Aborting init.");
+        return;
+    }
+    
     // ===== Initialize Class IDs =====
     JS_NewClassID(&js_shadow_root_class_id);
     JS_NewClassID(&js_animation_class_id);

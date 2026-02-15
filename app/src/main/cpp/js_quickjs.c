@@ -48,6 +48,9 @@ void record_captured_url(const char *url) {
         return;
     }
     
+    /* Log captured URL for debugging decryption */
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "[URL_CAPTURED] %s", url);
+    
     pthread_mutex_lock(&g_url_mutex);
     
     // Check for duplicates
@@ -530,8 +533,19 @@ static JSValue js_dummy_function(JSContext *ctx, JSValueConst this_val, int argc
     return JS_UNDEFINED;
 }
 
-// Native logging function for JavaScript debugging (disabled - using LLDB)
+// Native logging function for JavaScript debugging
+// Logs to Android logcat so we can see JS-side decryption results
 static JSValue js_bgmdwnldr_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)ctx;
+    (void)this_val;
+    
+    for (int i = 0; i < argc; i++) {
+        const char *str = JS_ToCString(ctx, argv[i]);
+        if (str) {
+            __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "[JS] %s", str);
+            JS_FreeCString(ctx, str);
+        }
+    }
     return JS_UNDEFINED;
 }
 
@@ -643,13 +657,25 @@ static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
 
 // Static initializer for class IDs using GCC constructor attribute
 // This ensures class IDs are initialized before main() is called
-static void __attribute__((constructor)) js_quickjs_init_class_ids(void) {
+// NOTE: This is now also called manually during GC reset
+void __attribute__((constructor)) js_quickjs_init_class_ids(void) {
     if (js_xhr_class_id == 0) {
         JS_NewClassID(&js_xhr_class_id);
     }
     if (js_video_class_id == 0) {
         JS_NewClassID(&js_video_class_id);
     }
+}
+
+/* Forward declaration for the constructor function */
+void js_quickjs_init_class_ids(void);
+
+/* Reset class IDs - called during GC full reset */
+void js_quickjs_reset_class_ids(void) {
+    js_xhr_class_id = 0;
+    js_video_class_id = 0;
+    /* Reinitialize immediately */
+    js_quickjs_init_class_ids();
 }
 
 bool js_quickjs_init(void) {
@@ -665,6 +691,8 @@ bool js_quickjs_init(void) {
          * the GC in an inconsistent state. We do a full memset + reinit to
          * ensure we start completely fresh. */
         gc_reset_full();
+        /* Also reset our class IDs since the runtime is fresh */
+        js_quickjs_reset_class_ids();
     }
     return true;
 }

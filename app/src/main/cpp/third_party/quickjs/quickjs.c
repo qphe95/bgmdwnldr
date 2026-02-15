@@ -61,11 +61,19 @@ static inline void gc_assert_initialized(void) {
 #include "libunicode.h"
 #include "dtoa.h"
 
-/* Debug logging enabled for shape corruption investigation */
+/* Debug logging - disabled for production builds */
 #include <android/log.h>
+/* Set to 1 to enable debug logging, 0 to disable */
+#define QJS_DEBUG_ENABLED 1
+#if QJS_DEBUG_ENABLED
 #define QJS_LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "quickjs", __VA_ARGS__)
 #define QJS_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "quickjs", __VA_ARGS__)
 #define QJS_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "quickjs", __VA_ARGS__)
+#else
+#define QJS_LOGD(...) ((void)0)
+#define QJS_LOGI(...) ((void)0)
+#define QJS_LOGW(...) ((void)0)
+#endif
 #define QJS_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "quickjs", __VA_ARGS__)
 
 #define OPTIMIZE         1
@@ -5599,8 +5607,13 @@ static void js_free_shape0(JSRuntime *rt, JSShape *sh)
         QJS_LOGE("js_free_shape0: ERROR - sh is NULL!");
         return;
     }
-    if ((uintptr_t)sh < 0x1000) {
-        QJS_LOGE("js_free_shape0: ERROR - sh is invalid %p!", (void*)sh);
+    /* Comprehensive validation for corrupted shape pointers */
+    uintptr_t sh_val = (uintptr_t)sh;
+    if (unlikely(sh_val < 0x1000 || 
+                 sh_val == (uintptr_t)-1 ||
+                 sh_val > 0x7f0000000000)) {
+        QJS_LOGE("js_free_shape0: ERROR - sh is corrupted/invalid %p (0x%llx)!", 
+                 (void*)sh, (unsigned long long)sh_val);
         return;
     }
     
@@ -5613,9 +5626,27 @@ static void js_free_shape0(JSRuntime *rt, JSShape *sh)
         QJS_LOGE("js_free_shape0: js_shape_hash_unlink returned");
     }
     QJS_LOGE("js_free_shape0: checking proto...");
+    /* Validate proto pointer if non-NULL */
     if (sh->proto != NULL) {
-        QJS_LOGE("js_free_shape0: proto is not NULL");
+        uintptr_t proto_val = (uintptr_t)sh->proto;
+        if (unlikely(proto_val < 0x1000 || 
+                     proto_val == (uintptr_t)-1 ||
+                     proto_val > 0x7f0000000000)) {
+            QJS_LOGE("js_free_shape0: WARNING - proto pointer is corrupted %p!", 
+                     (void*)sh->proto);
+            /* Don't crash, just don't dereference it */
+        } else {
+            QJS_LOGE("js_free_shape0: proto is valid, class_id=%d", sh->proto->class_id);
+        }
     }
+    
+    /* Validate property count to prevent overflow */
+    if (unlikely(sh->prop_count > 0x10000)) {
+        QJS_LOGE("js_free_shape0: ERROR - prop_count %u is suspiciously large!", sh->prop_count);
+        /* Cap it to prevent overflow */
+        sh->prop_count = 0;
+    }
+    
     QJS_LOGE("js_free_shape0: getting shape prop, prop_count=%d", sh->prop_count);
     pr = get_shape_prop(sh);
     QJS_LOGE("js_free_shape0: freeing atoms...");
@@ -6041,7 +6072,9 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
         for(i = 0; i < sh->prop_count; i++)
             p->prop[i] = props[i];
     }
-    return JS_MKPTR(JS_TAG_OBJECT, p);
+    JSValue ret = JS_MKPTR(JS_TAG_OBJECT, p);
+    QJS_LOGI("JS_NewObjectFromShape: returning obj=%p tag=%d", (void*)p, (int)JS_VALUE_GET_TAG(ret));
+    return ret;
 }
 
 static JSObject *get_proto_obj(JSValueConst proto_val)
@@ -6458,9 +6491,20 @@ static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
         return NULL;
     }
     
-    /* Defensive: check if shape pointer is valid */
-    if (unlikely((uintptr_t)p->shape < 0x1000)) {
-        QJS_LOGE("find_own_property: invalid shape pointer %p for object %p", (void*)p->shape, (void*)p);
+    /* Defensive: check if shape pointer is valid
+     * Check for:
+     * - NULL or very small values (< 0x1000)
+     * - -1 (0xFFFFFFFFFFFFFFFF) which indicates corruption
+     * - Very high values (kernel space > 0x7f0000000000)
+     */
+    uintptr_t shape_val = (uintptr_t)p->shape;
+    if (unlikely(shape_val < 0x1000 || 
+                 shape_val == (uintptr_t)-1 ||
+                 shape_val > 0x7f0000000000)) {
+        QJS_LOGE("find_own_property: CORRUPTED shape pointer %p (0x%llx) for object %p", 
+                 (void*)p->shape, (unsigned long long)shape_val, (void*)p);
+        /* Log additional object info for debugging */
+        QJS_LOGE("find_own_property: object class_id=%d", p->class_id);
         *ppr = NULL;
         return NULL;
     }
@@ -6807,6 +6851,12 @@ static void gc_remove_weak_objects(JSRuntime *rt)
 /* Handle-based GC integration */
 static GCHandle g_next_handle = 1;
 
+/* Reset handle counter - called during GC reset to keep handles in sync */
+void js_reset_handle_counter(void) {
+    QJS_LOGI("js_reset_handle_counter: resetting g_next_handle from %u to 1", g_next_handle);
+    g_next_handle = 1;
+}
+
 /* This function is called from gc_alloc_js_object in quickjs_gc_unified.c.
  * It adds an already-initialized GC object to the runtime's gc_handles array.
  * The object is guaranteed to have gc_obj_type set before this is called.
@@ -6858,7 +6908,9 @@ int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_typ
     }
     
     /* Assign handle */
-    h->handle = g_next_handle++;
+    GCHandle assigned_handle = g_next_handle++;
+    h->handle = assigned_handle;
+    QJS_LOGI("js_handle_array_add_js_object_ex: assigned handle=%u to ptr=%p", assigned_handle, obj);
     
     return 0;
 }
@@ -56783,8 +56835,12 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
         return -1;
     }
     QJS_LOGI("JS_AddIntrinsicBasicObjects: OBJECT proto created");
-    QJS_LOGI("JS_AddIntrinsicBasicObjects: obj tag=%d JS_TAG_OBJECT=%d", (int)JS_VALUE_GET_TAG(ctx->class_proto[JS_CLASS_OBJECT]), JS_TAG_OBJECT);
-    JSObject *p_test = JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_OBJECT]);
+    JSValue obj_val = ctx->class_proto[JS_CLASS_OBJECT];
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: obj tag=%d JS_TAG_OBJECT=%d", (int)JS_VALUE_GET_TAG(obj_val), JS_TAG_OBJECT);
+    /* Debug: Get the pointer through JS_VALUE_GET_PTR */
+    void *ptr_direct = JS_VALUE_GET_PTR(obj_val);
+    QJS_LOGI("JS_AddIntrinsicBasicObjects: JS_VALUE_GET_PTR=%p", ptr_direct);
+    JSObject *p_test = JS_VALUE_GET_OBJ(obj_val);
     QJS_LOGI("JS_AddIntrinsicBasicObjects: p_test=%p", (void*)p_test);
     if (!p_test) {
         QJS_LOGE("JS_AddIntrinsicBasicObjects: p_test is NULL! Cannot set immutable prototype.");

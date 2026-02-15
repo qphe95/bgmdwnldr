@@ -32,6 +32,9 @@ typedef struct JsExecResult {
 /* Initialize QuickJS runtime */
 bool js_quickjs_init(void);
 
+/* Reset class IDs (called during GC full reset) */
+void js_quickjs_reset_class_ids(void);
+
 /* Set the Android asset manager for loading browser stubs */
 void js_quickjs_set_asset_manager(AAssetManager *mgr);
 

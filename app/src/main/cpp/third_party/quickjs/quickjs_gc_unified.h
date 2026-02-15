@@ -273,8 +273,16 @@ size_t gc_available(void);
 /* Check if GC should run based on memory pressure (Bug #2 fix) */
 bool gc_should_run(void);
 
+/* Get current handle count for debugging */
+static inline uint32_t gc_handle_count(void) {
+    return g_gc.handle_count;
+}
+
 /* Check if a pointer is in the valid GC heap range */
 bool gc_ptr_is_valid(const void *ptr);
+
+/* Validate memory canaries for a GC pointer (detects buffer overflows) */
+bool gc_validate_ptr(void *ptr);
 
 /* Set the runtime pointer for malloc_state updates (Bug #2 fix) */
 void gc_set_runtime(struct JSRuntime *rt);

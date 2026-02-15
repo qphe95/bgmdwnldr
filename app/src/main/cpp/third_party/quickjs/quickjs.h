@@ -167,9 +167,18 @@ typedef uint64_t JSValue;
 /* For NaN boxing, we use the lower 32 bits to store handle for reference types */
 static inline void *js_value_get_ptr_nan(JSValue v) {
     int tag = (int)(v >> 32);
+    JSGCHandle handle = (JSGCHandle)(v & 0xFFFFFFFF);
     if (tag < 0) {
         /* Reference type - lower 32 bits are handle */
-        return gc_deref((JSGCHandle)(v & 0xFFFFFFFF));
+        void *ptr = gc_deref(handle);
+        if (!ptr) {
+            __android_log_print(ANDROID_LOG_ERROR, "quickjs", "js_value_get_ptr_nan: handle=%u returned NULL (handle_count=%u, v=0x%llx)", 
+                               handle, gc_handle_count(), (unsigned long long)v);
+        } else {
+            __android_log_print(ANDROID_LOG_INFO, "quickjs", "js_value_get_ptr_nan: handle=%u -> ptr=%p (v=0x%llx)", 
+                               handle, ptr, (unsigned long long)v);
+        }
+        return ptr;
     }
     /* Non-reference type - directly store pointer (unlikely) */
     return (void *)(intptr_t)(v & 0xFFFFFFFF);
@@ -185,6 +194,11 @@ static inline JSValue js_mkptr_nan(int tag, void *p) {
     if (tag < 0) {
         /* GC-managed object - store handle in lower 32 bits */
         JSGCHandle handle = gc_alloc_handle_for_ptr(p);
+        if (handle == 0) {
+            __android_log_print(ANDROID_LOG_ERROR, "quickjs", "js_mkptr_nan: gc_alloc_handle_for_ptr returned 0 for ptr=%p", p);
+        } else {
+            __android_log_print(ANDROID_LOG_INFO, "quickjs", "js_mkptr_nan: ptr=%p -> handle=%u", p, handle);
+        }
         return (((uint64_t)(tag) << 32) | handle);
     }
     /* Non-GC pointer - store directly (shouldn't happen for tagged ptrs) */

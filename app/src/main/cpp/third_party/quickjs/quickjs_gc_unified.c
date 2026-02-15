@@ -31,6 +31,71 @@ GCState g_gc = {0};
 /* Minimum object size to prevent infinite loops on dead objects */
 #define MIN_OBJECT_SIZE (sizeof(GCHeader) + 16)
 
+/* Memory canary values for detecting buffer overflows
+ * CANARY_BEFORE is placed before the user data (after header)
+ * CANARY_AFTER is placed at the end of the allocation
+ */
+#define GC_CANARY_BEFORE 0xDEADBEEFCAFEBAB0ULL
+#define GC_CANARY_AFTER  0xB0B1B2B3B4B5B6B7ULL
+#define GC_CANARY_SIZE   sizeof(uint64_t)
+
+/* ============================================================================
+ * MEMORY CANARY VALIDATION
+ * ============================================================================
+ * Canary values help detect buffer overflows by placing known magic values
+ * before and after user data. If these values are corrupted, a buffer overflow
+ * has occurred.
+ */
+
+/* Write canaries around user data area
+ * Layout: [GCHeader][CANARY_BEFORE][USER DATA][CANARY_AFTER] */
+static inline void gc_write_canaries(GCHeader *hdr, void *user_ptr, size_t user_size) {
+    (void)hdr;
+    /* Write canary before user data (at start of user area) */
+    uint64_t *canary_before = (uint64_t*)user_ptr;
+    *canary_before = GC_CANARY_BEFORE;
+    
+    /* Write canary after user data (at end of allocation) */
+    uint8_t *end = (uint8_t*)user_ptr + user_size;
+    /* Align to 8 bytes for the canary */
+    uint64_t *canary_after = (uint64_t*)((uintptr_t)(end + 7) & ~7);
+    /* Make sure we don't overflow the allocation */
+    if ((uint8_t*)canary_after < (uint8_t*)hdr + hdr->size - GC_CANARY_SIZE) {
+        *canary_after = GC_CANARY_AFTER;
+    }
+}
+
+/* Validate canaries for an allocation. Returns true if valid, false if corrupted. */
+static inline bool gc_validate_canaries(GCHeader *hdr) {
+    if (!hdr || hdr->size == 0) return true; /* Dead object, skip */
+    
+    void *user_ptr = (void*)(hdr + 1);
+    size_t user_size = hdr->size - sizeof(GCHeader);
+    
+    /* Check canary before */
+    uint64_t *canary_before = (uint64_t*)user_ptr;
+    if (*canary_before != GC_CANARY_BEFORE) {
+        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+            "GC CANARY CORRUPTED: before user data at %p, expected 0x%llx got 0x%llx",
+            user_ptr, (unsigned long long)GC_CANARY_BEFORE, (unsigned long long)*canary_before);
+        return false;
+    }
+    
+    /* Check canary after */
+    uint8_t *end = (uint8_t*)user_ptr + user_size;
+    uint64_t *canary_after = (uint64_t*)((uintptr_t)(end + 7) & ~7);
+    if ((uint8_t*)canary_after < (uint8_t*)hdr + hdr->size - GC_CANARY_SIZE) {
+        if (*canary_after != GC_CANARY_AFTER) {
+            __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+                "GC CANARY CORRUPTED: after user data at %p, expected 0x%llx got 0x%llx",
+                canary_after, (unsigned long long)GC_CANARY_AFTER, (unsigned long long)*canary_after);
+            return false;
+        }
+    }
+    
+    return true;
+}
+
 bool gc_init(void) {
     if (g_gc.initialized) {
         return true;
@@ -39,6 +104,8 @@ bool gc_init(void) {
     /* Allocate the heap */
     g_gc.heap = malloc(GC_HEAP_SIZE);
     if (!g_gc.heap) {
+        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+            "gc_init: FAILED to allocate GC heap of size %zu", GC_HEAP_SIZE);
         return false;
     }
     
@@ -68,6 +135,9 @@ bool gc_init(void) {
     
     /* Check if we have space */
     if (handle_table_size + root_size > GC_HEAP_SIZE) {
+        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+            "gc_init: FAILED - handle_table_size(%zu) + root_size(%zu) exceeds heap size(%zu)",
+            handle_table_size, root_size, GC_HEAP_SIZE);
         free(g_gc.heap);
         g_gc.heap = NULL;
         return false;
@@ -151,7 +221,9 @@ static size_t gc_bytes_allocated(void) {
 
 /* Core bump allocation - thread safe via atomic */
 static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
-    size_t aligned_size = ALIGN16(size);
+    /* Add space for canaries (before and after user data) */
+    size_t user_size_with_canaries = size + (GC_CANARY_SIZE * 2);
+    size_t aligned_size = ALIGN16(user_size_with_canaries);
     size_t total_size = sizeof(GCHeader) + aligned_size;
     
     /* Check space availability BEFORE atomically reserving */
@@ -163,6 +235,8 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
         
         if (new_offset > g_gc.heap_size) {
             /* Out of memory - offset not bumped yet, no corruption */
+            __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+                "bump_alloc: OUT OF MEMORY - requested %zu bytes, heap exhausted", total_size);
             return NULL;
         }
         /* Try to reserve space - only succeeds if offset hasn't changed */
@@ -189,7 +263,21 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
     hdr->flags = 0;
     hdr->pad = 0;
     
-    void *user_ptr = ptr + sizeof(GCHeader);
+    void *raw_user_ptr = ptr + sizeof(GCHeader);  /* Points to start of canary area */
+    
+    /* Layout: [GCHeader][CANARY_BEFORE][USER DATA][CANARY_AFTER]
+     * Write canary before user data (at raw_user_ptr) */
+    *(uint64_t*)raw_user_ptr = GC_CANARY_BEFORE;
+    
+    /* Write canary after user data (at end of allocation) */
+    uint8_t *end = (uint8_t*)raw_user_ptr + GC_CANARY_SIZE + size;
+    uint64_t *canary_after = (uint64_t*)((uintptr_t)(end + 7) & ~7);
+    if ((uint8_t*)canary_after < ptr + total_size - sizeof(uint64_t)) {
+        *canary_after = GC_CANARY_AFTER;
+    }
+    
+    /* The actual user pointer skips the before-canary */
+    void *user_ptr = (uint8_t*)raw_user_ptr + GC_CANARY_SIZE;
     
     /* Allocate handle if needed (for GC objects) */
     if (type != GC_TYPE_RAW && out_handle) {
@@ -208,7 +296,8 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
         if (handle == GC_HANDLE_NULL) {
             if (g_gc.handle_count >= g_gc.handle_capacity) {
                 /* Need to grow handle table - but it's in GC memory! */
-                /* For now, just fail if we run out of handles */
+                __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+                    "bump_alloc: OUT OF HANDLES - capacity=%u, cannot grow", g_gc.handle_capacity);
                 return NULL;
             }
             handle = g_gc.handle_count++;
@@ -262,22 +351,41 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
         return NULL;
     }
     
-    /* Allocate with header */
-    size_t total_size = sizeof(GCHeader) + ALIGN16(size);
+    /* Allocate with header and canaries */
+    size_t user_size_with_canaries = size + (GC_CANARY_SIZE * 2);
+    size_t total_size = sizeof(GCHeader) + ALIGN16(user_size_with_canaries);
     size_t old_offset = atomic_fetch_add(&g_gc.bump.offset, total_size);
     
     if (old_offset + total_size > g_gc.heap_size) {
         /* Out of memory - rollback */
+        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+            "gc_alloc_js_object_ex: OUT OF MEMORY - requested %zu bytes", total_size);
         atomic_fetch_sub(&g_gc.bump.offset, total_size);
         return NULL;
     }
     
-    /* Get pointer to header */
+    /* Get pointer to header and user area (including canary space) */
     GCHeader *hdr = (GCHeader *)(g_gc.heap + old_offset);
-    void *user_ptr = (void *)(hdr + 1);
+    void *raw_user_ptr = (void *)(hdr + 1);  /* Points to start of canary area */
     
-    /* CRITICAL: Zero the entire allocation to prevent garbage values in user data */
+    /* CRITICAL: Zero the entire allocation to prevent garbage values */
     memset(hdr, 0, total_size);
+    
+    /* Layout: [GCHeader][CANARY_BEFORE][USER DATA][CANARY_AFTER]
+     * raw_user_ptr points to CANARY_BEFORE, actual user data starts after it */
+    
+    /* Write canary before user data (at raw_user_ptr) */
+    *(uint64_t*)raw_user_ptr = GC_CANARY_BEFORE;
+    
+    /* Write canary after user data (at end of allocation) */
+    uint8_t *end = (uint8_t*)raw_user_ptr + GC_CANARY_SIZE + size;
+    uint64_t *canary_after = (uint64_t*)((uintptr_t)(end + 7) & ~7);
+    if ((uint8_t*)canary_after < (uint8_t*)hdr + total_size - sizeof(uint64_t)) {
+        *canary_after = GC_CANARY_AFTER;
+    }
+    
+    /* The actual user pointer skips the before-canary */
+    void *user_ptr = (uint8_t*)raw_user_ptr + GC_CANARY_SIZE;
     
     /* CRITICAL: Initialize header BEFORE adding to any handle array.
      * This ensures GC always sees a valid, initialized object. */
@@ -290,6 +398,8 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
     hdr->link.next = NULL;
     hdr->link.prev = NULL;
     hdr->handle = GC_HANDLE_NULL;
+    
+    __android_log_print(ANDROID_LOG_INFO, "quickjs", "gc_alloc_js_object_ex: allocated ptr=%p handle initialized to %u", user_ptr, hdr->handle);
     hdr->size = total_size;
     hdr->type = GC_TYPE_JS_OBJECT;
     hdr->pinned = 0;
@@ -300,8 +410,11 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
     atomic_thread_fence(memory_order_release);
     
     /* Add to the specified QuickJS handle array.
-     * Pass user_ptr so the handle array stores pointers to user data. */
-    if (js_handle_array_add_js_object_ex(rt, user_ptr, js_gc_obj_type, array_type) < 0) {
+     * CRITICAL: Pass raw_user_ptr (hdr+1) NOT user_ptr (hdr+1+canary_size).
+     * The handle array functions use gc_header() which expects ptr - sizeof(GCHeader)
+     * to land on the header. If we pass user_ptr (which has canary offset),
+     * gc_header() will compute the wrong header address. */
+    if (js_handle_array_add_js_object_ex(rt, raw_user_ptr, js_gc_obj_type, array_type) < 0) {
         /* Failed to add - mark as freed and return NULL */
         hdr->size = 0;  /* Mark as freed */
         return NULL;
@@ -361,7 +474,15 @@ void *gc_realloc(void *ptr, size_t new_size) {
 void gc_free(void *ptr) {
     if (!ptr) return;
     
-    GCHeader *hdr = gc_header(ptr);
+    /* Adjust pointer to account for the before-canary */
+    GCHeader *hdr = gc_header((uint8_t*)ptr - GC_CANARY_SIZE);
+    
+    /* Validate canaries before freeing - detect if corruption already occurred */
+    if (!gc_validate_canaries(hdr)) {
+        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+            "gc_free: CANARY CORRUPTION DETECTED for object at %p - buffer overflow occurred!", ptr);
+    }
+    
     size_t total_size = hdr->size;
     
     /* Clear handle entry */
@@ -402,6 +523,7 @@ GCHandle gc_alloc_handle_for_ptr(void *ptr) {
     /* Check if this pointer already has a handle assigned */
     GCHeader *hdr = gc_header(ptr);
     if (hdr && hdr->handle != GC_HANDLE_NULL) {
+        __android_log_print(ANDROID_LOG_INFO, "quickjs", "gc_alloc_handle_for_ptr: ptr=%p reusing existing handle=%u", ptr, hdr->handle);
         return hdr->handle;
     }
     
@@ -432,21 +554,33 @@ GCHandle gc_alloc_handle_for_ptr(void *ptr) {
         hdr->handle = handle;
     }
     
+    __android_log_print(ANDROID_LOG_INFO, "quickjs", "gc_alloc_handle_for_ptr: ptr=%p assigned NEW handle=%u", ptr, handle);
     return handle;
 }
 
 size_t gc_size(void *ptr) {
     if (!ptr) return 0;
-    GCHeader *hdr = gc_header(ptr);
+    /* Adjust pointer to account for the before-canary */
+    GCHeader *hdr = gc_header((uint8_t*)ptr - GC_CANARY_SIZE);
     if (hdr->size == 0) return 0;  /* Dead object */
-    return hdr->size - sizeof(GCHeader);
+    /* Return actual user size (minus canaries) */
+    return hdr->size - sizeof(GCHeader) - (GC_CANARY_SIZE * 2);
 }
 
 /* Get total allocation size including header */
 size_t gc_total_size(void *ptr) {
     if (!ptr) return 0;
-    GCHeader *hdr = gc_header(ptr);
+    /* Adjust pointer to account for the before-canary */
+    GCHeader *hdr = gc_header((uint8_t*)ptr - GC_CANARY_SIZE);
     return hdr->size;
+}
+
+/* Validate canaries for a user pointer. Returns true if valid, false if corrupted. */
+bool gc_validate_ptr(void *ptr) {
+    if (!ptr) return true;
+    /* Adjust pointer to account for the before-canary */
+    GCHeader *hdr = gc_header((uint8_t*)ptr - GC_CANARY_SIZE);
+    return gc_validate_canaries(hdr);
 }
 
 void gc_add_root(GCHandle handle) {
@@ -597,6 +731,12 @@ void gc_reset(void) {
 /* Forward declaration for browser stubs reset */
 extern void browser_stubs_reset(void);
 
+/* Forward declaration for QuickJS handle counter reset */
+extern void js_reset_handle_counter(void);
+
+/* Forward declaration for js_quickjs class ID reset */
+extern void js_quickjs_reset_class_ids(void);
+
 /*
  * Full GC reset - nuclear option for between downloads
  * Clears all state and reinitializes as if brand new.
@@ -604,8 +744,16 @@ extern void browser_stubs_reset(void);
  * is called multiple times.
  */
 void gc_reset_full(void) {
+    __android_log_print(ANDROID_LOG_INFO, "quickjs", "gc_reset_full: START");
+    
     /* Reset browser stubs state (static variables) */
     browser_stubs_reset();
+    
+    /* Reset QuickJS handle counter to keep handle allocation in sync */
+    js_reset_handle_counter();
+    
+    /* Reset js_quickjs class IDs */
+    js_quickjs_reset_class_ids();
     
     /* Clean up shadow stack first (free malloc'd entries) */
     gc_shadow_stack_cleanup();
@@ -696,6 +844,8 @@ void gc_push_jsvalue(JSContext *ctx, void *slot, const char *file, int line, con
     } else {
         entry = malloc(sizeof(GCShadowStackEntry));
         if (!entry) {
+            __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+                "gc_push_jsvalue: FAILED to allocate shadow stack entry");
             return;
         }
         g_gc.shadow_stats.pool_misses++;
