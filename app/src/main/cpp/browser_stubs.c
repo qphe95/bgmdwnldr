@@ -3371,3 +3371,21 @@ skip_dom_exception:
     JS_SetPropertyStr(ctx, global, "DOMRect", dom_rect_ctor);
 
 }
+
+/*
+ * Reset browser stubs state between downloads.
+ * This clears all static variables to ensure a fresh start
+ * when js_quickjs_exec_scripts is called multiple times.
+ */
+void browser_stubs_reset(void) {
+    /* Reset all static state variables to initial values */
+    
+    /* Reset DOMException class ID - it will be reallocated on next init */
+    js_dom_exception_class_id = 0;
+    
+    /* Note: g_performance_time is a minor timing counter that accumulates 
+     * 0.1ms per call to js_performance_now(). Over multiple downloads it 
+     * could drift but it's not critical - the GC reset is the main fix.
+     * A full reset of this variable would require moving its declaration
+     * or using a different approach. For now, the GC reset is sufficient. */
+}

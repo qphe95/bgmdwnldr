@@ -260,6 +260,12 @@ void gc_run(void);
 /* Reset everything (nuclear option) */
 void gc_reset(void);
 
+/* Full reset - clears all state and reinitializes fresh (memset + init)
+ * This is the proper way to reset between downloads.
+ * It clears the entire GC heap and state, then reinitializes as if brand new.
+ */
+void gc_reset_full(void);
+
 /* Stats */
 size_t gc_used(void);
 size_t gc_available(void);

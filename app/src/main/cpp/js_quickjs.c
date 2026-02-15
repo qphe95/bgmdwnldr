@@ -659,13 +659,12 @@ bool js_quickjs_init(void) {
             return false;
         }
     } else {
-        /* GC already initialized - reset it for fresh state.
-         * This is needed when js_quickjs_exec_scripts is called multiple times.
-         * The previous run may have left the GC in an inconsistent state. */
-        gc_cleanup();
-        if (!gc_init()) {
-            return false;
-        }
+        /* GC already initialized - do a full reset for fresh state.
+         * This is needed when js_quickjs_exec_scripts is called multiple times
+         * (e.g., downloading another video). The previous run may have left 
+         * the GC in an inconsistent state. We do a full memset + reinit to
+         * ensure we start completely fresh. */
+        gc_reset_full();
     }
     return true;
 }
@@ -673,6 +672,8 @@ bool js_quickjs_init(void) {
 void js_quickjs_cleanup(void) {
     pthread_mutex_lock(&g_url_mutex);
     g_captured_url_count = 0;
+    /* Clear all captured URLs */
+    memset(g_captured_urls, 0, sizeof(g_captured_urls));
     pthread_mutex_unlock(&g_url_mutex);
     
     // Cleanup unified GC

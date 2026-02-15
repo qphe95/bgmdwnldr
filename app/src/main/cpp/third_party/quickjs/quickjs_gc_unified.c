@@ -594,6 +594,34 @@ void gc_reset(void) {
     
 }
 
+/* Forward declaration for browser stubs reset */
+extern void browser_stubs_reset(void);
+
+/*
+ * Full GC reset - nuclear option for between downloads
+ * Clears all state and reinitializes as if brand new.
+ * This is the proper way to handle GC reset when js_quickjs_exec_scripts
+ * is called multiple times.
+ */
+void gc_reset_full(void) {
+    /* Reset browser stubs state (static variables) */
+    browser_stubs_reset();
+    
+    /* Clean up shadow stack first (free malloc'd entries) */
+    gc_shadow_stack_cleanup();
+    
+    /* Free the heap if allocated */
+    if (g_gc.heap) {
+        free(g_gc.heap);
+    }
+    
+    /* Clear entire GC state structure */
+    memset(&g_gc, 0, sizeof(g_gc));
+    
+    /* Reinitialize from scratch */
+    gc_init();
+}
+
 size_t gc_used(void) {
     if (!g_gc.initialized) return 0;
     return atomic_load(&g_gc.bump.offset);
