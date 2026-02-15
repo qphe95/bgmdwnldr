@@ -1,0 +1,63 @@
+# Manual LLDB Investigation Guide for Shape Corruption
+# 
+# This file contains LLDB commands for manually investigating the shape corruption.
+# Use this if the Python script approach doesn't work.
+
+# Step 1: Attach to the running app
+platform select remote-android
+platform connect connect://localhost:5039
+attach -p $(adb shell pidof com.bgmdwldr.vulkan)
+
+# Step 2: Set breakpoint on JS_NewObjectFromShape to track creations
+breakpoint set --name JS_NewObjectFromShape
+breakpoint command add -s python -o "
+import lldb
+frame = lldb.debugger.GetSelectedTarget().GetProcess().GetSelectedThread().GetSelectedFrame()
+ret_val = int(frame.FindRegister('x0').GetValue(), 0)
+print(f'[NEW OBJ] 0x{ret_val:x}')
+return False
+"
+
+# Step 3: Set breakpoint on init_browser_stubs
+breakpoint set --name init_browser_stubs
+
+# Step 4: Continue and wait for object creation
+c
+
+# When you see an object created (e.g., 0xb4000078857cb8c8),
+# set a watchpoint on its shape field (offset 8):
+# watchpoint set expression -w write -- (0xb4000078857cb8c8 + 8)
+
+# Step 5: Continue and wait for corruption
+c
+
+# When the watchpoint triggers, examine the backtrace:
+bt
+# This will show exactly which code is writing to the shape field
+
+# Step 6: Examine the corruption
+# Read the new (corrupted) value:
+# memory read 0xb4000078857cb8c8 -s 8 -c 4
+
+# Step 7: Single step to understand the corruption
+# si (step instruction)
+# OR
+# ni (step over)
+
+# Alternative: Set watchpoint on all objects in init_browser_stubs
+# First, get the address range of the function, then set watchpoints
+# on objects created within that range
+
+# Useful commands during investigation:
+# - register read x0 x1 x2 x3 x4 x5  (check arguments)
+# - memory read $x0 -s 8 -c 4       (read object header)
+# - frame select 1                   (go up one frame)
+# - source list                      (show source code)
+# - disassemble --frame              (show assembly)
+
+# Key patterns to look for:
+# 1. memmove/memcpy/memset writing to object memory
+# 2. JS_FreeValue or similar freeing and reusing memory
+# 3. GC compaction moving objects
+# 4. Stack overflow into heap
+# 5. Buffer overflow from adjacent object

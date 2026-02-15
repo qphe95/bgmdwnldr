@@ -387,6 +387,54 @@ void *gc_deref(GCHandle handle) {
     return g_gc.handles[handle].ptr;
 }
 
+/*
+ * Get or create a handle for an existing GC pointer.
+ * This is used by JS_MKPTR to store handles in JSValue instead of raw pointers.
+ * 
+ * If the pointer already has a handle (from gc_alloc_js_object_ex), return that.
+ * Otherwise, allocate a new handle for it.
+ */
+GCHandle gc_alloc_handle_for_ptr(void *ptr) {
+    if (!ptr) {
+        return GC_HANDLE_NULL;
+    }
+    
+    /* Check if this pointer already has a handle assigned */
+    GCHeader *hdr = gc_header(ptr);
+    if (hdr && hdr->handle != GC_HANDLE_NULL) {
+        return hdr->handle;
+    }
+    
+    /* Find a free handle slot */
+    GCHandle handle = GC_HANDLE_NULL;
+    for (uint32_t i = 1; i < g_gc.handle_count; i++) {
+        if (g_gc.handles[i].ptr == NULL) {
+            handle = i;
+            break;
+        }
+    }
+    
+    /* Grow handle table if needed */
+    if (handle == GC_HANDLE_NULL) {
+        if (g_gc.handle_count >= g_gc.handle_capacity) {
+            /* Out of handles - this is a fatal error but we return NULL */
+            return GC_HANDLE_NULL;
+        }
+        handle = g_gc.handle_count++;
+    }
+    
+    /* Assign the handle */
+    g_gc.handles[handle].ptr = ptr;
+    g_gc.handles[handle].gen = g_gc.gc_count;
+    
+    /* Store handle in header for future lookups */
+    if (hdr) {
+        hdr->handle = handle;
+    }
+    
+    return handle;
+}
+
 size_t gc_size(void *ptr) {
     if (!ptr) return 0;
     GCHeader *hdr = gc_header(ptr);
@@ -693,7 +741,8 @@ void gc_mark_shadow_stack(void) {
         /* JSValue tag indicates the type - objects have specific tag values */
         /* For QuickJS: tag < 0 indicates reference types (objects, strings, etc.) */
         if (val->tag < 0) {
-            void *ptr = val->u.ptr;
+            /* For reference types, u.handle stores the handle, not the pointer */
+            void *ptr = gc_deref(val->u.handle);
             if (ptr && gc_ptr_is_valid(ptr)) {
                 GCHeader *hdr = gc_header(ptr);
                 if (hdr && hdr->size > 0) {

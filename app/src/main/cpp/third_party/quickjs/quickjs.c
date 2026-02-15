@@ -61,11 +61,12 @@ static inline void gc_assert_initialized(void) {
 #include "libunicode.h"
 #include "dtoa.h"
 
-/* Debug logging disabled - using LLDB for debugging */
-#define QJS_LOGD(...) do {} while(0)
-#define QJS_LOGI(...) do {} while(0)
-#define QJS_LOGW(...) do {} while(0)
-#define QJS_LOGE(...) do {} while(0)
+/* Debug logging enabled for shape corruption investigation */
+#include <android/log.h>
+#define QJS_LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "quickjs", __VA_ARGS__)
+#define QJS_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "quickjs", __VA_ARGS__)
+#define QJS_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "quickjs", __VA_ARGS__)
+#define QJS_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "quickjs", __VA_ARGS__)
 
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
@@ -5932,6 +5933,13 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
     p->weakref_count = 0;
     p->u.opaque = NULL;
     p->shape = sh;
+    
+    /* DIAGNOSTIC: Verify shape was set correctly */
+    if (p->shape == (JSShape*)-1 || p->shape == NULL || (uintptr_t)p->shape < 0x1000) {
+        QJS_LOGE("JS_NewObjectFromShape: CORRUPTED SHAPE SET obj=%p shape=%p class_id=%d", 
+                 (void*)p, (void*)p->shape, class_id);
+    }
+    
     p->prop = js_malloc(ctx, sizeof(JSProperty) * sh->prop_size);
     if (unlikely(!p->prop)) {
         js_free(ctx, p);
@@ -10324,6 +10332,18 @@ int JS_SetPropertyInternal(JSContext *ctx, JSValueConst obj,
     QJS_LOGE("JS_SetPropertyInternal: ENTER prop=%d", prop);
     QJS_LOGE("JS_SetPropertyInternal: obj tag=%u this_obj tag=%u", 
              (unsigned)JS_VALUE_GET_TAG(obj), (unsigned)JS_VALUE_GET_TAG(this_obj));
+    
+    /* DIAGNOSTIC: Check object shape before processing */
+    if (JS_VALUE_GET_TAG(this_obj) == JS_TAG_OBJECT) {
+        JSObject *p_check = JS_VALUE_GET_OBJ(this_obj);
+        if (p_check) {
+            QJS_LOGE("JS_SetPropertyInternal: obj=%p shape=%p", (void*)p_check, (void*)p_check->shape);
+            if (p_check->shape == (JSShape*)-1 || p_check->shape == NULL || (uintptr_t)p_check->shape < 0x1000) {
+                QJS_LOGE("JS_SetPropertyInternal: CORRUPTED SHAPE DETECTED! obj=%p shape=%p prop=%d", 
+                         (void*)p_check, (void*)p_check->shape, prop);
+            }
+        }
+    }
     
 #if 0
     printf("JS_SetPropertyInternal: "); print_atom(ctx, prop); printf("\n");

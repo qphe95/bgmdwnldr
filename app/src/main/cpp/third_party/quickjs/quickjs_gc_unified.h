@@ -247,6 +247,9 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
 /* Get pointer from handle */
 void *gc_deref(GCHandle handle);
 
+/* Get or create a handle for an existing GC pointer (for JSValue storage) */
+GCHandle gc_alloc_handle_for_ptr(void *ptr);
+
 /* Add/remove roots */
 void gc_add_root(GCHandle handle);
 void gc_remove_root(GCHandle handle);

@@ -36,6 +36,16 @@ extern "C" {
 /* Forward declaration of GC object header - defined in quickjs_gc_unified.h */
 struct GCHeader;
 
+/* Handle type - must match GCHandle in quickjs_gc_unified.h */
+typedef uint32_t JSGCHandle;
+#define JS_GC_HANDLE_NULL 0
+
+/* Get pointer from handle - defined in quickjs_gc_unified.c */
+extern void *gc_deref(JSGCHandle handle);
+
+/* Allocate a handle for a pointer - defined in quickjs_gc_unified.c */
+extern JSGCHandle gc_alloc_handle_for_ptr(void *ptr);
+
 #if defined(__GNUC__) || defined(__clang__)
 #define js_likely(x)          __builtin_expect(!!(x), 1)
 #define js_unlikely(x)        __builtin_expect(!!(x), 0)
@@ -153,10 +163,34 @@ typedef uint64_t JSValue;
 #define JS_VALUE_GET_INT(v) (int)(v)
 #define JS_VALUE_GET_BOOL(v) (int)(v)
 #define JS_VALUE_GET_SHORT_BIG_INT(v) (int)(v)
-#define JS_VALUE_GET_PTR(v) (void *)(intptr_t)(v)
+
+/* For NaN boxing, we use the lower 32 bits to store handle for reference types */
+static inline void *js_value_get_ptr_nan(JSValue v) {
+    int tag = (int)(v >> 32);
+    if (tag < 0) {
+        /* Reference type - lower 32 bits are handle */
+        return gc_deref((JSGCHandle)(v & 0xFFFFFFFF));
+    }
+    /* Non-reference type - directly store pointer (unlikely) */
+    return (void *)(intptr_t)(v & 0xFFFFFFFF);
+}
+#define JS_VALUE_GET_PTR(v) js_value_get_ptr_nan(v)
 
 #define JS_MKVAL(tag, val) (((uint64_t)(tag) << 32) | (uint32_t)(val))
-#define JS_MKPTR(tag, ptr) (((uint64_t)(tag) << 32) | (uintptr_t)(ptr))
+
+static inline JSValue js_mkptr_nan(int tag, void *p) {
+    if (p == NULL) {
+        return ((uint64_t)(tag) << 32);
+    }
+    if (tag < 0) {
+        /* GC-managed object - store handle in lower 32 bits */
+        JSGCHandle handle = gc_alloc_handle_for_ptr(p);
+        return (((uint64_t)(tag) << 32) | handle);
+    }
+    /* Non-GC pointer - store directly (shouldn't happen for tagged ptrs) */
+    return (((uint64_t)(tag) << 32) | (uintptr_t)(p));
+}
+#define JS_MKPTR(tag, p) js_mkptr_nan(tag, p)
 
 #define JS_FLOAT64_TAG_ADDEND (0x7ff80000 - JS_TAG_FIRST + 1) /* quiet NaN encoding */
 
@@ -225,6 +259,8 @@ typedef union JSValueUnion {
 #else
     int64_t short_big_int;
 #endif
+    /* Handle storage for GC-managed objects */
+    JSGCHandle handle;
 } JSValueUnion;
 
 typedef struct JSValue {
@@ -241,10 +277,45 @@ typedef struct JSValue {
 #define JS_VALUE_GET_BOOL(v) ((v).u.int32)
 #define JS_VALUE_GET_FLOAT64(v) ((v).u.float64)
 #define JS_VALUE_GET_SHORT_BIG_INT(v) ((v).u.short_big_int)
-#define JS_VALUE_GET_PTR(v) ((v).u.ptr)
+
+/* 
+ * Handle-based pointer retrieval for GC-managed objects.
+ * Negative tags indicate reference types that need handle indirection.
+ * This allows GC compaction to update pointers via the handle table.
+ */
+static inline void *js_value_get_ptr_impl(JSValue v) {
+    /* If it's a reference type (negative tag), use handle indirection */
+    if (v.tag < 0) {
+        /* It's a handle - dereference through handle table */
+        return gc_deref(v.u.handle);
+    }
+    /* Non-reference type - return raw pointer (shouldn't happen for tagged ptrs) */
+    return v.u.ptr;
+}
+#define JS_VALUE_GET_PTR(v) js_value_get_ptr_impl(v)
 
 #define JS_MKVAL(tag, val) (JSValue){ (JSValueUnion){ .int32 = val }, tag }
-#define JS_MKPTR(tag, p) (JSValue){ (JSValueUnion){ .ptr = p }, tag }
+
+/* 
+ * Create a JSValue from a pointer using handle indirection for GC objects.
+ * The handle is stored instead of the raw pointer, allowing GC to update
+ * the pointer during compaction.
+ */
+static inline JSValue js_mkptr_impl(int tag, void *p) {
+    JSValue v;
+    v.tag = tag;
+    if (p == NULL) {
+        v.u.handle = JS_GC_HANDLE_NULL;
+    } else if (tag < 0) {
+        /* It's a GC-managed object - store a handle */
+        v.u.handle = gc_alloc_handle_for_ptr(p);
+    } else {
+        /* Non-GC pointer (shouldn't happen with negative tags) */
+        v.u.ptr = p;
+    }
+    return v;
+}
+#define JS_MKPTR(tag, p) js_mkptr_impl(tag, p)
 
 #define JS_TAG_IS_FLOAT64(tag) ((unsigned)(tag) == JS_TAG_FLOAT64)
 

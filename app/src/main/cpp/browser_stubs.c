@@ -49,6 +49,16 @@ static JSValue js_true(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     return JS_TRUE;
 }
 
+// Validation that actually tests if object can be used
+static int is_obj_usable(JSContext *ctx, JSValue obj) {
+    if (!JS_IsObject(obj) || JS_IsException(obj)) return 0;
+    // Try to get prototype - this will fail if shape is corrupted
+    JSValue proto = JS_GetPrototype(ctx, obj);
+    int usable = !JS_IsException(proto);
+    JS_FreeValue(ctx, proto);
+    return usable;
+}
+
 // Helper to get a prototype from a constructor: Constructor.prototype
 JSValue js_get_prototype(JSContext *ctx, JSValueConst ctor) {
     return JS_GetPropertyStr(ctx, ctor, "prototype");
@@ -2612,9 +2622,27 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     
     JS_SetClassProto(ctx, js_dom_exception_class_id, dom_exception_proto);
     JSValue dom_exception_ctor = JS_NewCFunction2(ctx, js_dom_exception_constructor, "DOMException", 2, JS_CFUNC_constructor, 0);
+    if (!is_obj_usable(ctx, dom_exception_ctor)) {
+        LOG_ERROR("dom_exception_ctor not usable after creation");
+    }
     JS_SetConstructor(ctx, dom_exception_ctor, dom_exception_proto);
+    if (!is_obj_usable(ctx, dom_exception_ctor)) {
+        LOG_ERROR("dom_exception_ctor not usable after SetConstructor");
+    }
     
     // Add static error code constants
+    if (!is_obj_usable(ctx, dom_exception_ctor)) {
+        LOG_ERROR("dom_exception_ctor not usable before setting constants");
+        // Skip setting constants on corrupted object
+        JS_FreeValue(ctx, dom_exception_ctor);
+        JS_FreeValue(ctx, dom_exception_proto);
+        // Continue with rest of init
+        goto skip_dom_exception;
+    }
+    
+    /* DIAGNOSTIC: Check dom_exception_ctor right before use */
+    LOG_ERROR("About to set INDEX_SIZE_ERR, dom_exception_ctor tag=%d", (int)JS_VALUE_GET_TAG(dom_exception_ctor));
+    
     JS_SetPropertyStr(ctx, dom_exception_ctor, "INDEX_SIZE_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_INDEX_SIZE_ERR));
     JS_SetPropertyStr(ctx, dom_exception_ctor, "HIERARCHY_REQUEST_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_HIERARCHY_REQUEST_ERR));
     JS_SetPropertyStr(ctx, dom_exception_ctor, "WRONG_DOCUMENT_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_WRONG_DOCUMENT_ERR));
@@ -2638,6 +2666,8 @@ void init_browser_stubs(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, dom_exception_ctor, "DATA_CLONE_ERR", JS_NewInt32(ctx, DOM_EXCEPTION_DATA_CLONE_ERR));
     
     JS_SetPropertyStr(ctx, global, "DOMException", dom_exception_ctor);
+skip_dom_exception:
+    ;
     
     // Map constructor
     JSValue map_proto = JS_NewObject(ctx);

@@ -1,0 +1,19 @@
+# Comprehensive QuickJS Shape Corruption Debug Script
+
+# First, start the app and get PID via Python
+script import subprocess
+script import time
+script print("[LLDB] Starting app...")
+script subprocess.run(["adb", "shell", "am", "start", "-n", "com.bgmdwldr.vulkan/.MainActivity"])
+script time.sleep(2)
+script print("[LLDB] Getting app PID...")
+script pid_str = subprocess.check_output(["adb", "shell", "pidof", "com.bgmdwldr.vulkan"]).decode().strip()
+script print("[LLDB] App PID: %s" % pid_str)
+
+# Connect to platform
+platform select remote-android
+platform connect connect://localhost:5039
+
+# Now attach using the PID we got
+# We need to use a workaround since LLDB doesn't expand Python variables directly
+# The attach will happen via process connect after we know the PID
