@@ -28,6 +28,27 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+/* File logging for debugging */
+#include <fcntl.h>
+static void file_log(const char *fmt, ...) {
+    static int log_fd = -1;
+    if (log_fd < 0) {
+        log_fd = open("/data/data/com.bgmdwldr.vulkan/main_debug.log", 
+                      O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+    if (log_fd >= 0) {
+        char buf[1024];
+        va_list args;
+        va_start(args, fmt);
+        int n = vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        if (n > 0 && n < sizeof(buf) - 1) {
+            buf[n++] = '\n';
+            write(log_fd, buf, n);
+        }
+    }
+}
+
 typedef struct ShaderBlob {
     uint8_t *data;
     size_t size;
@@ -1129,6 +1150,7 @@ static void *worker_thread(void *arg) {
     ui_set_progress(app, 0.0f);
     
     LOGI("Processing URL: %s", args->url);
+    file_log("Processing URL: %s", args->url);
     ui_set_status(app, "Analyzing URL...");
     
     time_t start_time = time(NULL);
@@ -1141,8 +1163,10 @@ static void *worker_thread(void *arg) {
     char err[512] = {0};
     MediaUrl media = {0};
     
+    file_log("Calling url_analyze...");
     if (!url_analyze(args->url, &media, err, sizeof(err))) {
         LOGE("URL analysis failed: %s", err);
+        file_log("URL analysis failed: %s", err);
         char status_msg[280];
         snprintf(status_msg, sizeof(status_msg), "Analysis failed: %.200s", err);
         ui_set_status(app, status_msg);
@@ -1152,6 +1176,7 @@ static void *worker_thread(void *arg) {
     }
 
     LOGI("Media URL found: %.300s", media.url);
+    file_log("Media URL found: %.300s", media.url);
     
     // Check for overall timeout
     if (time(NULL) - start_time > max_total_time) {
@@ -1209,8 +1234,10 @@ static void *worker_thread(void *arg) {
 
 static void start_worker(VulkanApp *app) {
     LOGI("start_worker called, workerRunning=%d", app->workerRunning ? 1 : 0);
+    file_log("start_worker called, workerRunning=%d", app->workerRunning ? 1 : 0);
     if (app->workerRunning) {
         LOGI("start_worker: worker already running, returning");
+        file_log("start_worker: worker already running, returning");
         return;
     }
     WorkerArgs *args = (WorkerArgs *)malloc(sizeof(WorkerArgs));
@@ -2198,6 +2225,7 @@ static void handle_character_input(char c) {
     g_input.textBuffer[g_input.textLength] = '\0';
     
     LOGI("Input: '%c' -> buffer: '%s'", c, g_input.textBuffer);
+    file_log("Input: '%c' -> buffer: '%s'", c, g_input.textBuffer);
 }
 
 /**
@@ -2243,6 +2271,7 @@ static void handle_cursor_right(void) {
  */
 static void handle_submit(void) {
     LOGI("Submit triggered, URL: '%s'", g_input.textBuffer);
+    file_log("Submit triggered, URL: '%s'", g_input.textBuffer);
     
     if (!g_app) {
         LOGE("handle_submit: g_app is NULL!");

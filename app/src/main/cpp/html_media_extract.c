@@ -5,9 +5,44 @@
 #include <pthread.h>
 #include <android/log.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdarg.h>
 #include "html_media_extract.h"
 #include "http_download.h"
 #include "js_quickjs.h"
+
+/* File logging for emulator testing */
+static void log_to_file(const char *tag, const char *fmt, ...) {
+    static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+    static int log_fd = -1;
+    
+    pthread_mutex_lock(&log_mutex);
+    
+    if (log_fd < 0) {
+        log_fd = open("/data/data/com.bgmdwldr.vulkan/extract_debug.log", 
+                      O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+    
+    if (log_fd >= 0) {
+        char buf[2048];
+        int n = snprintf(buf, sizeof(buf), "[%s] ", tag);
+        
+        va_list args;
+        va_start(args, fmt);
+        n += vsnprintf(buf + n, sizeof(buf) - n, fmt, args);
+        va_end(args);
+        
+        if (n < sizeof(buf) - 1) {
+            buf[n++] = '\n';
+        }
+        
+        write(log_fd, buf, n);
+        fsync(log_fd);
+    }
+    
+    pthread_mutex_unlock(&log_mutex);
+}
 
 // HTML Entity decoding helper - converts HTML entities to actual characters
 // Handles: &lt; &gt; &amp; &quot; &apos; &#123; (decimal) &#x7B; (hex)
@@ -984,6 +1019,7 @@ static int execute_scripts_and_get_urls(const char *html, char urls[][2048], int
     }
     
     LOG_INFO("Executing %d scripts...", exec_count);
+    log_to_file("html_media", "Executing %d scripts...", exec_count);
     
     // Check for ytcfg usage patterns in each script
     for (int i = 0; i < exec_count; i++) {
@@ -1017,10 +1053,16 @@ static int execute_scripts_and_get_urls(const char *html, char urls[][2048], int
     JsExecResult js_result;
     memset(&js_result, 0, sizeof(JsExecResult));
     
+    log_to_file("html_media", "About to call js_quickjs_exec_scripts...");
+    LOG_INFO("About to call js_quickjs_exec_scripts...");
+    
     bool js_success = js_quickjs_exec_scripts(
         exec_scripts, exec_script_lens, exec_count,
         html, NULL, &js_result
     );
+    
+    log_to_file("html_media", "js_quickjs_exec_scripts returned, success=%d", js_success);
+    LOG_INFO("js_quickjs_exec_scripts returned, success=%d", js_success);
     
     free_script_infos(scripts, script_count);
     
@@ -1030,20 +1072,33 @@ static int execute_scripts_and_get_urls(const char *html, char urls[][2048], int
     }
     
     LOG_INFO("JavaScript execution successful, captured %d URLs", js_result.captured_url_count);
+    log_to_file("html_media", "JS execution complete, captured %d URLs", js_result.captured_url_count);
     
     // Copy captured URLs to output array
     int count = 0;
+    int encrypted_count = 0;
+    int decrypted_count = 0;
     for (int i = 0; i < js_result.captured_url_count && count < max_urls; i++) {
+        log_to_file("html_media", "URL %d: %s", i, js_result.captured_urls[i]);
         // Only keep googlevideo.com URLs (the actual media URLs)
         if (strstr(js_result.captured_urls[i], "googlevideo.com")) {
             strncpy(urls[count], js_result.captured_urls[i], 2047);
             urls[count][2047] = '\0';
-            LOG_INFO("Captured media URL %d: %.100s...", count, urls[count]);
+            // Check if URL has signature (decrypted) or needs decryption
+            if (strstr(urls[count], "sig=") || strstr(urls[count], "signature=")) {
+                LOG_INFO("Captured DECRYPTED media URL %d: %.100s...", count, urls[count]);
+                decrypted_count++;
+            } else if (strstr(urls[count], "signatureCipher=") || strstr(urls[count], "sc=")) {
+                LOG_INFO("Captured ENCRYPTED media URL %d: %.100s...", count, urls[count]);
+                encrypted_count++;
+            } else {
+                LOG_INFO("Captured media URL %d (no sig): %.100s...", count, urls[count]);
+            }
             count++;
         }
     }
     
-    LOG_INFO("Found %d googlevideo.com URLs", count);
+    LOG_INFO("Found %d googlevideo.com URLs (%d decrypted, %d encrypted)", count, decrypted_count, encrypted_count);
     return count;
 }
 

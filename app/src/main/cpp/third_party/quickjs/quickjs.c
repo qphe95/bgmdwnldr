@@ -64,7 +64,7 @@ static inline void gc_assert_initialized(void) {
 /* Debug logging - disabled for production builds */
 #include <android/log.h>
 /* Set to 1 to enable debug logging, 0 to disable */
-#define QJS_DEBUG_ENABLED 0
+#define QJS_DEBUG_ENABLED 1
 #if QJS_DEBUG_ENABLED
 #define QJS_LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "quickjs", __VA_ARGS__)
 #define QJS_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "quickjs", __VA_ARGS__)
@@ -74,7 +74,33 @@ static inline void gc_assert_initialized(void) {
 #define QJS_LOGI(...) ((void)0)
 #define QJS_LOGW(...) ((void)0)
 #endif
-#define QJS_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "quickjs", __VA_ARGS__)
+
+/* File logging for debugging */
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdarg.h>
+static void file_log_quickjs(const char *fmt, ...) {
+    static int log_fd = -1;
+    if (log_fd < 0) {
+        log_fd = open("/data/data/com.bgmdwldr.vulkan/qjs_debug.log", 
+                      O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+    if (log_fd >= 0) {
+        char buf[1024];
+        va_list args;
+        va_start(args, fmt);
+        int n = vsnprintf(buf, sizeof(buf), fmt, args);
+        va_end(args);
+        if (n > 0 && n < sizeof(buf) - 1) {
+            buf[n++] = '\n';
+            write(log_fd, buf, n);
+        }
+    }
+}
+#define QJS_LOGE(...) do { \
+    __android_log_print(ANDROID_LOG_ERROR, "quickjs", __VA_ARGS__); \
+    file_log_quickjs(__VA_ARGS__); \
+} while(0)
 
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
@@ -1405,56 +1431,60 @@ static GCHandle gc_register_handle_for_ptr(void *ptr);
 
 static void js_trigger_gc(JSRuntime *rt, size_t size)
 {
+    /* IMMEDIATE log at function entry */
+    QJS_LOGE("js_trigger_gc: ENTRY rt=%p size=%zu", (void*)rt, size);
+    
     BOOL force_gc;
     
     /* Skip GC during early initialization (no contexts yet) */
-    QJS_LOGI("js_trigger_gc: checking rt...");
+    QJS_LOGE("js_trigger_gc: checking rt...");
     if (!rt)
         return;
-    QJS_LOGI("js_trigger_gc: rt=%p, checking context_handles...", (void*)rt);
-    QJS_LOGI("js_trigger_gc: &rt->context_handles=%p", (void*)&rt->context_handles);
-    QJS_LOGI("js_trigger_gc: rt->context_handles.handles=%p", (void*)rt->context_handles.handles);
-    QJS_LOGI("js_trigger_gc: rt->context_handles.count=%u", rt->context_handles.count);
+    QJS_LOGE("js_trigger_gc: rt=%p, checking context_handles...", (void*)rt);
+    QJS_LOGE("js_trigger_gc: &rt->context_handles=%p", (void*)&rt->context_handles);
+    QJS_LOGE("js_trigger_gc: rt->context_handles.handles=%p", (void*)rt->context_handles.handles);
+    QJS_LOGE("js_trigger_gc: rt->context_handles.count=%u", rt->context_handles.count);
     if (rt->context_handles.count == 0)
         return;
-    QJS_LOGI("js_trigger_gc: checking malloc_state...");
-    QJS_LOGI("js_trigger_gc: &rt->malloc_state=%p", (void*)&rt->malloc_state);
-    QJS_LOGI("js_trigger_gc: rt->malloc_state.malloc_size=%zu", rt->malloc_state.malloc_size);
-    QJS_LOGI("js_trigger_gc: rt->malloc_gc_threshold=%zu", rt->malloc_gc_threshold);
-    QJS_LOGI("js_trigger_gc: about to check force_gc...");
+    QJS_LOGE("js_trigger_gc: checking malloc_state...");
+    QJS_LOGE("js_trigger_gc: &rt->malloc_state=%p", (void*)&rt->malloc_state);
+    QJS_LOGE("js_trigger_gc: rt->malloc_state.malloc_size=%zu", rt->malloc_state.malloc_size);
+    QJS_LOGE("js_trigger_gc: rt->malloc_gc_threshold=%zu", rt->malloc_gc_threshold);
+    QJS_LOGE("js_trigger_gc: about to check force_gc...");
 #ifdef FORCE_GC_AT_MALLOC
     force_gc = TRUE;
 #else
-    QJS_LOGI("js_trigger_gc: calculating force_gc...");
-    QJS_LOGI("js_trigger_gc: malloc_size + size = %zu", rt->malloc_state.malloc_size + size);
+    QJS_LOGE("js_trigger_gc: calculating force_gc...");
+    QJS_LOGE("js_trigger_gc: malloc_size + size = %zu", rt->malloc_state.malloc_size + size);
     force_gc = ((rt->malloc_state.malloc_size + size) >
                 rt->malloc_gc_threshold);
-    QJS_LOGI("js_trigger_gc: force_gc=%d", force_gc);
+    QJS_LOGE("js_trigger_gc: force_gc=%d", force_gc);
     
     /* Bug #2 fix: Also check unified GC memory pressure */
-    QJS_LOGI("js_trigger_gc: checking gc_should_run...");
+    QJS_LOGE("js_trigger_gc: checking gc_should_run...");
     if (!force_gc && gc_should_run()) {
         force_gc = TRUE;
     }
-    QJS_LOGI("js_trigger_gc: after gc_should_run, force_gc=%d", force_gc);
+    QJS_LOGE("js_trigger_gc: after gc_should_run, force_gc=%d", force_gc);
     
     /* Don't run GC if explicitly disabled during critical initialization */
     if (force_gc && rt->gc_disabled) {
-        QJS_LOGI("js_trigger_gc: delaying GC - gc_disabled is set");
+        QJS_LOGE("js_trigger_gc: delaying GC - gc_disabled is set");
         force_gc = FALSE;
     }
 #endif
-    QJS_LOGI("js_trigger_gc: checking if force_gc...");
+    QJS_LOGE("js_trigger_gc: checking if force_gc...");
     if (force_gc) {
-        QJS_LOGI("js_trigger_gc: force_gc is TRUE, about to run GC...");
-        QJS_LOGI("js_trigger_gc: calling JS_RunGC...");
+        QJS_LOGE("js_trigger_gc: force_gc is TRUE, about to run GC...");
+        QJS_LOGE("js_trigger_gc: calling JS_RunGC...");
         JS_RunGC(rt);
-        QJS_LOGI("js_trigger_gc: JS_RunGC returned");
+        QJS_LOGE("js_trigger_gc: JS_RunGC returned");
         rt->malloc_gc_threshold = rt->malloc_state.malloc_size +
             (rt->malloc_state.malloc_size >> 1);
         /* Bug #2 fix: Update unified GC threshold too */
         gc_set_threshold(rt->malloc_gc_threshold);
     }
+    QJS_LOGE("js_trigger_gc: EXIT");
 }
 
 static size_t js_malloc_usable_size_unknown(const void *ptr)
@@ -5664,11 +5694,12 @@ static void js_free_shape0(JSRuntime *rt, JSShape *sh)
         QJS_LOGE("js_free_shape0: ERROR - sh is NULL!");
         return;
     }
-    /* Comprehensive validation for corrupted shape pointers */
+    /* Comprehensive validation for corrupted shape pointers (relaxed for Android) */
     uintptr_t sh_val = (uintptr_t)sh;
     if (unlikely(sh_val < 0x1000 || 
                  sh_val == (uintptr_t)-1 ||
-                 sh_val > 0x7f0000000000)) {
+                 sh_val > 0xF000000000000000 ||
+                 (sh_val & 0x7) != 0)) {
         QJS_LOGE("js_free_shape0: ERROR - sh is corrupted/invalid %p (0x%llx)!", 
                  (void*)sh, (unsigned long long)sh_val);
         return;
@@ -5688,7 +5719,8 @@ static void js_free_shape0(JSRuntime *rt, JSShape *sh)
         uintptr_t proto_val = (uintptr_t)sh->proto;
         if (unlikely(proto_val < 0x1000 || 
                      proto_val == (uintptr_t)-1 ||
-                     proto_val > 0x7f0000000000)) {
+                     proto_val > 0xF000000000000000 ||
+                     (proto_val & 0x7) != 0)) {
             QJS_LOGE("js_free_shape0: WARNING - proto pointer is corrupted %p!", 
                      (void*)sh->proto);
             /* Don't crash, just don't dereference it */
@@ -6015,10 +6047,13 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
         QJS_LOGE("JS_NewObjectFromShape: ctx->rt is NULL!");
         return JS_EXCEPTION;
     }
+    QJS_LOGE("JS_NewObjectFromShape: triggering gc...");
     js_trigger_gc(ctx->rt, sizeof(JSObject));
+    QJS_LOGE("JS_NewObjectFromShape: gc triggered, allocating object...");
     
     /* Use atomic allocation that sets gc_obj_type immediately */
     p = gc_alloc_js_object(sizeof(JSObject), JS_GC_OBJ_TYPE_JS_OBJECT, ctx->rt);
+    QJS_LOGE("JS_NewObjectFromShape: allocated p=%p", (void*)p);
     if (unlikely(!p))
         goto fail;
     p->class_id = class_id;
@@ -6041,6 +6076,19 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
         QJS_LOGE("JS_NewObjectFromShape: SHAPE MISMATCH! expected=%p got=%p", (void*)sh, (void*)p->shape);
     }
     
+    /* CRITICAL: Check shape validity before accessing prop_size */
+    QJS_LOGE("JS_NewObjectFromShape: checking shape validity sh=%p", (void*)sh);
+    if (!sh) {
+        QJS_LOGE("JS_NewObjectFromShape: ERROR - sh is NULL!");
+        goto fail;
+    }
+    QJS_LOGE("JS_NewObjectFromShape: sh->prop_size=%d", sh->prop_size);
+    if (sh->prop_size < 0 || sh->prop_size > 1000000) {
+        QJS_LOGE("JS_NewObjectFromShape: ERROR - invalid prop_size=%d", sh->prop_size);
+        goto fail;
+    }
+    
+    QJS_LOGE("JS_NewObjectFromShape: allocating prop array, prop_size=%d", sh->prop_size);
     p->prop = js_malloc(ctx, sizeof(JSProperty) * sh->prop_size);
     if (unlikely(!p->prop)) {
         js_free(ctx, p);
@@ -6155,16 +6203,26 @@ JSValue JS_NewObjectProtoClass(JSContext *ctx, JSValueConst proto_val,
     JSShape *sh;
     JSObject *proto;
 
+    QJS_LOGE("JS_NewObjectProtoClass: START class_id=%d", class_id);
     proto = get_proto_obj(proto_val);
+    QJS_LOGE("JS_NewObjectProtoClass: proto=%p", (void*)proto);
     sh = find_hashed_shape_proto(ctx->rt, proto);
+    QJS_LOGE("JS_NewObjectProtoClass: sh=%p", (void*)sh);
     if (likely(sh)) {
+        QJS_LOGE("JS_NewObjectProtoClass: duplicating shape");
         sh = js_dup_shape(sh);
+        QJS_LOGE("JS_NewObjectProtoClass: shape duplicated, sh=%p", (void*)sh);
     } else {
+        QJS_LOGE("JS_NewObjectProtoClass: creating new shape");
         sh = js_new_shape(ctx, proto);
+        QJS_LOGE("JS_NewObjectProtoClass: new shape created, sh=%p", (void*)sh);
         if (!sh)
             return JS_EXCEPTION;
     }
-    return JS_NewObjectFromShape(ctx, sh, class_id, NULL);
+    QJS_LOGE("JS_NewObjectProtoClass: calling JS_NewObjectFromShape");
+    JSValue ret = JS_NewObjectFromShape(ctx, sh, class_id, NULL);
+    QJS_LOGE("JS_NewObjectProtoClass: DONE");
+    return ret;
 }
 
 /* WARNING: the shape is not hashed. It is used for objects where
@@ -6561,7 +6619,9 @@ static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
      * Check for:
      * - NULL or very small values (< 0x1000)
      * - -1 (0xFFFFFFFFFFFFFFFF) which indicates corruption
-     * - Very high values (kernel space > 0x7f0000000000)
+     * - Very high values (kernel space > 0xF000000000000000)
+     * - Non-8-byte-aligned pointers
+     * NOTE: Relaxed for Android heap addresses (0xb4000000 range)
      */
     uintptr_t shape_val = (uintptr_t)p->shape;
     QJS_LOGE("find_own_property: shape_val=0x%llx", (unsigned long long)shape_val);
@@ -6570,10 +6630,11 @@ static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
         QJS_LOGE("find_own_property: SHAPE IS JSVALUE! shape=%p (looks like handle=0x%x tag=0)", 
                  (void*)shape_val, (unsigned int)(shape_val >> 4));
     }
+    /* Relaxed validation for Android heap addresses (0xb4000000 range) */
     if (unlikely(shape_val < 0x1000 || 
                  shape_val == (uintptr_t)-1 ||
-                 shape_val > 0x7f0000000000 ||
-                 (shape_val & 0xF) == 0)) {
+                 shape_val > 0xF000000000000000 ||
+                 (shape_val & 0x7) != 0)) {
         QJS_LOGE("find_own_property: CORRUPTED shape pointer %p (0x%llx) for object %p", 
                  (void*)p->shape, (unsigned long long)shape_val, (void*)p);
         /* Log additional object info for debugging */
@@ -7300,13 +7361,13 @@ static void gc_mark_recursive(JSRuntime *rt, void *user_ptr)
         QJS_LOGE("gc_mark_recursive: user_ptr is NULL!");
         return;
     }
-    /* Defensive check: user_ptr must be in valid GC heap range */
-    if ((uintptr_t)user_ptr < 0x1000 || (uintptr_t)user_ptr > 0xFFFFFFFFFFFFF000) {
+    /* Defensive check: user_ptr must be in valid GC heap range (relaxed for Android) */
+    if (unlikely((uintptr_t)user_ptr < 0x1000 || (uintptr_t)user_ptr > 0xF000000000000000)) {
         QJS_LOGE("gc_mark_recursive: user_ptr=%p is outside valid address range, skipping", (void*)user_ptr);
         return;
     }
     /* Check alignment - should be at least 8-byte aligned */
-    if ((uintptr_t)user_ptr & 0x7) {
+    if (unlikely((uintptr_t)user_ptr & 0x7)) {
         QJS_LOGE("gc_mark_recursive: user_ptr=%p is not 8-byte aligned, skipping", (void*)user_ptr);
         return;
     }
@@ -7462,14 +7523,14 @@ static void gc_sweep(JSRuntime *rt)
         hdr = gc_header(user_ptr);
         
         /* Safety check: user_ptr must point to valid memory in GC heap */
-        if (!gc_ptr_is_valid(user_ptr)) {
+        if (unlikely(!gc_ptr_is_valid(user_ptr))) {
             QJS_LOGE("gc_sweep: entry %d user_ptr=%p not in GC heap, marking freed", i, (void*)user_ptr);
             rt->gc_handles.handles[i] = JS_HANDLE_FREED;
             continue;
         }
         
         /* Additional safety: check minimum object alignment (8-byte for 64-bit) */
-        if ((uintptr_t)user_ptr & 0x7) {
+        if (unlikely((uintptr_t)user_ptr & 0x7)) {
             QJS_LOGE("gc_sweep: entry %d user_ptr=%p not 8-byte aligned, marking freed", i, (void*)user_ptr);
             rt->gc_handles.handles[i] = JS_HANDLE_FREED;
             continue;
@@ -7616,7 +7677,7 @@ static void gc_sweep_atoms(JSRuntime *rt)
 
 static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
 {
-    QJS_LOGI("JS_RunGCInternal: ENTER rt=%p", (void*)rt);
+    QJS_LOGE("JS_RunGCInternal: ENTER rt=%p", (void*)rt);
     if (!rt) {
         QJS_LOGE("JS_RunGCInternal: rt is NULL!");
         return;
@@ -7625,21 +7686,32 @@ static void JS_RunGCInternal(JSRuntime *rt, BOOL remove_weak_objects)
         /* free the weakly referenced object or symbol structures, delete
            the associated Map/Set entries and queue the finalization
            registry callbacks. */
+        QJS_LOGE("JS_RunGCInternal: removing weak objects...");
         gc_remove_weak_objects(rt);
+        QJS_LOGE("JS_RunGCInternal: weak objects removed");
     }
 
-    QJS_LOGI("JS_RunGCInternal: about to mark roots...");
+    QJS_LOGE("JS_RunGCInternal: about to mark roots...");
     /* Mark phase: mark all reachable objects from roots */
     gc_mark_roots(rt);
+    QJS_LOGE("JS_RunGCInternal: roots marked");
 
+    QJS_LOGE("JS_RunGCInternal: about to sweep...");
     /* Sweep phase: free all unmarked objects */
     gc_sweep(rt);
+    QJS_LOGE("JS_RunGCInternal: sweep complete");
     
+    QJS_LOGE("JS_RunGCInternal: about to sweep atoms...");
     /* 3-tier atom system: sweep dynamic atoms that are no longer referenced */
     gc_sweep_atoms(rt);
+    QJS_LOGE("JS_RunGCInternal: atoms swept");
 
+    QJS_LOGE("JS_RunGCInternal: about to compact handle arrays...");
     /* Compact handle arrays to remove NULL entries (like stack allocator) */
     js_compact_all_handle_arrays(rt);
+    QJS_LOGE("JS_RunGCInternal: handle arrays compacted");
+    
+    QJS_LOGE("JS_RunGCInternal: EXIT");
 }
 
 void JS_RunGC(JSRuntime *rt)

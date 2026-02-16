@@ -4,6 +4,8 @@
 #include <pthread.h>
 #include <ctype.h>
 #include <android/log.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "js_quickjs.h"
 #include "cutils.h"
 #include "quickjs.h"
@@ -13,7 +15,43 @@
 #include "js_value_helpers.h"
 /* Using unified GC allocator from quickjs_gc_unified.h */
 
-/* Debug logging removed - using LLDB for debugging */
+/* File logging for emulator testing */
+static void log_to_file(const char *tag, const char *fmt, ...) {
+    static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+    static int log_fd = -1;
+    
+    pthread_mutex_lock(&log_mutex);
+    
+    if (log_fd < 0) {
+        log_fd = open("/data/data/com.bgmdwldr.vulkan/js_debug.log", 
+                      O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+    
+    if (log_fd >= 0) {
+        char buf[2048];
+        int n = snprintf(buf, sizeof(buf), "[%s] ", tag);
+        
+        va_list args;
+        va_start(args, fmt);
+        n += vsnprintf(buf + n, sizeof(buf) - n, fmt, args);
+        va_end(args);
+        
+        if (n < sizeof(buf) - 1) {
+            buf[n++] = '\n';
+        }
+        
+        write(log_fd, buf, n);
+        fsync(log_fd);
+    }
+    
+    pthread_mutex_unlock(&log_mutex);
+    
+    // Also log to logcat
+    va_list args2;
+    va_start(args2, fmt);
+    __android_log_vprint(ANDROID_LOG_INFO, tag, fmt, args2);
+    va_end(args2);
+}
 
 #define MAX_CAPTURED_URLS 64
 
@@ -49,7 +87,13 @@ void record_captured_url(const char *url) {
     }
     
     /* Log captured URL for debugging decryption */
-    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "[URL_CAPTURED] %s", url);
+    /* Check if URL has signature (decrypted) or needs decryption */
+    bool has_sig = strstr(url, "sig=") != NULL || strstr(url, "signature=") != NULL;
+    bool has_cipher = strstr(url, "signatureCipher=") != NULL || strstr(url, "sc=") != NULL;
+    const char *url_type = has_sig ? "[DECRYPTED]" : (has_cipher ? "[ENCRYPTED]" : "[PLAIN]");
+    
+    log_to_file("js_quickjs", "[URL_CAPTURED] %s %s", url_type, url);
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "[URL_CAPTURED] %s %s", url_type, url);
     
     pthread_mutex_lock(&g_url_mutex);
     
@@ -640,15 +684,25 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
 
 // Initialize browser environment
 static void init_browser_environment(JSContext *ctx, AAssetManager *asset_mgr) {
+    log_to_file("js_quickjs", "init_browser_environment starting...");
+    
+    log_to_file("js_quickjs", "Getting global object...");
     JSValue global = JS_GetGlobalObject(ctx);
     
     // Register native logging function
-    JS_SetPropertyStr(ctx, global, "__bgmdwnldr_log", 
-        JS_NewCFunction(ctx, js_bgmdwnldr_log, "__bgmdwnldr_log", 1));
+    log_to_file("js_quickjs", "Registering __bgmdwnldr_log...");
+    JSValue log_func = JS_NewCFunction(ctx, js_bgmdwnldr_log, "__bgmdwnldr_log", 1);
+    log_to_file("js_quickjs", "Created C function, setting property...");
+    JS_SetPropertyStr(ctx, global, "__bgmdwnldr_log", log_func);
+    log_to_file("js_quickjs", "Property set");
     
     // Initialize all browser stubs (DOM, window, document, XMLHttpRequest, etc.)
     // This sets up constructors, prototype chains, and document.body
+    log_to_file("js_quickjs", "Calling init_browser_stubs...");
     init_browser_stubs(ctx, global);
+    log_to_file("js_quickjs", "init_browser_stubs complete");
+    
+    log_to_file("js_quickjs", "init_browser_environment complete");
     
     // Note: This QuickJS uses garbage collection, no need to free values explicitly
     (void)global;  // Suppress unused warning
@@ -893,7 +947,10 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
                              int script_count, const char *html, 
                              AAssetManager *asset_mgr,
                              JsExecResult *out_result) {
+    log_to_file("js_quickjs", "js_quickjs_exec_scripts called, script_count=%d", script_count);
+    
     if (!scripts || script_count <= 0 || !out_result) {
+        log_to_file("js_quickjs", "Invalid arguments");
         return false;
     }
     
@@ -907,28 +964,36 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     out_result->status = JS_EXEC_ERROR;
     
     // Initialize GC first (must happen before any other QuickJS calls)
+    log_to_file("js_quickjs", "Initializing GC...");
     if (!js_quickjs_init()) {
+        log_to_file("js_quickjs", "GC init failed");
         return false;
     }
+    log_to_file("js_quickjs", "GC initialized");
     
     // Create runtime using unified GC allocator
-    
+    log_to_file("js_quickjs", "Creating runtime...");
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) {
+        log_to_file("js_quickjs", "Runtime creation failed");
         return false;
     }
+    log_to_file("js_quickjs", "Runtime created");
     
     // Set limits after successful runtime creation
     JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
     JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
     
     // Create context - this initializes built-in objects
+    log_to_file("js_quickjs", "Creating context...");
     JSContext *ctx = JS_NewContext(rt);
     
     if (!ctx) {
+        log_to_file("js_quickjs", "Context creation failed");
         JS_FreeRuntime(rt);
         return false;
     }
+    log_to_file("js_quickjs", "Context created");
     
     // NOW register custom classes after context is created
     JSClassDef xhr_def = {"XMLHttpRequest", .finalizer = js_xhr_finalizer};
@@ -939,7 +1004,9 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     }
     
     // Initialize full browser environment with all necessary APIs
+    log_to_file("js_quickjs", "Initializing browser environment...");
     init_browser_environment(ctx, asset_mgr);
+    log_to_file("js_quickjs", "Browser environment initialized");
 
     // Parse HTML and create video elements BEFORE loading scripts
     // This handles Scenario B: HTML has <video> tags directly
@@ -993,6 +1060,7 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         char filename[64];
         snprintf(filename, sizeof(filename), "<script_%d>", i);
         
+        log_to_file("js_quickjs", "Executing script %d: %zu bytes", i, script_lens[i]);
         __android_log_print(ANDROID_LOG_INFO, "js_quickjs", 
             "[EXEC] Executing script %d: %zu bytes", i, script_lens[i]);
         
@@ -1084,6 +1152,7 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
 
     }
     
+    log_to_file("js_quickjs", "All %d scripts executed, running discovery...", script_count);
     
     // After scripts load, dispatch DOMContentLoaded to trigger player initialization
     // The video element and ytInitialPlayerResponse were already set up before scripts loaded
@@ -1119,12 +1188,28 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         "    var formats = ytInitialPlayerResponse.streamingData.formats || [];\n"
         "    var adaptiveFormats = ytInitialPlayerResponse.streamingData.adaptiveFormats || [];\n"
         "    _log('[JS_DISCOVERY] Found ' + formats.length + ' formats and ' + adaptiveFormats.length + ' adaptive formats');\n"
+        "    // Count encrypted vs decrypted\n"
+        "    var encryptedCount = 0;\n"
+        "    var decryptedCount = 0;\n"
+        "    for (var i = 0; i < formats.length; i++) {\n"
+        "      if (formats[i].signatureCipher) encryptedCount++;\n"
+        "      else if (formats[i].url) decryptedCount++;\n"
+        "    }\n"
+        "    for (var i = 0; i < adaptiveFormats.length; i++) {\n"
+        "      if (adaptiveFormats[i].signatureCipher) encryptedCount++;\n"
+        "      else if (adaptiveFormats[i].url) decryptedCount++;\n"
+        "    }\n"
+        "    _log('[JS_DISCOVERY] Encrypted: ' + encryptedCount + ', Decrypted: ' + decryptedCount);\n"
         "    // Log first few URLs if available\n"
         "    for (var i = 0; i < Math.min(3, formats.length); i++) {\n"
         "      if (formats[i].url) _log('[JS_DISCOVERY] Format ' + i + ' URL: ' + formats[i].url.substring(0, 80) + '...');\n"
-        "      if (formats[i].signatureCipher) _log('[JS_DISCOVERY] Format ' + i + ' has signatureCipher');\n"
+        "      if (formats[i].signatureCipher) _log('[JS_DISCOVERY] Format ' + i + ' signatureCipher: ' + formats[i].signatureCipher.substring(0, 80) + '...');\n"
         "    }\n"
+        "  } else {\n"
+        "    _log('[JS_DISCOVERY] NO streamingData in ytInitialPlayerResponse');\n"
         "  }\n"
+        "} else {\n"
+        "  _log('[JS_DISCOVERY] ytInitialPlayerResponse NOT DEFINED');\n"
         "}\n"
         "if (document.getElementById('movie_player')) {\n"
         "  _log('[JS_DISCOVERY] movie_player element exists');\n"
@@ -1208,9 +1293,14 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     
     out_result->status = (success_count > 0) ? JS_EXEC_SUCCESS : JS_EXEC_ERROR;
     
+    log_to_file("js_quickjs", "Finished, captured %d URLs, status=%d", 
+                out_result->captured_url_count, out_result->status);
+    
     // Cleanup
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
+    
+    log_to_file("js_quickjs", "Cleanup complete, returning");
     
     return out_result->status == JS_EXEC_SUCCESS;
 }
