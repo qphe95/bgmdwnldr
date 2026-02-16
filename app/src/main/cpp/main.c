@@ -82,6 +82,10 @@ typedef struct VulkanApp {
     JavaVM *javaVm;
     bool ready;
     float densityScale;
+    
+    /* Window size for touch coordinate scaling */
+    int32_t windowWidth;
+    int32_t windowHeight;
 
     pthread_mutex_t uiMutex;
     pthread_t workerThread;
@@ -682,12 +686,17 @@ static bool create_swapchain(VulkanApp *app) {
     free(formats);
 
     VkExtent2D extent = caps.currentExtent;
+    int32_t windowWidth = ANativeWindow_getWidth(app->window);
+    int32_t windowHeight = ANativeWindow_getHeight(app->window);
     if (extent.width == UINT32_MAX || extent.height == UINT32_MAX) {
-        int32_t width = ANativeWindow_getWidth(app->window);
-        int32_t height = ANativeWindow_getHeight(app->window);
-        extent.width = (uint32_t)width;
-        extent.height = (uint32_t)height;
+        extent.width = (uint32_t)windowWidth;
+        extent.height = (uint32_t)windowHeight;
     }
+    /* Store window size for touch coordinate scaling */
+    app->windowWidth = windowWidth;
+    app->windowHeight = windowHeight;
+    LOGI("Window size: %dx%d, Swapchain extent: %dx%d", 
+         windowWidth, windowHeight, extent.width, extent.height);
     uint32_t imageCount = caps.minImageCount + 1;
     if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
         imageCount = caps.maxImageCount;
@@ -2268,24 +2277,42 @@ Java_com_bgmdwldr_vulkan_MainActivity_nativeOnTouch(JNIEnv *env, jclass clazz,
     (void)env;
     (void)clazz;
     
-    LOGI("nativeOnTouch CALLED: action=%d, x=%.1f, y=%.1f", action, x, y);
-    
     if (!g_app) {
         LOGI("nativeOnTouch: g_app is NULL!");
         return;
     }
+    
+    /* Scale touch coordinates from window size to swapchain extent.
+     * Android gives us coordinates in window pixels, but our UI is rendered
+     * using swapchain extent which may differ (especially on emulators).
+     */
+    float scaledX = x;
+    float scaledY = y;
+    if (g_app->windowWidth > 0 && g_app->windowHeight > 0) {
+        float swapW = (float)g_app->swapchainExtent.width;
+        float swapH = (float)g_app->swapchainExtent.height;
+        float winW = (float)g_app->windowWidth;
+        float winH = (float)g_app->windowHeight;
+        scaledX = x * (swapW / winW);
+        scaledY = y * (swapH / winH);
+    }
+    
+    LOGI("nativeOnTouch: action=%d, raw=(%.1f,%.1f), scaled=(%.1f,%.1f), window=%dx%d, swapchain=%dx%d",
+         action, x, y, scaledX, scaledY,
+         g_app->windowWidth, g_app->windowHeight,
+         g_app->swapchainExtent.width, g_app->swapchainExtent.height);
     
     // Update bounds first
     update_input_bounds();
     
     LOGI("URL box bounds: (%.1f,%.1f)-(%.1f,%.1f)", 
          g_input.urlX0, g_input.urlY0, g_input.urlX1, g_input.urlY1);
-    LOGI("is_inside_url_box(%.1f, %.1f) = %d", x, y, is_inside_url_box(x, y) ? 1 : 0);
+    LOGI("is_inside_url_box(%.1f, %.1f) = %d", scaledX, scaledY, is_inside_url_box(scaledX, scaledY) ? 1 : 0);
     
     switch (action) {
         case ACTION_DOWN:
-            if (is_inside_url_box(x, y)) {
-                LOGI("Touch in URL box at (%.1f, %.1f)", x, y);
+            if (is_inside_url_box(scaledX, scaledY)) {
+                LOGI("Touch in URL box at (%.1f, %.1f)", scaledX, scaledY);
                 g_input.inputActive = true;
                 g_app->inputActive = true;
                 show_soft_keyboard();
