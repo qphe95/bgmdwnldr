@@ -2268,10 +2268,19 @@ Java_com_bgmdwldr_vulkan_MainActivity_nativeOnTouch(JNIEnv *env, jclass clazz,
     (void)env;
     (void)clazz;
     
-    if (!g_app) return;
+    LOGI("nativeOnTouch CALLED: action=%d, x=%.1f, y=%.1f", action, x, y);
+    
+    if (!g_app) {
+        LOGI("nativeOnTouch: g_app is NULL!");
+        return;
+    }
     
     // Update bounds first
     update_input_bounds();
+    
+    LOGI("URL box bounds: (%.1f,%.1f)-(%.1f,%.1f)", 
+         g_input.urlX0, g_input.urlY0, g_input.urlX1, g_input.urlY1);
+    LOGI("is_inside_url_box(%.1f, %.1f) = %d", x, y, is_inside_url_box(x, y) ? 1 : 0);
     
     switch (action) {
         case ACTION_DOWN:
@@ -2288,6 +2297,8 @@ Java_com_bgmdwldr_vulkan_MainActivity_nativeOnTouch(JNIEnv *env, jclass clazz,
                 g_app->inputActive = false;
                 hide_soft_keyboard();
                 ui_set_status(g_app, "Idle");
+            } else {
+                LOGI("Touch outside URL box, input not active - ignoring");
             }
             break;
             

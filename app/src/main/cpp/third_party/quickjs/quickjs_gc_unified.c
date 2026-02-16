@@ -17,7 +17,16 @@
 /* Forward declaration from quickjs.c */
 struct JSRuntime;
 
-/* Debug logging removed - using LLDB for debugging */
+/* Debug logging control - set to 1 to enable, 0 to disable */
+#define GC_DEBUG_LOGGING 0
+
+#if GC_DEBUG_LOGGING
+    #define GC_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "quickjs", __VA_ARGS__)
+    #define GC_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "quickjs", __VA_ARGS__)
+#else
+    #define GC_LOGI(...) ((void)0)
+    #define GC_LOGE(...) ((void)0)
+#endif
 
 /* Global GC instance - lives in BSS */
 GCState g_gc = {0};
@@ -75,7 +84,7 @@ static inline bool gc_validate_canaries(GCHeader *hdr) {
     /* Check canary before */
     uint64_t *canary_before = (uint64_t*)user_ptr;
     if (*canary_before != GC_CANARY_BEFORE) {
-        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+        GC_LOGE(
             "GC CANARY CORRUPTED: before user data at %p, expected 0x%llx got 0x%llx",
             user_ptr, (unsigned long long)GC_CANARY_BEFORE, (unsigned long long)*canary_before);
         return false;
@@ -86,7 +95,7 @@ static inline bool gc_validate_canaries(GCHeader *hdr) {
     uint64_t *canary_after = (uint64_t*)((uintptr_t)(end + 7) & ~7);
     if ((uint8_t*)canary_after < (uint8_t*)hdr + hdr->size - GC_CANARY_SIZE) {
         if (*canary_after != GC_CANARY_AFTER) {
-            __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+            GC_LOGE(
                 "GC CANARY CORRUPTED: after user data at %p, expected 0x%llx got 0x%llx",
                 canary_after, (unsigned long long)GC_CANARY_AFTER, (unsigned long long)*canary_after);
             return false;
@@ -104,7 +113,7 @@ bool gc_init(void) {
     /* Allocate the heap */
     g_gc.heap = malloc(GC_HEAP_SIZE);
     if (!g_gc.heap) {
-        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+        GC_LOGE(
             "gc_init: FAILED to allocate GC heap of size %zu", GC_HEAP_SIZE);
         return false;
     }
@@ -135,7 +144,7 @@ bool gc_init(void) {
     
     /* Check if we have space */
     if (handle_table_size + root_size > GC_HEAP_SIZE) {
-        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+        GC_LOGE(
             "gc_init: FAILED - handle_table_size(%zu) + root_size(%zu) exceeds heap size(%zu)",
             handle_table_size, root_size, GC_HEAP_SIZE);
         free(g_gc.heap);
@@ -235,7 +244,7 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
         
         if (new_offset > g_gc.heap_size) {
             /* Out of memory - offset not bumped yet, no corruption */
-            __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+            GC_LOGE(
                 "bump_alloc: OUT OF MEMORY - requested %zu bytes, heap exhausted", total_size);
             return NULL;
         }
@@ -296,7 +305,7 @@ static void *bump_alloc(size_t size, GCType type, GCHandle *out_handle) {
         if (handle == GC_HANDLE_NULL) {
             if (g_gc.handle_count >= g_gc.handle_capacity) {
                 /* Need to grow handle table - but it's in GC memory! */
-                __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+                GC_LOGE(
                     "bump_alloc: OUT OF HANDLES - capacity=%u, cannot grow", g_gc.handle_capacity);
                 return NULL;
             }
@@ -358,7 +367,7 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
     
     if (old_offset + total_size > g_gc.heap_size) {
         /* Out of memory - rollback */
-        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+        GC_LOGE(
             "gc_alloc_js_object_ex: OUT OF MEMORY - requested %zu bytes", total_size);
         atomic_fetch_sub(&g_gc.bump.offset, total_size);
         return NULL;
@@ -399,7 +408,7 @@ void *gc_alloc_js_object_ex(size_t size, int js_gc_obj_type, JSRuntime *rt, GCHa
     hdr->link.prev = NULL;
     hdr->handle = GC_HANDLE_NULL;
     
-    __android_log_print(ANDROID_LOG_INFO, "quickjs", "gc_alloc_js_object_ex: allocated ptr=%p handle initialized to %u", user_ptr, hdr->handle);
+    GC_LOGI("gc_alloc_js_object_ex: allocated ptr=%p handle initialized to %u", user_ptr, hdr->handle);
     hdr->size = total_size;
     hdr->type = GC_TYPE_JS_OBJECT;
     hdr->pinned = 0;
@@ -479,7 +488,7 @@ void gc_free(void *ptr) {
     
     /* Validate canaries before freeing - detect if corruption already occurred */
     if (!gc_validate_canaries(hdr)) {
-        __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+        GC_LOGE(
             "gc_free: CANARY CORRUPTION DETECTED for object at %p - buffer overflow occurred!", ptr);
     }
     
@@ -523,8 +532,18 @@ GCHandle gc_alloc_handle_for_ptr(void *ptr) {
     /* Check if this pointer already has a handle assigned */
     GCHeader *hdr = gc_header(ptr);
     if (hdr && hdr->handle != GC_HANDLE_NULL) {
-        __android_log_print(ANDROID_LOG_INFO, "quickjs", "gc_alloc_handle_for_ptr: ptr=%p reusing existing handle=%u", ptr, hdr->handle);
-        return hdr->handle;
+        /* CRITICAL FIX: After gc_reset_full(), the handle table is cleared
+         * but object headers in the (now freed) heap may still contain stale
+         * handles. We must verify the handle is valid and points to this ptr.
+         */
+        GCHandle existing = hdr->handle;
+        if (existing < g_gc.handle_count && g_gc.handles[existing].ptr == ptr) {
+            GC_LOGI("gc_alloc_handle_for_ptr: ptr=%p reusing existing handle=%u", ptr, existing);
+            return existing;
+        }
+        /* Handle is stale (from before gc_reset_full), clear it */
+        GC_LOGI("gc_alloc_handle_for_ptr: ptr=%p stale handle=%u in header, will allocate new", ptr, existing);
+        hdr->handle = GC_HANDLE_NULL;
     }
     
     /* Find a free handle slot */
@@ -554,7 +573,7 @@ GCHandle gc_alloc_handle_for_ptr(void *ptr) {
         hdr->handle = handle;
     }
     
-    __android_log_print(ANDROID_LOG_INFO, "quickjs", "gc_alloc_handle_for_ptr: ptr=%p assigned NEW handle=%u", ptr, handle);
+    GC_LOGI("gc_alloc_handle_for_ptr: ptr=%p assigned NEW handle=%u", ptr, handle);
     return handle;
 }
 
@@ -731,9 +750,6 @@ void gc_reset(void) {
 /* Forward declaration for browser stubs reset */
 extern void browser_stubs_reset(void);
 
-/* Forward declaration for QuickJS handle counter reset */
-extern void js_reset_handle_counter(void);
-
 /* Forward declaration for js_quickjs class ID reset */
 extern void js_quickjs_reset_class_ids(void);
 
@@ -744,13 +760,10 @@ extern void js_quickjs_reset_class_ids(void);
  * is called multiple times.
  */
 void gc_reset_full(void) {
-    __android_log_print(ANDROID_LOG_INFO, "quickjs", "gc_reset_full: START");
+    GC_LOGI("gc_reset_full: START");
     
     /* Reset browser stubs state (static variables) */
     browser_stubs_reset();
-    
-    /* Reset QuickJS handle counter to keep handle allocation in sync */
-    js_reset_handle_counter();
     
     /* Reset js_quickjs class IDs */
     js_quickjs_reset_class_ids();
@@ -844,7 +857,7 @@ void gc_push_jsvalue(JSContext *ctx, void *slot, const char *file, int line, con
     } else {
         entry = malloc(sizeof(GCShadowStackEntry));
         if (!entry) {
-            __android_log_print(ANDROID_LOG_ERROR, "quickjs", 
+            GC_LOGE(
                 "gc_push_jsvalue: FAILED to allocate shadow stack entry");
             return;
         }

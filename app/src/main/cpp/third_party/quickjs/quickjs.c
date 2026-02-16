@@ -64,7 +64,7 @@ static inline void gc_assert_initialized(void) {
 /* Debug logging - disabled for production builds */
 #include <android/log.h>
 /* Set to 1 to enable debug logging, 0 to disable */
-#define QJS_DEBUG_ENABLED 1
+#define QJS_DEBUG_ENABLED 0
 #if QJS_DEBUG_ENABLED
 #define QJS_LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "quickjs", __VA_ARGS__)
 #define QJS_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "quickjs", __VA_ARGS__)
@@ -268,7 +268,7 @@ typedef enum OPCodeEnum OPCodeEnum;
 #define JS_MAX_HANDLE_ARRAY_SIZE 10000
 
 typedef struct {
-    void **handles;      /* Array of pointers */
+    GCHandle *handles;   /* Array of unified GC handles (indices into g_gc.handles) */
     uint32_t count;      /* Current number of elements */
     uint32_t capacity;   /* Max capacity (10,000) */
 } JSHandleArray;
@@ -1354,19 +1354,19 @@ static void remove_gc_object(GCHeader *h);
 /* Handle array forward declarations */
 static int js_handle_array_init(JSRuntime *rt, JSHandleArray *arr);
 static void js_handle_array_free(JSRuntime *rt, JSHandleArray *arr);
-static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle);
-static void js_handle_array_remove(JSHandleArray *arr, void *handle);
-static void js_handle_array_mark_freed(JSHandleArray *arr, void *handle);
+static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, GCHandle handle);
+static void js_handle_array_remove(JSHandleArray *arr, GCHandle handle);
+static void js_handle_array_mark_freed(JSHandleArray *arr, GCHandle handle);
 static void js_handle_array_compact(JSHandleArray *arr);
 static void js_compact_all_handle_arrays(JSRuntime *rt);
 static inline BOOL js_handle_array_is_empty(JSHandleArray *arr);
 static inline void* js_handle_array_get(JSHandleArray *arr, uint32_t index);
 
-/* Helper to get atom pointer from handle stored in atom_array */
-static inline JSAtomStruct *js_get_atom_from_handle(JSRuntime *rt, uint32_t handle) {
-    if (handle == 0 || handle >= rt->atom_handles.count)
+/* Helper to get atom pointer from unified GC handle */
+static inline JSAtomStruct *js_get_atom_from_handle(JSRuntime *rt, GCHandle handle) {
+    if (handle == GC_HANDLE_NULL)
         return NULL;
-    return (JSAtomStruct *)rt->atom_handles.handles[handle];
+    return (JSAtomStruct *)gc_deref(handle);
 }
 static JSValue js_instantiate_prototype(JSContext *ctx, JSObject *p, JSAtom atom, void *opaque);
 static JSValue js_module_ns_autoinit(JSContext *ctx, JSObject *p, JSAtom atom,
@@ -1397,9 +1397,11 @@ static const JSClassExoticMethods js_proxy_exotic_methods;
 static const JSClassExoticMethods js_module_ns_exotic_methods;
 static JSClassID js_class_id_alloc = JS_CLASS_INIT_COUNT;
 
-/* Forward declaration for unified GC check */
+/* Forward declaration for unified GC functions */
 extern bool gc_should_run(void);
 extern void gc_set_threshold(size_t threshold);
+extern void *gc_deref(GCHandle handle);
+static GCHandle gc_register_handle_for_ptr(void *ptr);
 
 static void js_trigger_gc(JSRuntime *rt, size_t size)
 {
@@ -1918,7 +1920,13 @@ int JS_EnqueueJob(JSContext *ctx, JSJobFunc *job_func,
     for(i = 0; i < argc; i++) {
         e->argv[i] = argv[i];
     }
-    if (js_handle_array_add(rt, &rt->job_handles, e) < 0) {
+    /* Register handle and add to job_handles array */
+    GCHandle handle = gc_register_handle_for_ptr(e);
+    if (handle == GC_HANDLE_NULL) {
+        js_free(ctx, e);
+        return -1;
+    }
+    if (js_handle_array_add(rt, &rt->job_handles, handle) < 0) {
         js_free(ctx, e);
         return -1;
     }
@@ -1949,7 +1957,8 @@ int JS_ExecutePendingJob(JSRuntime *rt, JSContext **pctx)
     }
 
     /* get the first pending job and execute it (FIFO) */
-    e = rt->job_handles.handles[0];
+    GCHandle job_handle = rt->job_handles.handles[0];
+    e = (JSJobEntry *)gc_deref(job_handle);
     /* Remove from front by shifting everything down */
     for (i = 0; i < rt->job_handles.count - 1; i++) {
         rt->job_handles.handles[i] = rt->job_handles.handles[i + 1];
@@ -1987,9 +1996,8 @@ static inline BOOL atom_is_free(uint32_t slot_value)
     return slot_value == 0;  /* 0 means empty/free */
 }
 
-/* Helper to get atom pointer from atom_array slot using 1-based handle */
-/* Forward declaration - defined later */
-static inline BOOL js_handle_array_entry_is_valid(void *entry);
+/* Helper to check if a handle entry is valid - forward declaration */
+static inline BOOL js_handle_array_entry_is_valid(GCHandle handle);
 
 static inline JSAtomStruct *js_atom_array_get(JSRuntime *rt, uint32_t atom_index)
 {
@@ -1997,24 +2005,18 @@ static inline JSAtomStruct *js_atom_array_get(JSRuntime *rt, uint32_t atom_index
         QJS_LOGE("js_atom_array_get: atom_index %u >= atom_size %u", atom_index, rt->atom_size);
         return NULL;
     }
-    uint32_t handle = rt->atom_array[atom_index];
-    if (handle == 0) {  /* 0 = empty slot */
+    /* rt->atom_array stores unified GC handles directly */
+    GCHandle handle = (GCHandle)rt->atom_array[atom_index];
+    if (handle == GC_HANDLE_NULL) {  /* 0 = empty slot */
         QJS_LOGE("js_atom_array_get: atom %u has handle=0 (empty slot)", atom_index);
         return NULL;
     }
-    /* handle is 1-based, convert to 0-based array index */
-    uint32_t array_idx = handle - 1;
-    if (array_idx >= rt->atom_handles.count) {
-        QJS_LOGE("js_atom_array_get: atom %u handle=%u array_idx=%u >= count=%u", 
-                 atom_index, handle, array_idx, rt->atom_handles.count);
-        return NULL;
-    }
-    void *entry = rt->atom_handles.handles[array_idx];
-    if (!js_handle_array_entry_is_valid(entry)) {
-        QJS_LOGE("js_atom_array_get: atom %u handle=%u array_idx=%u entry=%p INVALID", 
-                 atom_index, handle, array_idx, entry);
-        QJS_LOGE("  rt=%p &atom_handles=%p atom_handles.handles=%p atom_handles.count=%u", 
-                 (void*)rt, (void*)&rt->atom_handles, (void*)rt->atom_handles.handles, rt->atom_handles.count);
+    /* Dereference the handle to get the pointer */
+    void *entry = gc_deref(handle);
+    if (!js_handle_array_entry_is_valid(handle) || !entry) {
+        QJS_LOGE("js_atom_array_get: atom %u handle=%u entry=%p INVALID", 
+                 atom_index, handle, entry);
+        QJS_LOGE("  rt=%p handle=%u", (void*)rt, handle);
         return NULL;
     }
     /* Debug: verify atom string data for symbol atoms */
@@ -2083,7 +2085,10 @@ void JS_FreeRuntime(JSRuntime *rt)
 
     /* Free all pending jobs from handle array */
     for (i = 0; i < rt->job_handles.count; i++) {
-        JSJobEntry *e = rt->job_handles.handles[i];
+        GCHandle job_handle = rt->job_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(job_handle)) continue;
+        JSJobEntry *e = (JSJobEntry *)gc_deref(job_handle);
+        if (!e) continue;
         JS_FreeContext(e->realm);
         js_free_rt(rt, e);
     }
@@ -2105,8 +2110,10 @@ void JS_FreeRuntime(JSRuntime *rt)
 
         header_done = FALSE;
         for (i = 0; i < rt->gc_handles.count; i++) {
-            user_ptr = rt->gc_handles.handles[i];
-            if (js_handle_array_entry_is_valid(user_ptr) && gc_header(user_ptr)->mark) {
+            GCHandle handle = rt->gc_handles.handles[i];
+            if (!js_handle_array_entry_is_valid(handle)) continue;
+            user_ptr = gc_deref(handle);
+            if (user_ptr && gc_header(user_ptr)->mark) {
                 if (!header_done) {
                     printf("Object leaks:\n");
                     JS_DumpObjectHeader(rt);
@@ -2331,7 +2338,9 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     ctx->class_proto = proto_ptr;
     QJS_LOGI("STEP7");
     if (!ctx->class_proto) {
-        js_handle_array_remove(&rt->context_handles, ctx);
+        /* Get handle from context's GC header and remove from handle array */
+        GCHeader *hdr = gc_header(ctx);
+        js_handle_array_remove(&rt->context_handles, hdr->handle);
         js_free_rt(rt, ctx);
         return NULL;
     }
@@ -2561,8 +2570,10 @@ void JS_FreeContext(JSContext *ctx)
         printf("JSObjects: {\n");
         JS_DumpObjectHeader(ctx->rt);
         for (i = 0; i < rt->gc_handles.count; i++) {
-            void *user_ptr = rt->gc_handles.handles[i];
-            if (js_handle_array_entry_is_valid(user_ptr))
+            GCHandle handle = rt->gc_handles.handles[i];
+            if (!js_handle_array_entry_is_valid(handle)) continue;
+            void *user_ptr = gc_deref(handle);
+            if (user_ptr)
                 JS_DumpGCObject(rt, user_ptr);
         }
         printf("}\n");
@@ -2635,7 +2646,9 @@ void JS_FreeContext(JSContext *ctx)
         QJS_LOGE("JS_FreeContext: regexp_result_shape freed");
     }
 
-    js_handle_array_remove(&rt->context_handles, ctx);
+    /* Get handle from context's GC header and remove from handle array */
+    GCHeader *ctx_hdr = gc_header(ctx);
+    js_handle_array_remove(&rt->context_handles, ctx_hdr->handle);
     remove_gc_object(ctx);
     js_free_rt(ctx->rt, ctx);
 }
@@ -2884,7 +2897,7 @@ static int JS_ResizeAtomHash(JSRuntime *rt, int new_hash_size)
 
 static int js_handle_array_init(JSRuntime *rt, JSHandleArray *arr)
 {
-    size_t alloc_size = sizeof(void*) * JS_MAX_HANDLE_ARRAY_SIZE;
+    size_t alloc_size = sizeof(GCHandle) * JS_MAX_HANDLE_ARRAY_SIZE;
     arr->handles = js_mallocz_rt(rt, alloc_size);
     QJS_LOGI("js_handle_array_init: handles=%p, size=%zu", arr->handles, alloc_size);
     if (!arr->handles) {
@@ -2904,7 +2917,39 @@ static void js_handle_array_free(JSRuntime *rt, JSHandleArray *arr)
     arr->capacity = 0;
 }
 
-static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
+/* Allocate a handle in the unified GC handle table for an existing pointer.
+ * This is different from gc_alloc_handle in quickjs_gc_unified.h which allocates memory.
+ * This function just registers an existing pointer in the handle table.
+ */
+static GCHandle gc_register_handle_for_ptr(void *ptr)
+{
+    if (!ptr) return GC_HANDLE_NULL;
+    
+    QJS_LOGE("gc_register_handle_for_ptr: ptr=%p handle_count=%u", ptr, g_gc.handle_count);
+    
+    /* Find a free slot in unified GC handle table (skip 0 which is reserved) */
+    for (uint32_t i = 1; i < g_gc.handle_count; i++) {
+        if (g_gc.handles[i].ptr == NULL) {
+            QJS_LOGE("gc_register_handle_for_ptr: using free slot i=%u", i);
+            g_gc.handles[i].ptr = ptr;
+            g_gc.handles[i].gen = g_gc.gc_count;
+            return i;
+        }
+    }
+    
+    /* Need to allocate a new handle */
+    if (g_gc.handle_count >= g_gc.handle_capacity) {
+        QJS_LOGE("gc_register_handle_for_ptr: OUT OF HANDLES - capacity=%u", g_gc.handle_capacity);
+        return GC_HANDLE_NULL;
+    }
+    
+    GCHandle handle = g_gc.handle_count++;
+    g_gc.handles[handle].ptr = ptr;
+    g_gc.handles[handle].gen = g_gc.gc_count;
+    return handle;
+}
+
+static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, GCHandle handle)
 {
     /* CRITICAL: Check arr immediately before any logging */
     if (!arr) {
@@ -2912,11 +2957,11 @@ static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
         return -1;
     }
     
-    QJS_LOGI("js_handle_array_add: ENTER arr=%p handle=%p", (void*)arr, handle);
+    QJS_LOGI("js_handle_array_add: ENTER arr=%p handle=%u", (void*)arr, handle);
     
     /* Bug #3 fix: Add safety checks */
-    if (!handle) {
-        QJS_LOGE("js_handle_array_add: NULL arr=%p or handle=%p", arr, handle);
+    if (handle == GC_HANDLE_NULL) {
+        QJS_LOGE("js_handle_array_add: NULL handle, arr=%p", (void*)arr);
         return -1;
     }
     /* CRITICAL FIX: Check if handles array is allocated */
@@ -2936,7 +2981,7 @@ static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
     QJS_LOGI("js_handle_array_add: arr=%p, &arr->count=%p", (void*)arr, (void*)&arr->count);
     uint32_t idx = arr->count;
     QJS_LOGI("js_handle_array_add: idx=%u", (unsigned)idx);
-    QJS_LOGI("js_handle_array_add: writing handle=%p to arr->handles[%u]", handle, (unsigned)idx);
+    QJS_LOGI("js_handle_array_add: writing handle=%u to arr->handles[%u]", handle, (unsigned)idx);
     arr->handles[idx] = handle;
     QJS_LOGI("js_handle_array_add: write succeeded");
     arr->count = idx + 1;
@@ -2945,51 +2990,54 @@ static int js_handle_array_add(JSRuntime *rt, JSHandleArray *arr, void *handle)
     return 0;
 }
 
-/* Add to handle array and return the index (handle) */
-/* Add to handle array and return the 1-based index (handle).
- * Returns 0 on error. Handle 0 is reserved as invalid.
- * Valid handles are 1, 2, 3, ... (corresponding to array indices 0, 1, 2, ...)
+/* Add to handle array and return the handle allocated from unified GC table.
+ * Returns GC_HANDLE_NULL (0) on error. Handle 0 is reserved as invalid.
  */
-static uint32_t js_handle_array_add_with_index(JSRuntime *rt, JSHandleArray *arr, void *handle)
+static GCHandle js_handle_array_add_with_index(JSRuntime *rt, JSHandleArray *arr, void *ptr)
 {
-    uint32_t index;
-    if (!arr || !handle) {
-        QJS_LOGE("js_handle_array_add_with_index: NULL arr=%p or handle=%p", (void*)arr, (void*)handle);
-        return 0;  /* 0 is invalid handle */
+    if (!arr || !ptr) {
+        QJS_LOGE("js_handle_array_add_with_index: NULL arr=%p or ptr=%p", (void*)arr, (void*)ptr);
+        return GC_HANDLE_NULL;  /* 0 is invalid handle */
     }
     if (arr->count >= arr->capacity) {
         QJS_LOGE("js_handle_array_add_with_index: array full, count=%u capacity=%u", arr->count, arr->capacity);
-        return 0;  /* 0 is invalid handle */
+        return GC_HANDLE_NULL;  /* 0 is invalid handle */
     }
-    index = arr->count++;  /* 0-based array index */
     
-    arr->handles[index] = handle;
+    /* Register handle in unified GC table */
+    GCHandle handle = gc_register_handle_for_ptr(ptr);
+    if (handle == GC_HANDLE_NULL) {
+        QJS_LOGE("js_handle_array_add_with_index: failed to register handle");
+        return GC_HANDLE_NULL;
+    }
     
-    /* Return 1-based handle (index + 1). 0 is reserved for invalid. */
+    uint32_t index = arr->count++;  /* 0-based array index in runtime array */
+    arr->handles[index] = handle;   /* Store unified GC handle */
+    
     QJS_LOGI("js_handle_array_add_with_index: &rt->atom_handles=%p rt->atom_handles.handles=%p rt->atom_handles.count=%u",
              (void*)&rt->atom_handles, (void*)rt->atom_handles.handles, rt->atom_handles.count);
-    QJS_LOGI("js_handle_array_add_with_index: arr=%p arr->handles=%p added handle=%u (index=%u) ptr=%p wrote=%p", 
-             (void*)arr, (void*)arr->handles, index + 1, index, handle, arr->handles[index]);
-    return index + 1;
+    QJS_LOGI("js_handle_array_add_with_index: arr=%p arr->handles=%p added handle=%u (index=%u) ptr=%p", 
+             (void*)arr, (void*)arr->handles, handle, index, ptr);
+    return handle;
 }
 
-/* Forward declaration - defined later after g_next_handle */
+/* Forward declaration for js_handle_array_add_js_object functions */
 extern int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_type, GCHandleArrayType array_type);
 extern int js_handle_array_add_js_object(JSRuntime *rt, void *obj, int js_gc_obj_type);
 
-/* Sentinel value to mark freed slots - cannot be confused with valid pointers */
-#define JS_HANDLE_FREED ((void*)(uintptr_t)-1)
+/* Sentinel value to mark freed handle slots */
+#define JS_HANDLE_FREED ((GCHandle)(uintptr_t)-1)
 
 /* Mark a handle as freed (deferred removal - compaction happens later) */
-static void js_handle_array_mark_freed(JSHandleArray *arr, void *handle)
+static void js_handle_array_mark_freed(JSHandleArray *arr, GCHandle handle)
 {
     uint32_t i;
     /* Bug #3 fix: Add safety checks */
-    if (!arr || !handle) return;
+    if (!arr || handle == GC_HANDLE_NULL) return;
     
     for (i = 0; i < arr->count; i++) {
         if (arr->handles[i] == handle) {
-            QJS_LOGE("js_handle_array_mark_freed: marking arr=%p index=%u as FREED", (void*)arr, i);
+            QJS_LOGE("js_handle_array_mark_freed: marking arr=%p index=%u handle=%u as FREED", (void*)arr, i, handle);
             arr->handles[i] = JS_HANDLE_FREED;  /* Mark as freed */
             return;
         }
@@ -2997,9 +3045,9 @@ static void js_handle_array_mark_freed(JSHandleArray *arr, void *handle)
 }
 
 /* Check if a handle entry is valid (not NULL and not freed) */
-static inline BOOL js_handle_array_entry_is_valid(void *entry)
+static inline BOOL js_handle_array_entry_is_valid(GCHandle handle)
 {
-    return entry != NULL && entry != JS_HANDLE_FREED;
+    return handle != GC_HANDLE_NULL && handle != JS_HANDLE_FREED;
 }
 
 /* 
@@ -3024,24 +3072,24 @@ static void js_handle_array_compact(JSHandleArray *arr)
     
     /* Clear the freed slots to help catch use-after-free bugs */
     for (read_idx = write_idx; read_idx < arr->count; read_idx++) {
-        arr->handles[read_idx] = NULL;
+        arr->handles[read_idx] = GC_HANDLE_NULL;
     }
     
     arr->count = write_idx;
 }
 
 /* Immediate removal (used when we don't want to wait for compaction) */
-static void js_handle_array_remove(JSHandleArray *arr, void *handle)
+static void js_handle_array_remove(JSHandleArray *arr, GCHandle handle)
 {
     uint32_t i;
     /* Bug #3 fix: Add safety checks */
-    if (!arr || !handle) return;
+    if (!arr || handle == GC_HANDLE_NULL) return;
     
     for (i = 0; i < arr->count; i++) {
         if (arr->handles[i] == handle) {
             /* Swap with last element and decrement count (O(1) removal) */
             /* Bug #3 fix: Clear the old entry to catch use-after-free */
-            arr->handles[i] = NULL;
+            arr->handles[i] = GC_HANDLE_NULL;
             arr->handles[i] = arr->handles[--arr->count];
             return;
         }
@@ -3054,12 +3102,17 @@ static inline BOOL js_handle_array_is_empty(JSHandleArray *arr)
 }
 
 /* Safe getter - returns NULL if entry is freed or out of bounds */
+/* Get pointer from runtime handle array by index.
+ * Looks up the unified GC handle and dereferences it.
+ */
 static inline void* js_handle_array_get(JSHandleArray *arr, uint32_t index)
 {
-    void *entry;
+    GCHandle handle;
     if (index >= arr->count) return NULL;
-    entry = arr->handles[index];
-    return js_handle_array_entry_is_valid(entry) ? entry : NULL;
+    handle = arr->handles[index];
+    if (!js_handle_array_entry_is_valid(handle)) return NULL;
+    /* Look up pointer in unified GC handle table */
+    return gc_deref(handle);
 }
 
 /* Compact all handle arrays - called during GC */
@@ -3583,8 +3636,9 @@ static void JS_FreeAtomStruct(JSRuntime *rt, uint32_t i, JSAtomStruct *p)
 {
     (void)i;  /* i may be used for debugging */
     
-    /* Remove atom from root set */
-    js_handle_array_mark_freed(&rt->atom_handles, p);
+    /* Get handle from atom's GC header and mark as freed */
+    GCHeader *hdr = gc_header(p);
+    js_handle_array_mark_freed(&rt->atom_handles, hdr->handle);
     if (p->atom_type != JS_ATOM_TYPE_SYMBOL) {
         JSAtomStruct *p0, *p1;
         uint32_t h0, idx;
@@ -4103,7 +4157,10 @@ static int JS_NewClass1(JSRuntime *rt, JSClassID class_id,
 
         /* reallocate the context class prototype array, if any */
         for (i = 0; i < rt->context_handles.count; i++) {
-            JSContext *ctx = rt->context_handles.handles[i];
+            GCHandle ctx_handle = rt->context_handles.handles[i];
+            if (!js_handle_array_entry_is_valid(ctx_handle)) continue;
+            JSContext *ctx = (JSContext *)gc_deref(ctx_handle);
+            if (!ctx) continue;
             JSValue *new_tab;
             new_tab = js_realloc_rt(rt, ctx->class_proto,
                                     sizeof(ctx->class_proto[0]) * new_size);
@@ -5928,8 +5985,10 @@ static __maybe_unused void JS_DumpShapes(JSRuntime *rt)
     }
     /* dump non-hashed shapes */
     for (i = 0; i < rt->gc_handles.count; i++) {
-        gp = rt->gc_handles.handles[i];
-        if (js_handle_array_entry_is_valid(gp) && gc_header(gp)->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
+        GCHandle handle = rt->gc_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(handle)) continue;
+        gp = (GCHeader *)gc_deref(handle);
+        if (gp && gc_header(gp)->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
             p = (JSObject *)gp;
             if (!p->shape->is_hashed) {
                 JS_DumpShape(rt, -1, p->shape);
@@ -5947,7 +6006,11 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
     JSObject *p;
     int i;
 
-    QJS_LOGI("JS_NewObjectFromShape: ctx=%p rt=%p", (void*)ctx, (void*)ctx->rt);
+    QJS_LOGE("JS_NewObjectFromShape: ctx=%p sh=%p class_id=%d", (void*)ctx, (void*)sh, class_id);
+    /* Check if sh is valid */
+    if ((uintptr_t)sh == 0xc0000000 || (uintptr_t)sh == 0) {
+        QJS_LOGE("JS_NewObjectFromShape: INVALID sh=%p!", (void*)sh);
+    }
     if (!ctx->rt) {
         QJS_LOGE("JS_NewObjectFromShape: ctx->rt is NULL!");
         return JS_EXCEPTION;
@@ -5973,9 +6036,9 @@ static JSValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
     p->shape = sh;
     
     /* DIAGNOSTIC: Verify shape was set correctly */
-    if (p->shape == (JSShape*)-1 || p->shape == NULL || (uintptr_t)p->shape < 0x1000) {
-        QJS_LOGE("JS_NewObjectFromShape: CORRUPTED SHAPE SET obj=%p shape=%p class_id=%d", 
-                 (void*)p, (void*)p->shape, class_id);
+    QJS_LOGE("JS_NewObjectFromShape: obj=%p shape=%p class_id=%d", (void*)p, (void*)p->shape, class_id);
+    if (p->shape != sh) {
+        QJS_LOGE("JS_NewObjectFromShape: SHAPE MISMATCH! expected=%p got=%p", (void*)sh, (void*)p->shape);
     }
     
     p->prop = js_malloc(ctx, sizeof(JSProperty) * sh->prop_size);
@@ -6486,10 +6549,13 @@ static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
     JSShape *sh;
     JSShapeProperty *pr, *prop;
     intptr_t h;
+    QJS_LOGE("find_own_property: ENTRY p=%p atom=%d", (void*)p, atom);
     if (unlikely(!p || !p->shape)) {
+        QJS_LOGE("find_own_property: NULL p or shape");
         *ppr = NULL;
         return NULL;
     }
+    QJS_LOGE("find_own_property: p and shape non-null");
     
     /* Defensive: check if shape pointer is valid
      * Check for:
@@ -6498,9 +6564,16 @@ static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
      * - Very high values (kernel space > 0x7f0000000000)
      */
     uintptr_t shape_val = (uintptr_t)p->shape;
+    QJS_LOGE("find_own_property: shape_val=0x%llx", (unsigned long long)shape_val);
+    /* Check for JSValue pattern in shape pointer (handle corruption indicator) */
+    if (unlikely((shape_val & 0xF) == 0 && shape_val != 0 && shape_val < 0x10000000)) {
+        QJS_LOGE("find_own_property: SHAPE IS JSVALUE! shape=%p (looks like handle=0x%x tag=0)", 
+                 (void*)shape_val, (unsigned int)(shape_val >> 4));
+    }
     if (unlikely(shape_val < 0x1000 || 
                  shape_val == (uintptr_t)-1 ||
-                 shape_val > 0x7f0000000000)) {
+                 shape_val > 0x7f0000000000 ||
+                 (shape_val & 0xF) == 0)) {
         QJS_LOGE("find_own_property: CORRUPTED shape pointer %p (0x%llx) for object %p", 
                  (void*)p->shape, (unsigned long long)shape_val, (void*)p);
         /* Log additional object info for debugging */
@@ -6508,7 +6581,9 @@ static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
         *ppr = NULL;
         return NULL;
     }
+    QJS_LOGE("find_own_property: shape check passed");
     sh = p->shape;
+    QJS_LOGE("find_own_property: accessing sh->prop_hash_mask");
     h = (uintptr_t)atom & sh->prop_hash_mask;
     h = prop_hash_end(sh)[-h - 1];
     prop = get_shape_prop(sh);
@@ -6827,7 +6902,10 @@ static void gc_remove_weak_objects(JSRuntime *rt)
     rt->gc_phase = JS_GC_PHASE_DECREF; 
         
     for (i = 0; i < rt->weakref_handles.count; i++) {
-        JSWeakRefHeader *wh = rt->weakref_handles.handles[i];
+        GCHandle handle = rt->weakref_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(handle)) continue;
+        JSWeakRefHeader *wh = (JSWeakRefHeader *)gc_deref(handle);
+        if (!wh) continue;
         switch(wh->weakref_type) {
         case JS_WEAKREF_TYPE_MAP:
             map_delete_weakrefs(rt, wh);
@@ -6848,17 +6926,9 @@ static void gc_remove_weak_objects(JSRuntime *rt)
     free_zero_refcount(rt);
 }
 
-/* Handle-based GC integration */
-static GCHandle g_next_handle = 1;
-
-/* Reset handle counter - called during GC reset to keep handles in sync */
-void js_reset_handle_counter(void) {
-    QJS_LOGI("js_reset_handle_counter: resetting g_next_handle from %u to 1", g_next_handle);
-    g_next_handle = 1;
-}
-
 /* This function is called from gc_alloc_js_object in quickjs_gc_unified.c.
- * It adds an already-initialized GC object to the runtime's gc_handles array.
+ * It adds an already-initialized GC object to the runtime's handle array
+ * and allocates a unified GC handle for pointer resolution.
  * The object is guaranteed to have gc_obj_type set before this is called.
  */
 int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_type, GCHandleArrayType array_type)
@@ -6900,17 +6970,30 @@ int js_handle_array_add_js_object_ex(JSRuntime *rt, void *obj, int js_gc_obj_typ
             return -1;
     }
     
-    /* Add to the selected handle array.
-     * Store user_ptr (obj) so retrieval gives the correct pointer for struct access. */
-    if (js_handle_array_add(rt, arr, obj) < 0) {
-        QJS_LOGE("js_handle_array_add_js_object_ex: failed to add to handle array type %d", array_type);
+    /* Register a unified GC handle for this object.
+     * This handle is used by JS_VALUE_GET_PTR to resolve pointers.
+     */
+    GCHandle handle = gc_register_handle_for_ptr(obj);
+    if (handle == GC_HANDLE_NULL) {
+        QJS_LOGE("js_handle_array_add_js_object_ex: failed to register unified GC handle");
         return -1;
     }
     
-    /* Assign handle */
-    GCHandle assigned_handle = g_next_handle++;
-    h->handle = assigned_handle;
-    QJS_LOGI("js_handle_array_add_js_object_ex: assigned handle=%u to ptr=%p", assigned_handle, obj);
+    /* Store handle in object header for quick lookup */
+    h->handle = handle;
+    
+    /* Add the handle (not the pointer) to the runtime's handle array.
+     * This allows the runtime to iterate over objects of specific types.
+     */
+    if (js_handle_array_add(rt, arr, handle) < 0) {
+        QJS_LOGE("js_handle_array_add_js_object_ex: failed to add handle %u to runtime array", handle);
+        /* Note: handle is leaked here, but it's a fatal error anyway */
+        h->handle = GC_HANDLE_NULL;
+        return -1;
+    }
+    
+    QJS_LOGI("js_handle_array_add_js_object_ex: allocated handle=%u for ptr=%p type=%d", 
+             handle, obj, array_type);
     
     return 0;
 }
@@ -6991,15 +7074,23 @@ static void add_gc_object(JSRuntime *rt, GCHeader *h,
     QJS_LOGI("add_gc_object: about to set h->mark, h=%p", (void*)h);
     h->mark = 0;
     h->gc_obj_type = type;
-    QJS_LOGI("add_gc_object: calling js_handle_array_add...");
-    if (js_handle_array_add(rt, &rt->gc_handles, h) < 0) {
+    
+    /* Register a unified GC handle for this object.
+     * The handle is stored in h->handle and used for JS_VALUE pointer resolution.
+     */
+    GCHandle handle = gc_register_handle_for_ptr(h);
+    if (handle == GC_HANDLE_NULL) {
+        QJS_LOGE("add_gc_object: failed to register unified GC handle!");
+        abort();  /* Crash with clear message */
+    }
+    h->handle = handle;
+    
+    QJS_LOGI("add_gc_object: calling js_handle_array_add with handle=%u...", handle);
+    if (js_handle_array_add(rt, &rt->gc_handles, handle) < 0) {
         QJS_LOGE("add_gc_object: js_handle_array_add failed!");
         abort();  /* Crash with clear message */
     }
     QJS_LOGI("add_gc_object: js_handle_array_add succeeded");
-    
-    /* Assign handle for handle-based GC */
-    h->handle = g_next_handle++;
 }
 
 static void remove_gc_object(GCHeader *h)
@@ -7247,24 +7338,28 @@ static void gc_mark_roots(JSRuntime *rt)
     /* First, clear all marks */
     for (i = 0; i < rt->gc_handles.count; i++) {
         QJS_LOGI("gc_mark_roots: accessing entry %d", i);
-        void *user_ptr = rt->gc_handles.handles[i];
-        QJS_LOGI("gc_mark_roots: entry %d user_ptr=%p", i, (void*)user_ptr);
-        if (js_handle_array_entry_is_valid(user_ptr)) {
-            GCHeader *hdr = gc_header(user_ptr);
-            QJS_LOGI("gc_mark_roots: clearing mark for entry %d, hdr=%p", i, (void*)hdr);
-            hdr->mark = 0;
+        GCHandle handle = rt->gc_handles.handles[i];
+        QJS_LOGI("gc_mark_roots: entry %d handle=%u", i, handle);
+        if (js_handle_array_entry_is_valid(handle)) {
+            void *user_ptr = gc_deref(handle);
+            if (user_ptr) {
+                GCHeader *hdr = gc_header(user_ptr);
+                QJS_LOGI("gc_mark_roots: clearing mark for entry %d, hdr=%p", i, (void*)hdr);
+                hdr->mark = 0;
+            }
         }
     }
 
     /* Mark from contexts (roots) */
     QJS_LOGI("gc_mark_roots: context_handles.count=%u", rt->context_handles.count);
     for (i = 0; i < rt->context_handles.count; i++) {
-        void *ctx_ptr = rt->context_handles.handles[i];
-        QJS_LOGI("gc_mark_roots: marking context entry %d, ctx_ptr=%p", i, (void*)ctx_ptr);
-        if (!js_handle_array_entry_is_valid(ctx_ptr)) {
+        GCHandle ctx_handle = rt->context_handles.handles[i];
+        QJS_LOGI("gc_mark_roots: marking context entry %d, ctx_handle=%u", i, ctx_handle);
+        if (!js_handle_array_entry_is_valid(ctx_handle)) {
             QJS_LOGI("gc_mark_roots: context entry %d invalid, skipping", i);
             continue;
         }
+        void *ctx_ptr = gc_deref(ctx_handle);
         /* ctx_ptr is user_ptr (after header), pass directly to gc_mark_recursive */
         gc_mark_recursive(rt, ctx_ptr);
     }
@@ -7274,7 +7369,10 @@ static void gc_mark_roots(JSRuntime *rt)
 
     /* Mark jobs in the job list */
     for (i = 0; i < rt->job_handles.count; i++) {
-        JSJobEntry *job = rt->job_handles.handles[i];
+        GCHandle job_handle = rt->job_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(job_handle)) continue;
+        JSJobEntry *job = (JSJobEntry *)gc_deref(job_handle);
+        if (!job) continue;
         int j;
         for(j = 0; j < job->argc; j++) {
             JS_MarkValue(rt, job->argv[j], gc_mark_recursive);
@@ -7287,11 +7385,12 @@ static void gc_mark_roots(JSRuntime *rt)
      */
     QJS_LOGI("gc_mark_roots: Tier 1 - marking %u permanent atoms", rt->permanent_atom_count);
     for (i = 0; i < rt->permanent_atom_count && i < rt->atom_handles.count; i++) {
-        void *atom = rt->atom_handles.handles[i];
-        if (!js_handle_array_entry_is_valid(atom)) {
+        GCHandle atom_handle = rt->atom_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(atom_handle)) {
             continue;
         }
-        if (gc_ptr_is_valid(atom)) {
+        void *atom = gc_deref(atom_handle);
+        if (atom && gc_ptr_is_valid(atom)) {
             QJS_LOGI("gc_mark_roots: marking permanent atom %d, ptr=%p", i, atom);
             gc_mark_recursive(rt, atom);
         }
@@ -7302,8 +7401,10 @@ static void gc_mark_roots(JSRuntime *rt)
      */
     QJS_LOGI("gc_mark_roots: Tier 2 - marking atoms referenced by shapes");
     for (i = 0; i < rt->gc_handles.count; i++) {
-        void *user_ptr = rt->gc_handles.handles[i];
-        if (!js_handle_array_entry_is_valid(user_ptr)) continue;
+        GCHandle handle = rt->gc_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(handle)) continue;
+        void *user_ptr = gc_deref(handle);
+        if (!user_ptr) continue;
         
         GCHeader *hdr = gc_header(user_ptr);
         if (hdr->gc_obj_type == JS_GC_OBJ_TYPE_SHAPE) {
@@ -7314,8 +7415,9 @@ static void gc_mark_roots(JSRuntime *rt)
                 if (prs[j].atom != JS_ATOM_NULL) {
                     JSAtom atom_idx = prs[j].atom;
                     if (atom_idx < rt->atom_handles.count) {
-                        void *atom = rt->atom_handles.handles[atom_idx];
-                        if (js_handle_array_entry_is_valid(atom) && gc_ptr_is_valid(atom)) {
+                        GCHandle atom_handle = rt->atom_handles.handles[atom_idx];
+                        void *atom = gc_deref(atom_handle);
+                        if (atom && js_handle_array_entry_is_valid(atom_handle) && gc_ptr_is_valid(atom)) {
                             JSAtomStruct *p = (JSAtomStruct *)atom;
                             if (p->atom_type != JS_ATOM_TYPE_DEAD) {
                                 QJS_LOGI("gc_mark_roots: marking shape-referenced atom %d", atom_idx);
@@ -7341,11 +7443,18 @@ static void gc_sweep(JSRuntime *rt)
 
     /* Iterate over gc_handles and free unmarked objects */
     for (i = 0; i < rt->gc_handles.count; i++) {
-        user_ptr = rt->gc_handles.handles[i];
-        QJS_LOGI("gc_sweep: entry %d, user_ptr=%p", i, (void*)user_ptr);
+        GCHandle handle = rt->gc_handles.handles[i];
+        QJS_LOGI("gc_sweep: entry %d, handle=%u", i, handle);
         
-        if (!js_handle_array_entry_is_valid(user_ptr)) {
+        if (!js_handle_array_entry_is_valid(handle)) {
             QJS_LOGI("gc_sweep: entry %d invalid, skipping", i);
+            continue;
+        }
+        
+        user_ptr = gc_deref(handle);
+        if (!user_ptr) {
+            QJS_LOGI("gc_sweep: entry %d has NULL pointer, marking freed", i);
+            rt->gc_handles.handles[i] = JS_HANDLE_FREED;
             continue;
         }
         
@@ -7400,11 +7509,12 @@ static void gc_sweep_atoms(JSRuntime *rt)
     
     /* Phase 1: Mark unreferenced dynamic atoms as DEAD and remove from hash table */
     for (i = rt->permanent_atom_count; i < rt->atom_handles.count; i++) {
-        void *atom = rt->atom_handles.handles[i];
-        if (!js_handle_array_entry_is_valid(atom)) {
+        GCHandle atom_handle = rt->atom_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(atom_handle)) {
             continue;
         }
-        if (!gc_ptr_is_valid(atom)) {
+        void *atom = gc_deref(atom_handle);
+        if (!atom || !gc_ptr_is_valid(atom)) {
             continue;  /* Skip malloc'd atoms */
         }
         
@@ -7449,8 +7559,10 @@ static void gc_sweep_atoms(JSRuntime *rt)
     
     /* Phase 2: Scan all shapes and null out dead atom references */
     for (i = 0; i < rt->gc_handles.count; i++) {
-        void *user_ptr = rt->gc_handles.handles[i];
-        if (!js_handle_array_entry_is_valid(user_ptr)) continue;
+        GCHandle handle = rt->gc_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(handle)) continue;
+        void *user_ptr = gc_deref(handle);
+        if (!user_ptr) continue;
         
         GCHeader *hdr = gc_header(user_ptr);
         if (hdr->gc_obj_type == JS_GC_OBJ_TYPE_SHAPE) {
@@ -7461,8 +7573,10 @@ static void gc_sweep_atoms(JSRuntime *rt)
                 if (prs[j].atom != JS_ATOM_NULL) {
                     JSAtom atom_idx = prs[j].atom;
                     if (atom_idx < rt->atom_handles.count) {
-                        void *atom = rt->atom_handles.handles[atom_idx];
-                        if (js_handle_array_entry_is_valid(atom)) {
+                        GCHandle atom_handle = rt->atom_handles.handles[atom_idx];
+                        if (js_handle_array_entry_is_valid(atom_handle)) {
+                            void *atom = gc_deref(atom_handle);
+                            if (!atom) continue;
                             JSAtomStruct *p = (JSAtomStruct *)atom;
                             if (p->atom_type == JS_ATOM_TYPE_DEAD) {
                                 QJS_LOGI("gc_sweep_atoms: nulling dead atom %u in shape %p prop %d", 
@@ -7478,11 +7592,12 @@ static void gc_sweep_atoms(JSRuntime *rt)
     
     /* Phase 3: Free dead atoms */
     for (i = rt->permanent_atom_count; i < rt->atom_handles.count; i++) {
-        void *atom = rt->atom_handles.handles[i];
-        if (!js_handle_array_entry_is_valid(atom)) {
+        GCHandle atom_handle = rt->atom_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(atom_handle)) {
             continue;
         }
-        if (!gc_ptr_is_valid(atom)) {
+        void *atom = gc_deref(atom_handle);
+        if (!atom || !gc_ptr_is_valid(atom)) {
             continue;
         }
         
@@ -7641,7 +7756,10 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
     s->memory_used_size = sizeof(JSRuntime) + sizeof(JSValue) * rt->class_count;
 
     for (i = 0; i < rt->context_handles.count; i++) {
-        JSContext *ctx = rt->context_handles.handles[i];
+        GCHandle ctx_handle = rt->context_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(ctx_handle)) continue;
+        JSContext *ctx = (JSContext *)gc_deref(ctx_handle);
+        if (!ctx) continue;
         JSShape *sh = ctx->array_shape;
         s->memory_used_count += 2; /* ctx + ctx->class_proto */
         s->memory_used_size += sizeof(JSContext) +
@@ -7689,13 +7807,14 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
     }
 
     for (i = 0; i < rt->gc_handles.count; i++) {
-        GCHeader *gp = rt->gc_handles.handles[i];
+        GCHandle handle = rt->gc_handles.handles[i];
+        if (!js_handle_array_entry_is_valid(handle))
+            continue;
+        GCHeader *gp = (GCHeader *)gc_deref(handle);
+        if (!gp) continue;
         JSObject *p;
         JSShape *sh;
         JSShapeProperty *prs;
-
-        if (!js_handle_array_entry_is_valid(gp))
-            continue;
 
         /* XXX: could count the other GC object types too */
         if (gp->gc_obj_type == JS_GC_OBJ_TYPE_FUNCTION_BYTECODE) {
@@ -7962,9 +8081,12 @@ void JS_DumpMemoryUsage(FILE *fp, const JSMemoryUsage *s, JSRuntime *rt)
             int obj_classes[JS_CLASS_INIT_COUNT + 1] = { 0 };
             int class_id;
             for (i = 0; i < rt->gc_handles.count; i++) {
-                GCHeader *gp = rt->gc_handles.handles[i];
+                GCHandle handle = rt->gc_handles.handles[i];
+                if (!js_handle_array_entry_is_valid(handle)) continue;
+                GCHeader *gp = (GCHeader *)gc_deref(handle);
+                if (!gp) continue;
                 JSObject *p;
-                if (js_handle_array_entry_is_valid(gp) && gc_header(gp)->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
+                if (gc_header(gp)->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
                     p = (JSObject *)gp;
                     obj_classes[min_uint32(p->class_id, JS_CLASS_INIT_COUNT)]++;
                 }
@@ -9913,7 +10035,10 @@ static JSProperty *add_property(JSContext *ctx,
             
             /* modifying Object.prototype : reset the corresponding is_std_array_prototype */
             for (idx = 0; idx < ctx->rt->context_handles.count; idx++) {
-                JSContext *ctx1 = ctx->rt->context_handles.handles[idx];
+                GCHandle ctx1_handle = ctx->rt->context_handles.handles[idx];
+                if (!js_handle_array_entry_is_valid(ctx1_handle)) continue;
+                JSContext *ctx1 = (JSContext *)gc_deref(ctx1_handle);
+                if (!ctx1) continue;
                 if (JS_IsObject(ctx1->class_proto[JS_CLASS_OBJECT]) && 
                     JS_VALUE_GET_OBJ(ctx1->class_proto[JS_CLASS_OBJECT]) == p) {
                     if (JS_IsObject(ctx1->class_proto[JS_CLASS_ARRAY])) {
@@ -11113,13 +11238,24 @@ int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,
     JSProperty *pr;
     int mask, res;
 
+    /* Debug: Log this_obj value */
+    QJS_LOGE("JS_DefineProperty: ENTRY this_obj tag=%d", 
+             JS_VALUE_GET_TAG(this_obj));
+
     if (JS_VALUE_GET_TAG(this_obj) != JS_TAG_OBJECT) {
         JS_ThrowTypeErrorNotAnObject(ctx);
         return -1;
     }
+    QJS_LOGE("JS_DefineProperty: tag check passed");
     p = JS_VALUE_GET_OBJ(this_obj);
+    QJS_LOGE("JS_DefineProperty: got obj p=%p", (void*)p);
+    if (!p) {
+        QJS_LOGE("JS_DefineProperty: p is NULL!");
+        return -1;
+    }
 
  redo_prop_update:
+    QJS_LOGE("JS_DefineProperty: calling find_own_property p=%p prop=%d", (void*)p, prop);
     prs = find_own_property(&pr, p, prop);
     if (prs) {
         /* the range of the Array length property is always tested before */
@@ -52228,7 +52364,11 @@ static JSValue js_map_constructor(JSContext *ctx, JSValueConst new_target,
     s->is_weak = is_weak;
     if (is_weak) {
         s->weakref_header.weakref_type = JS_WEAKREF_TYPE_MAP;
-        if (js_handle_array_add(ctx->rt, &ctx->rt->weakref_handles, &s->weakref_header) < 0)
+        /* Register handle for weakref header (not a GC object, so register manually) */
+        GCHandle weakref_handle = gc_register_handle_for_ptr(&s->weakref_header);
+        if (weakref_handle == GC_HANDLE_NULL)
+            goto fail;
+        if (js_handle_array_add(ctx->rt, &ctx->rt->weakref_handles, weakref_handle) < 0)
             goto fail;
     }
     JS_SetOpaque(obj, s);
@@ -57011,6 +57151,12 @@ int JS_AddIntrinsicBaseObjects(JSContext *ctx)
     if (JS_IsException(ctx->throw_type_error))
         return -1;
     /* add caller and arguments properties to throw a TypeError */
+    QJS_LOGE("JS_AddIntrinsicBaseObjects: function_proto tag=%d", 
+             JS_VALUE_GET_TAG(ctx->function_proto));
+    if (JS_VALUE_GET_TAG(ctx->function_proto) != JS_TAG_OBJECT) {
+        QJS_LOGE("JS_AddIntrinsicBaseObjects: function_proto is not an object!");
+        return -1;
+    }
     if (JS_DefineProperty(ctx, ctx->function_proto, JS_ATOM_caller, JS_UNDEFINED,
                           ctx->throw_type_error, ctx->throw_type_error,
                           JS_PROP_HAS_GET | JS_PROP_HAS_SET |
@@ -60822,7 +60968,11 @@ static JSValue js_weakref_constructor(JSContext *ctx, JSValueConst new_target,
     }
     wrd->target = js_weakref_new(ctx, arg);
     wrd->weakref_header.weakref_type = JS_WEAKREF_TYPE_WEAKREF;
-    if (js_handle_array_add(ctx->rt, &ctx->rt->weakref_handles, &wrd->weakref_header) < 0)
+    /* Register handle for weakref header (not a GC object, so register manually) */
+    GCHandle weakref_handle = gc_register_handle_for_ptr(&wrd->weakref_header);
+    if (weakref_handle == GC_HANDLE_NULL)
+        return JS_EXCEPTION;
+    if (js_handle_array_add(ctx->rt, &ctx->rt->weakref_handles, weakref_handle) < 0)
         return JS_EXCEPTION;
     JS_SetOpaque(obj, wrd);
     return obj;
@@ -60951,7 +61101,11 @@ static JSValue js_finrec_constructor(JSContext *ctx, JSValueConst new_target,
         return JS_EXCEPTION;
     }
     frd->weakref_header.weakref_type = JS_WEAKREF_TYPE_FINREC;
-    if (js_handle_array_add(ctx->rt, &ctx->rt->weakref_handles, &frd->weakref_header) < 0)
+    /* Register handle for weakref header (not a GC object, so register manually) */
+    GCHandle weakref_handle = gc_register_handle_for_ptr(&frd->weakref_header);
+    if (weakref_handle == GC_HANDLE_NULL)
+        return JS_EXCEPTION;
+    if (js_handle_array_add(ctx->rt, &ctx->rt->weakref_handles, weakref_handle) < 0)
         return JS_EXCEPTION;
     init_list_head(&frd->entries);
     frd->realm = JS_DupContext(ctx);

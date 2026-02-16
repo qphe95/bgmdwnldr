@@ -129,10 +129,70 @@ typedef const struct __JSValue *JSValueConst;
 #define JS_VALUE_GET_BOOL(v) JS_VALUE_GET_INT(v)
 #define JS_VALUE_GET_FLOAT64(v) (double)JS_VALUE_GET_INT(v)
 #define JS_VALUE_GET_SHORT_BIG_INT(v) JS_VALUE_GET_INT(v)
-#define JS_VALUE_GET_PTR(v) (void *)((intptr_t)(v) & ~0xf)
+/* JS_VALUE_GET_PTR for CONFIG_CHECK_JSVALUE - needs handle indirection */
+static inline void *js_value_get_ptr_check(JSValue v) {
+    /* Extract tag from lower 4 bits. 
+     * Note: In CONFIG_CHECK_JSVALUE, tags are stored as signed values,
+     * but when masked to 4 bits, negative tags become high unsigned values.
+     * JS_TAG_OBJECT = -1 = 0xF, JS_TAG_FIRST = -9 = 0x7, etc.
+     * Reference types have tags >= 0x7 (JS_TAG_FIRST as unsigned 4-bit)
+     */
+    unsigned int tag = (unsigned int)((uintptr_t)(v) & 0xf);
+    if (tag >= 0x7) {  /* JS_TAG_FIRST = -9 = 0x7 as unsigned 4-bit */
+        /* Reference type - use handle indirection
+         * The handle is stored in the upper bits of the pointer value
+         * We use bits 4-31 for the handle index
+         */
+        JSGCHandle handle = (JSGCHandle)((uintptr_t)(v) >> 4);
+        /* Validate handle before dereferencing */
+        if (handle == 0) {
+            extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
+            __android_log_print(6 /* ANDROID_LOG_ERROR */, "quickjs",
+                "JS_VALUE_GET_PTR: handle=0 for v=%p tag=%u", (void*)v, tag);
+            return NULL;
+        }
+        void *ptr = gc_deref(handle);
+        if (!ptr) {
+            extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
+            __android_log_print(6 /* ANDROID_LOG_ERROR */, "quickjs",
+                "JS_VALUE_GET_PTR: gc_deref returned NULL for handle=%u v=%p", handle, (void*)v);
+        }
+        return ptr;
+    }
+    /* Non-reference type - mask off tag bits */
+    return (void *)((intptr_t)(v) & ~0xf);
+}
+#define JS_VALUE_GET_PTR(v) js_value_get_ptr_check(v)
 
 #define JS_MKVAL(tag, val) (JSValue)(intptr_t)(((val) << 4) | (tag))
-#define JS_MKPTR(tag, p) (JSValue)((intptr_t)(p) | (tag))
+
+/* JS_MKPTR for CONFIG_CHECK_JSVALUE - stores handle instead of pointer */
+static inline JSValue js_mkptr_check(int tag, void *p) {
+    if (p == NULL) {
+        return (JSValue)(intptr_t)(tag);
+    }
+    if (tag < 0) {
+        /* GC-managed object - allocate handle and store in upper bits */
+        JSGCHandle handle = gc_alloc_handle_for_ptr(p);
+        /* Validate handle allocation */
+        if (handle == 0) {
+            extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
+            __android_log_print(6 /* ANDROID_LOG_ERROR */, "quickjs", 
+                "JS_MKPTR: FAILED to allocate handle for ptr=%p tag=%d", p, tag);
+        }
+        JSValue result = (JSValue)(intptr_t)(((uintptr_t)handle << 4) | (uintptr_t)(tag));
+        /* Debug: log suspicious values */
+        if (((uintptr_t)result >> 4) == 0) {
+            extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
+            __android_log_print(6 /* ANDROID_LOG_ERROR */, "quickjs",
+                "JS_MKPTR: WARNING handle=0 for ptr=%p tag=%d result=%p", p, tag, (void*)result);
+        }
+        return result;
+    }
+    /* Non-GC pointer - just OR with tag */
+    return (JSValue)((intptr_t)(p) | (tag));
+}
+#define JS_MKPTR(tag, p) js_mkptr_check(tag, p)
 
 #define JS_TAG_IS_FLOAT64(tag) ((unsigned)(tag) == JS_TAG_FLOAT64)
 
@@ -297,11 +357,39 @@ typedef struct JSValue {
  * Negative tags indicate reference types that need handle indirection.
  * This allows GC compaction to update pointers via the handle table.
  */
+/* Forward declaration of Android log function - defined in <android/log.h> */
+#ifndef __ANDROID_LOG_H_
+extern int __android_log_write(int prio, const char *tag, const char *msg);
+#endif
+
+/* Forward declaration for gc_deref */
+extern void *gc_deref(JSGCHandle handle);
+
 static inline void *js_value_get_ptr_impl(JSValue v) {
     /* If it's a reference type (negative tag), use handle indirection */
     if (v.tag < 0) {
         /* It's a handle - dereference through handle table */
-        return gc_deref(v.u.handle);
+        JSGCHandle handle = v.u.handle;
+        /* ALWAYS log for debugging */
+        {
+            extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+            __android_log_print(6, "quickjs", "js_value_get_ptr_impl: tag=%d handle=%u", (int)v.tag, handle);
+        }
+        if (handle == 0) {
+            __android_log_write(6 /* ANDROID_LOG_ERROR */, "quickjs",
+                "js_value_get_ptr_impl: handle=0!");
+            return NULL;
+        }
+        void *ptr = gc_deref(handle);
+        {
+            extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
+            __android_log_print(6, "quickjs", "js_value_get_ptr_impl: handle=%u -> ptr=%p", handle, ptr);
+        }
+        if (!ptr) {
+            __android_log_write(6 /* ANDROID_LOG_ERROR */, "quickjs",
+                "js_value_get_ptr_impl: gc_deref returned NULL");
+        }
+        return ptr;
     }
     /* Non-reference type - return raw pointer (shouldn't happen for tagged ptrs) */
     return v.u.ptr;

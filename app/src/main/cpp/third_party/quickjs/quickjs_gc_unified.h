@@ -31,8 +31,11 @@ typedef struct JSContext JSContext;
 /* Total GC heap size - 512MB */
 #define GC_HEAP_SIZE (512 * 1024 * 1024)
 
-/* Initial handle table capacity */
-#define GC_INITIAL_HANDLES 8192
+/* Initial handle table capacity - must accommodate all runtime objects
+ * YouTube's player scripts create thousands of objects, need larger capacity
+ * Must be >= JS_MAX_HANDLE_ARRAY_SIZE (10000) to support runtime handle arrays
+ */
+#define GC_INITIAL_HANDLES 100000
 
 /* Handle type - 0 is reserved as null */
 /* Handle type - 0 is reserved as null
