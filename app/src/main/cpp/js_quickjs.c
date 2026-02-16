@@ -13,7 +13,6 @@
 #include "browser_stubs.h"
 #include "html_dom.h"
 #include "js_value_helpers.h"
-/* Using unified GC allocator from quickjs_gc_unified.h */
 
 /* File logging for emulator testing */
 static void log_to_file(const char *tag, const char *fmt, ...) {
@@ -781,7 +780,7 @@ static char* extract_attr(const char *html, const char *tag_end, const char *att
     if (!end || end > tag_end) return NULL;
     
     size_t len = end - attr;
-    char *value = gc_alloc_raw(len + 1);
+    char *value = (char *)malloc(len + 1);
     if (value) {
         strncpy(value, attr, len);
         value[len] = '\0';
@@ -1072,14 +1071,14 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
             strstr(scripts[i], "web-animations") != NULL || script_lens[i] > 50000) {
             // Wrap large scripts and known problematic scripts in try-catch
             size_t wrapped_size = script_lens[i] + 100;
-            char *wrapped = gc_alloc_raw(wrapped_size);
+            JSGCHandle wrapped_handle = js_malloc(ctx, wrapped_size);
+            char *wrapped = (char *)gc_deref(wrapped_handle);
             if (wrapped) {
                 int header_len = snprintf(wrapped, wrapped_size, "try{");
                 memcpy(wrapped + header_len, scripts[i], script_lens[i]);
                 int footer_len = snprintf(wrapped + header_len + script_lens[i], wrapped_size - header_len - script_lens[i], "}catch(e){}");
                 size_t total_len = header_len + script_lens[i] + footer_len;
                 result = JS_Eval(ctx, wrapped, total_len, filename, JS_EVAL_TYPE_GLOBAL);
-                /* GC will reclaim memory on reset - no individual free needed */
             } else {
                 result = JS_Eval(ctx, scripts[i], script_lens[i], filename, JS_EVAL_TYPE_GLOBAL);
             }

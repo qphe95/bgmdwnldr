@@ -593,20 +593,23 @@ int JS_AddIntrinsicWeakRef(JSContext *ctx);
 JSValue js_string_codePointRange(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv);
 
-void *js_malloc_rt(JSRuntime *rt, size_t size);
-void js_free_rt(JSRuntime *rt, void *ptr);
-void *js_realloc_rt(JSRuntime *rt, void *ptr, size_t size);
-size_t js_malloc_usable_size_rt(JSRuntime *rt, const void *ptr);
-void *js_mallocz_rt(JSRuntime *rt, size_t size);
+/* Handle-based allocation functions - GC frees automatically */
+JSGCHandle js_malloc_rt(JSRuntime *rt, size_t size);
+JSGCHandle js_realloc_rt(JSRuntime *rt, JSGCHandle handle, size_t size);
+size_t js_malloc_usable_size_rt(JSRuntime *rt, JSGCHandle handle);
+JSGCHandle js_mallocz_rt(JSRuntime *rt, size_t size);
 
-void *js_malloc(JSContext *ctx, size_t size);
-void js_free(JSContext *ctx, void *ptr);
-void *js_realloc(JSContext *ctx, void *ptr, size_t size);
-size_t js_malloc_usable_size(JSContext *ctx, const void *ptr);
-void *js_realloc2(JSContext *ctx, void *ptr, size_t size, size_t *pslack);
-void *js_mallocz(JSContext *ctx, size_t size);
-char *js_strdup(JSContext *ctx, const char *str);
-char *js_strndup(JSContext *ctx, const char *s, size_t n);
+JSGCHandle js_malloc(JSContext *ctx, size_t size);
+JSGCHandle js_realloc(JSContext *ctx, JSGCHandle handle, size_t size);
+size_t js_malloc_usable_size(JSContext *ctx, JSGCHandle handle);
+JSGCHandle js_realloc2(JSContext *ctx, JSGCHandle handle, size_t size, size_t *pslack);
+JSGCHandle js_mallocz(JSContext *ctx, size_t size);
+
+/* String duplication - returns handle to char array */
+JSGCHandle js_strdup(JSContext *ctx, const char *str);
+JSGCHandle js_strndup(JSContext *ctx, const char *s, size_t n);
+
+/* Note: No js_free functions - GC automatically reclaims unreachable objects */
 
 typedef struct JSMemoryUsage {
     int64_t malloc_size, malloc_limit, memory_used_size;

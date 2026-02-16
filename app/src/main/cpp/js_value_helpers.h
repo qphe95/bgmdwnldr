@@ -79,7 +79,7 @@ static inline void js_scope_init(JSScope *scope, JSContext *ctx, const char *fil
 static inline void js_scope_track(JSScope *scope, JSValue *val, const char *name) {
     if (scope->count < 16) {
         scope->values[scope->count++] = val;
-        gc_push_jsvalue(scope->ctx, val, scope->file, scope->line, name);
+        gc_push_jsvalue(scope->ctx, val);
     } else {
         LOG_WARN("JS scope full, cannot track %s", name);
     }
@@ -117,7 +117,7 @@ static inline void js_scope_cleanup(JSScope *scope) {
 static inline JSValue js_get_prop_tracked(JSContext *ctx, JSValueConst obj, 
                                            const char *prop, const char *file, int line) {
     JSValue val = JS_GetPropertyStr(ctx, obj, prop);
-    gc_push_jsvalue(ctx, &val, file, line, prop);
+    gc_push_jsvalue(ctx, &val);
     return val;
 }
 #define JS_GET_PROP(ctx, obj, prop) \
@@ -126,7 +126,7 @@ static inline JSValue js_get_prop_tracked(JSContext *ctx, JSValueConst obj,
 /* Get global object and auto-track */
 static inline JSValue js_get_global_tracked(JSContext *ctx, const char *file, int line) {
     JSValue val = JS_GetGlobalObject(ctx);
-    gc_push_jsvalue(ctx, &val, file, line, "global");
+    gc_push_jsvalue(ctx, &val);
     return val;
 }
 #define JS_GET_GLOBAL(ctx) \
@@ -138,7 +138,7 @@ static inline JSValue js_call_tracked(JSContext *ctx, JSValueConst func,
                                        JSValueConst *argv,
                                        const char *file, int line) {
     JSValue result = JS_Call(ctx, func, this_val, argc, argv);
-    gc_push_jsvalue(ctx, &result, file, line, "call_result");
+    gc_push_jsvalue(ctx, &result);
     return result;
 }
 #define JS_CALL_TRACKED(ctx, func, this_val, argc, argv) \
