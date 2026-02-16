@@ -41,7 +41,6 @@ bool gc_init(void) {
     g_gc.gc_threshold = GC_DEFAULT_THRESHOLD;
     g_gc.rt = NULL;
     
-    gc_shadow_stack_init();
     g_gc.initialized = true;
     return true;
 }
@@ -51,7 +50,6 @@ bool gc_is_initialized(void) {
 }
 
 void gc_cleanup(void) {
-    gc_shadow_stack_cleanup();
     if (g_gc.heap) {
         free(g_gc.heap);
         g_gc.heap = NULL;
@@ -133,6 +131,7 @@ GCHandle gc_alloc(JSRuntime *rt, size_t size, JSGCObjectTypeEnum gc_obj_type) {
 GCHandle gc_alloc_ex(JSRuntime *rt, size_t size, JSGCObjectTypeEnum gc_obj_type,
                      GCHandleArrayType array_type) {
     (void)array_type;
+    (void)rt;
     
     if (!g_gc.initialized) return GC_HANDLE_NULL;
     gc_maybe_run();
@@ -159,6 +158,8 @@ GCHandle gc_alloc_ex(JSRuntime *rt, size_t size, JSGCObjectTypeEnum gc_obj_type,
 }
 
 GCHandle gc_realloc(JSRuntime *rt, GCHandle handle, size_t new_size) {
+    (void)rt;
+    
     if (handle == GC_HANDLE_NULL) {
         return gc_alloc(rt, new_size, JS_GC_OBJ_TYPE_DATA);
     }
@@ -231,8 +232,6 @@ static void gc_mark(void) {
             if (hdr->size > 0) hdr->mark = 1;
         }
     }
-    
-    gc_mark_shadow_stack();
 }
 
 static void gc_compact(void) {
@@ -344,77 +343,4 @@ size_t gc_available_bytes(void) {
 
 size_t gc_total_bytes(void) {
     return g_gc.heap_size;
-}
-
-void gc_shadow_stack_init(void) {
-    g_gc.shadow_stack = NULL;
-    g_gc.shadow_stack_pool = NULL;
-}
-
-void gc_shadow_stack_cleanup(void) {
-    GCShadowStackEntry *entry = g_gc.shadow_stack_pool;
-    while (entry) {
-        GCShadowStackEntry *next = entry->pool_next;
-        free(entry);
-        entry = next;
-    }
-    
-    entry = g_gc.shadow_stack;
-    while (entry) {
-        GCShadowStackEntry *next = entry->next;
-        free(entry);
-        entry = next;
-    }
-    
-    g_gc.shadow_stack = NULL;
-    g_gc.shadow_stack_pool = NULL;
-}
-
-void gc_push_jsvalue(JSContext *ctx, void *slot) {
-    (void)ctx;
-    if (!slot) return;
-    
-    GCShadowStackEntry *entry = g_gc.shadow_stack_pool;
-    if (entry) {
-        g_gc.shadow_stack_pool = entry->pool_next;
-    } else {
-        entry = malloc(sizeof(GCShadowStackEntry));
-        if (!entry) return;
-    }
-    
-    entry->value_slot = slot;
-    entry->next = g_gc.shadow_stack;
-    g_gc.shadow_stack = entry;
-}
-
-void gc_pop_jsvalue(JSContext *ctx, void *slot) {
-    (void)ctx;
-    if (!slot) return;
-    
-    GCShadowStackEntry **pp = &g_gc.shadow_stack;
-    while (*pp) {
-        GCShadowStackEntry *entry = *pp;
-        if (entry->value_slot == slot) {
-            *pp = entry->next;
-            entry->pool_next = g_gc.shadow_stack_pool;
-            g_gc.shadow_stack_pool = entry;
-            return;
-        }
-        pp = &(*pp)->next;
-    }
-}
-
-void gc_mark_shadow_stack(void) {
-    for (GCShadowStackEntry *entry = g_gc.shadow_stack; entry; entry = entry->next) {
-        JSValue *val = entry->value_slot;
-        if (!val) continue;
-        
-        if (val->tag < 0) {
-            void *ptr = gc_deref(val->u.handle);
-            if (ptr) {
-                GCHeader *hdr = gc_header(ptr);
-                if (hdr->size > 0) hdr->mark = 1;
-            }
-        }
-    }
 }

@@ -111,21 +111,6 @@ size_t gc_total_bytes(void);
 void gc_add_root(GCHandle handle);
 void gc_remove_root(GCHandle handle);
 
-typedef struct GCShadowStackEntry {
-    void *value_slot;
-    struct GCShadowStackEntry *next;
-    struct GCShadowStackEntry *pool_next;
-} GCShadowStackEntry;
-
-void gc_shadow_stack_init(void);
-void gc_shadow_stack_cleanup(void);
-void gc_push_jsvalue(JSContext *ctx, void *value_slot);
-void gc_pop_jsvalue(JSContext *ctx, void *value_slot);
-void gc_mark_shadow_stack(void);
-
-#define JS_GC_PUSH(ctx, var) gc_push_jsvalue(ctx, &var)
-#define JS_GC_POP(ctx, var) gc_pop_jsvalue(ctx, &var)
-
 static inline GCHeader *gc_header(void *user_ptr) {
     if (!user_ptr) return NULL;
     return (GCHeader*)((uint8_t*)user_ptr - sizeof(GCHeader));
@@ -152,8 +137,6 @@ typedef struct GCState {
     size_t bytes_allocated;
     size_t gc_threshold;
     JSRuntime *rt;
-    GCShadowStackEntry *shadow_stack;
-    GCShadowStackEntry *shadow_stack_pool;
     bool initialized;
 } GCState;
 

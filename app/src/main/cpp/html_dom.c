@@ -722,8 +722,7 @@ JSValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribu
     return element;
 }
 
-/* Recursively create DOM nodes in JS */
-// BUG FIX #6: Using shadow stack to track JSValues instead of manual JS_FreeValue
+/* Recursively create DOM nodes in JS with proper JS_FreeValue cleanup */
 static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, JSValue parent) {
     if (!ctx || !node) return false;
     
@@ -743,18 +742,15 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, JSValu
                 
                 /* If we have a parent, append this element */
                 if (!JS_IsUndefined(parent) && !JS_IsNull(parent)) {
-                    /* Use scope for temporary JSValues */
-                    JS_SCOPE_BEGIN(ctx)
-                    {
-                        JS_SCOPE_VALUE(ctx, appendChild, JS_GetPropertyStr(ctx, parent, "appendChild"));
-                        
-                        if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
-                            JSValue args[1] = { js_node };
-                            JS_SCOPE_VALUE(ctx, result, JS_Call(ctx, appendChild, parent, 1, args));
-                            (void)result;
-                        }
+                    /* Use proper JS_FreeValue for temporary JSValues */
+                    JSValue appendChild = JS_GetPropertyStr(ctx, parent, "appendChild");
+                    
+                    if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
+                        JSValue args[1] = { js_node };
+                        JSValue result = JS_Call(ctx, appendChild, parent, 1, args);
+                        JS_FreeValue(ctx, result);
                     }
-                    JS_SCOPE_END(ctx);
+                    JS_FreeValue(ctx, appendChild);
                 }
             }
             break;
@@ -767,18 +763,16 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, JSValu
                 
                 /* Add to parent's innerHTML or childNodes if needed */
                 if (!JS_IsUndefined(parent) && !JS_IsNull(parent)) {
-                    JS_SCOPE_BEGIN(ctx)
-                    {
-                        JS_SCOPE_VALUE(ctx, childNodes, JS_GetPropertyStr(ctx, parent, "childNodes"));
-                        
-                        if (JS_IsArray(ctx, childNodes)) {
-                            JS_SCOPE_VALUE(ctx, push, JS_GetPropertyStr(ctx, childNodes, "push"));
-                            JSValue args[1] = { js_node };
-                            JS_SCOPE_VALUE(ctx, result, JS_Call(ctx, push, childNodes, 1, args));
-                            (void)result;
-                        }
+                    JSValue childNodes = JS_GetPropertyStr(ctx, parent, "childNodes");
+                    
+                    if (JS_IsArray(ctx, childNodes)) {
+                        JSValue push = JS_GetPropertyStr(ctx, childNodes, "push");
+                        JSValue args[1] = { js_node };
+                        JSValue result = JS_Call(ctx, push, childNodes, 1, args);
+                        JS_FreeValue(ctx, result);
+                        JS_FreeValue(ctx, push);
                     }
-                    JS_SCOPE_END(ctx);
+                    JS_FreeValue(ctx, childNodes);
                 }
             }
             break;
@@ -869,7 +863,6 @@ JSValue html_create_js_document(JSContext *ctx, HtmlDocument *doc) {
 }
 
 /* Main entry point: parse HTML and create DOM in JS context */
-// BUG FIX #7: Using shadow stack to track JSValues instead of manual JS_FreeValue
 bool html_create_dom_in_js(JSContext *ctx, HtmlDocument *doc) {
     if (!ctx || !doc) return false;
     
@@ -883,20 +876,18 @@ bool html_create_dom_in_js(JSContext *ctx, HtmlDocument *doc) {
         return false;
     }
     
-    /* Use scope for all temporary JSValues */
-    JS_SCOPE_BEGIN(ctx)
-    {
-        /* Get global object and set document */
-        JS_SCOPE_VALUE(ctx, global, JS_GetGlobalObject(ctx));
-        JS_SetPropertyStr(ctx, global, "document", js_doc);
-        
-        /* Also set documentElement on window */
-        JS_SCOPE_VALUE(ctx, doc_elem, JS_GetPropertyStr(ctx, js_doc, "documentElement"));
-        if (!JS_IsNull(doc_elem) && !JS_IsUndefined(doc_elem)) {
-            JS_SetPropertyStr(ctx, global, "documentElement", doc_elem);
-        }
+    /* Use proper JS_FreeValue for all temporary JSValues */
+    /* Get global object and set document */
+    JSValue global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "document", js_doc);
+    
+    /* Also set documentElement on window */
+    JSValue doc_elem = JS_GetPropertyStr(ctx, js_doc, "documentElement");
+    if (!JS_IsNull(doc_elem) && !JS_IsUndefined(doc_elem)) {
+        JS_SetPropertyStr(ctx, global, "documentElement", doc_elem);
     }
-    JS_SCOPE_END(ctx);
+    JS_FreeValue(ctx, doc_elem);
+    JS_FreeValue(ctx, global);
     
     LOG_INFO("DOM created successfully in JS context");
     return true;
