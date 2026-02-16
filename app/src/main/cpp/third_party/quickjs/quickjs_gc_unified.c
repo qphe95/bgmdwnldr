@@ -124,14 +124,13 @@ GCHandle gc_alloc_handle_for_ptr(void *ptr) {
     return allocate_handle(ptr);
 }
 
-GCHandle gc_alloc(JSRuntime *rt, size_t size, JSGCObjectTypeEnum gc_obj_type) {
-    return gc_alloc_ex(rt, size, gc_obj_type, GC_HANDLE_ARRAY_GC);
+GCHandle gc_alloc(size_t size, JSGCObjectTypeEnum gc_obj_type) {
+    return gc_alloc_ex(size, gc_obj_type, GC_HANDLE_ARRAY_GC);
 }
 
-GCHandle gc_alloc_ex(JSRuntime *rt, size_t size, JSGCObjectTypeEnum gc_obj_type,
+GCHandle gc_alloc_ex(size_t size, JSGCObjectTypeEnum gc_obj_type,
                      GCHandleArrayType array_type) {
     (void)array_type;
-    (void)rt;
     
     if (!g_gc.initialized) return GC_HANDLE_NULL;
     gc_maybe_run();
@@ -157,22 +156,20 @@ GCHandle gc_alloc_ex(JSRuntime *rt, size_t size, JSGCObjectTypeEnum gc_obj_type,
     return handle;
 }
 
-GCHandle gc_realloc(JSRuntime *rt, GCHandle handle, size_t new_size) {
-    (void)rt;
-    
+GCHandle gc_realloc(GCHandle handle, size_t new_size) {
     if (handle == GC_HANDLE_NULL) {
-        return gc_alloc(rt, new_size, JS_GC_OBJ_TYPE_DATA);
+        return gc_alloc(new_size, JS_GC_OBJ_TYPE_DATA);
     }
     
     if (new_size == 0) return GC_HANDLE_NULL;
     
     void *old_ptr = gc_deref(handle);
-    if (!old_ptr) return gc_alloc(rt, new_size, JS_GC_OBJ_TYPE_DATA);
+    if (!old_ptr) return gc_alloc(new_size, JS_GC_OBJ_TYPE_DATA);
     
     GCHeader *old_hdr = gc_header(old_ptr);
     JSGCObjectTypeEnum old_type = old_hdr->gc_obj_type;
     
-    GCHandle new_handle = gc_alloc(rt, new_size, old_type);
+    GCHandle new_handle = gc_alloc(new_size, old_type);
     if (new_handle == GC_HANDLE_NULL) return GC_HANDLE_NULL;
     
     void *new_ptr = gc_deref(new_handle);
@@ -183,6 +180,15 @@ GCHandle gc_realloc(JSRuntime *rt, GCHandle handle, size_t new_size) {
     old_hdr->size = 0;
     g_gc.handles.ptrs[handle] = NULL;
     
+    return new_handle;
+}
+
+GCHandle gc_realloc2(GCHandle handle, size_t new_size, size_t *pslack) {
+    GCHandle new_handle = gc_realloc(handle, new_size);
+    if (pslack && new_handle != GC_HANDLE_NULL) {
+        size_t usable = gc_usable_size(new_handle);
+        *pslack = (usable > new_size) ? (usable - new_size) : 0;
+    }
     return new_handle;
 }
 

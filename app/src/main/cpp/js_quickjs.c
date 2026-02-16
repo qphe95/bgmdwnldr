@@ -1078,7 +1078,7 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
             strstr(scripts[i], "web-animations") != NULL || script_lens[i] > 50000) {
             // Wrap large scripts and known problematic scripts in try-catch
             size_t wrapped_size = script_lens[i] + 100;
-            GCHandle wrapped_handle = gc_alloc(ctx->rt, wrapped_size, JS_GC_OBJ_TYPE_DATA);
+            GCHandle wrapped_handle = gc_alloc(wrapped_size, JS_GC_OBJ_TYPE_DATA);
             char *wrapped = (char *)gc_deref(wrapped_handle);
             if (wrapped) {
                 int header_len = snprintf(wrapped, wrapped_size, "try{");

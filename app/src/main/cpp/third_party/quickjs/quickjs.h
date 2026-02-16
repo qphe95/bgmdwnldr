@@ -587,78 +587,19 @@ int JS_AddIntrinsicWeakRef(JSContext *ctx);
 JSValue js_string_codePointRange(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv);
 
-/* Handle-based allocation functions - GC frees automatically
- * These are now inline wrappers around gc_alloc for backward compatibility */
-static inline GCHandle js_malloc_rt(JSRuntime *rt, size_t size) {
-    return gc_alloc(rt, size, JS_GC_OBJ_TYPE_DATA);
-}
-static inline GCHandle js_realloc_rt(JSRuntime *rt, GCHandle handle, size_t size) {
-    return gc_realloc(rt, handle, size);
-}
-static inline size_t js_malloc_usable_size_rt(JSRuntime *rt, GCHandle handle) {
-    (void)rt;
-    void *ptr = gc_deref(handle);
-    if (!ptr) return 0;
-    GCHeader *hdr = gc_header(ptr);
-    return hdr->size > sizeof(GCHeader) ? hdr->size - sizeof(GCHeader) : 0;
-}
-static inline GCHandle js_mallocz_rt(JSRuntime *rt, size_t size) {
-    GCHandle handle = gc_alloc(rt, size, JS_GC_OBJ_TYPE_DATA);
-    if (handle != GC_HANDLE_NULL) {
-        void *ptr = gc_deref(handle);
-        if (ptr) memset(ptr, 0, size);
-    }
-    return handle;
-}
-
-static inline GCHandle js_malloc(JSContext *ctx, size_t size) {
-    return gc_alloc(ctx ? ctx->rt : NULL, size, JS_GC_OBJ_TYPE_DATA);
-}
-static inline GCHandle js_realloc(JSContext *ctx, GCHandle handle, size_t size) {
-    return gc_realloc(ctx ? ctx->rt : NULL, handle, size);
-}
-static inline size_t js_malloc_usable_size(JSContext *ctx, GCHandle handle) {
-    (void)ctx;
-    return js_malloc_usable_size_rt(NULL, handle);
-}
-static inline GCHandle js_realloc2(JSContext *ctx, GCHandle handle, size_t size, size_t *pslack) {
-    GCHandle ret = gc_realloc(ctx ? ctx->rt : NULL, handle, size);
-    if (pslack && ret != GC_HANDLE_NULL) {
-        void *ptr = gc_deref(ret);
-        GCHeader *hdr = ptr ? gc_header(ptr) : NULL;
-        size_t usable = hdr && hdr->size > sizeof(GCHeader) ? hdr->size - sizeof(GCHeader) : 0;
-        *pslack = usable > size ? usable - size : 0;
-    }
-    return ret;
-}
-static inline GCHandle js_mallocz(JSContext *ctx, size_t size) {
-    return js_mallocz_rt(ctx ? ctx->rt : NULL, size);
-}
-
-/* String duplication - returns handle to char array */
-static inline GCHandle js_strdup(JSContext *ctx, const char *str) {
-    size_t len = str ? strlen(str) : 0;
-    GCHandle handle = gc_alloc(ctx ? ctx->rt : NULL, len + 1, JS_GC_OBJ_TYPE_DATA);
-    if (handle != GC_HANDLE_NULL && str) {
-        char *ptr = (char *)gc_deref(handle);
-        if (ptr) memcpy(ptr, str, len + 1);
-    }
-    return handle;
-}
-static inline GCHandle js_strndup(JSContext *ctx, const char *s, size_t n) {
-    size_t len = s ? strnlen(s, n) : 0;
-    GCHandle handle = gc_alloc(ctx ? ctx->rt : NULL, len + 1, JS_GC_OBJ_TYPE_DATA);
-    if (handle != GC_HANDLE_NULL) {
-        char *ptr = (char *)gc_deref(handle);
-        if (ptr) {
-            if (s) memcpy(ptr, s, len);
-            ptr[len] = '\0';
-        }
-    }
-    return handle;
-}
-
-/* Note: No js_free functions - GC automatically reclaims unreachable objects */
+/* GC allocation functions - use gc_alloc/gc_realloc directly
+ * 
+ * Pattern replacements:
+ *   js_malloc(ctx, size)        -> gc_alloc(size, JS_GC_OBJ_TYPE_DATA)
+ *   js_mallocz(ctx, size)       -> gc_allocz(size, JS_GC_OBJ_TYPE_DATA)
+ *   js_realloc(ctx, h, size)    -> gc_realloc(h, size)
+ *   js_realloc2(ctx, h, sz, sl) -> gc_realloc2(h, sz, &sl)
+ *   js_strdup(ctx, str)         -> gc_strdup(str)
+ *   js_strndup(ctx, s, n)       -> gc_strndup(s, n)
+ *   js_malloc_usable_size(...)  -> gc_usable_size(handle)
+ * 
+ * Note: No free functions - GC automatically reclaims unreachable objects
+ */
 
 typedef struct JSMemoryUsage {
     int64_t malloc_size, malloc_limit, memory_used_size;
@@ -1127,7 +1068,7 @@ void JS_SetIsHTMLDDA(JSContext *ctx, JSValueConst obj);
 
 typedef struct JSModuleDef JSModuleDef;
 
-/* return the module specifier (allocated with js_malloc()) or NULL if
+/* return the module specifier (allocated with gc_alloc) or NULL if
    exception */
 typedef char *JSModuleNormalizeFunc(JSContext *ctx,
                                     const char *module_base_name,

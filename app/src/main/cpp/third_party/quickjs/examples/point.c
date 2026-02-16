@@ -22,6 +22,7 @@
  * THE SOFTWARE.
  */
 #include "../quickjs.h"
+#include "../quickjs_gc_unified.h"
 #include <math.h>
 
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
@@ -50,7 +51,7 @@ static JSValue js_point_ctor(JSContext *ctx,
     JSValue obj = JS_UNDEFINED;
     JSValue proto;
 
-    s = js_mallocz(ctx, sizeof(*s));
+    s = gc_deref(gc_allocz(sizeof(*s), JS_GC_OBJ_TYPE_DATA));
     if (!s)
         return JS_EXCEPTION;
     if (JS_ToInt32(ctx, &s->x, argv[0]))

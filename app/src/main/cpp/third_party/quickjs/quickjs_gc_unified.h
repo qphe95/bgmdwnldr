@@ -76,24 +76,70 @@ bool gc_is_initialized(void);
 void gc_cleanup(void);
 void gc_set_runtime(JSRuntime *rt);
 
-GCHandle gc_alloc(JSRuntime *rt, size_t size, JSGCObjectTypeEnum gc_obj_type);
-GCHandle gc_alloc_ex(JSRuntime *rt, size_t size, JSGCObjectTypeEnum gc_obj_type,
+GCHandle gc_alloc(size_t size, JSGCObjectTypeEnum gc_obj_type);
+GCHandle gc_alloc_ex(size_t size, JSGCObjectTypeEnum gc_obj_type,
                      GCHandleArrayType array_type);
-GCHandle gc_realloc(JSRuntime *rt, GCHandle handle, size_t new_size);
+GCHandle gc_realloc(GCHandle handle, size_t new_size);
+
+/* Like gc_realloc but returns slack (extra usable space) for array optimization */
+GCHandle gc_realloc2(GCHandle handle, size_t new_size, size_t *pslack);
+
+/* Allocate and zero-initialize */
+static inline GCHandle gc_allocz(size_t size, JSGCObjectTypeEnum gc_obj_type) {
+    GCHandle handle = gc_alloc(size, gc_obj_type);
+    if (handle != GC_HANDLE_NULL) {
+        void *ptr = gc_deref(handle);
+        if (ptr) memset(ptr, 0, size);
+    }
+    return handle;
+}
+
+/* Duplicate a string (null-terminated) */
+static inline GCHandle gc_strdup(const char *str) {
+    size_t len = str ? strlen(str) : 0;
+    GCHandle handle = gc_alloc(len + 1, JS_GC_OBJ_TYPE_DATA);
+    if (handle != GC_HANDLE_NULL && str) {
+        char *ptr = (char *)gc_deref(handle);
+        if (ptr) memcpy(ptr, str, len + 1);
+    }
+    return handle;
+}
+
+/* Duplicate a string with length limit */
+static inline GCHandle gc_strndup(const char *s, size_t n) {
+    size_t len = s ? strnlen(s, n) : 0;
+    GCHandle handle = gc_alloc(len + 1, JS_GC_OBJ_TYPE_DATA);
+    if (handle != GC_HANDLE_NULL) {
+        char *ptr = (char *)gc_deref(handle);
+        if (ptr) {
+            if (s) memcpy(ptr, s, len);
+            ptr[len] = '\0';
+        }
+    }
+    return handle;
+}
+
+/* Get usable size of an allocation */
+static inline size_t gc_usable_size(GCHandle handle) {
+    void *ptr = gc_deref(handle);
+    if (!ptr) return 0;
+    GCHeader *hdr = gc_header(ptr);
+    return hdr->size > sizeof(GCHeader) ? hdr->size - sizeof(GCHeader) : 0;
+}
 
 void *gc_deref(GCHandle handle);
 bool gc_ptr_is_valid(void *ptr);
 
 /* Helper: allocate and return pointer directly (for internal use) */
-static inline void *gc_alloc_js_object(size_t size, JSGCObjectTypeEnum gc_obj_type, JSRuntime *rt) {
-    GCHandle handle = gc_alloc(rt, size, gc_obj_type);
+static inline void *gc_alloc_js_object(size_t size, JSGCObjectTypeEnum gc_obj_type) {
+    GCHandle handle = gc_alloc(size, gc_obj_type);
     if (handle == 0) return NULL;
     return gc_deref(handle);
 }
 
 static inline void *gc_alloc_js_object_ex(size_t size, JSGCObjectTypeEnum gc_obj_type, 
-                                           JSRuntime *rt, GCHandleArrayType array_type) {
-    GCHandle handle = gc_alloc_ex(rt, size, gc_obj_type, array_type);
+                                           GCHandleArrayType array_type) {
+    GCHandle handle = gc_alloc_ex(size, gc_obj_type, array_type);
     if (handle == 0) return NULL;
     return gc_deref(handle);
 }

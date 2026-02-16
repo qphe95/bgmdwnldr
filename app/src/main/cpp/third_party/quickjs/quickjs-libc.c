@@ -159,7 +159,7 @@ static int (*os_poll_func)(JSContext *ctx);
 
 static void js_std_dbuf_init(JSContext *ctx, DynBuf *s)
 {
-    dbuf_init2(s, JS_GetRuntime(ctx), (DynBufReallocFunc *)js_realloc_rt);
+    dbuf_init2(s, JS_GetRuntime(ctx), (DynBufReallocFunc *)gc_realloc);
 }
 
 static BOOL my_isdigit(int c)
@@ -409,7 +409,7 @@ uint8_t *js_load_file(JSContext *ctx, size_t *pbuf_len, const char *filename)
     if (fseek(f, 0, SEEK_SET) < 0)
         goto fail;
     if (ctx)
-        buf = (uint8_t *)gc_deref(js_malloc(ctx, buf_len + 1));
+        buf = (uint8_t *)gc_alloc(buf_len + 1, JS_GC_OBJ_TYPE_DATA);
     else
         buf = malloc(buf_len + 1);
     if (!buf)
@@ -496,7 +496,7 @@ static JSModuleDef *js_module_loader_so(JSContext *ctx,
     if (!strchr(module_name, '/')) {
         /* must add a '/' so that the DLL is not searched in the
            system library paths */
-        filename = (char *)gc_deref(js_malloc(ctx, strlen(module_name) + 2 + 1));
+        filename = (char *)gc_alloc(strlen(module_name) + 2 + 1, JS_GC_OBJ_TYPE_DATA);
         if (!filename)
             return NULL;
         strcpy(filename, "./");
@@ -978,7 +978,7 @@ static JSValue js_new_std_file(JSContext *ctx, FILE *f,
     obj = JS_NewObjectClass(ctx, js_std_file_class_id);
     if (JS_IsException(obj))
         return obj;
-    s = gc_deref(js_mallocz(ctx, sizeof(*s)));
+    s = gc_allocz(sizeof(*s), JS_GC_OBJ_TYPE_DATA);
     if (!s) {
 
         return JS_EXCEPTION;
@@ -1526,7 +1526,7 @@ static JSValue js_std_urlGet(JSContext *ctx, JSValueConst this_val,
     js_std_dbuf_init(ctx, data_buf);
     js_std_dbuf_init(ctx, header_buf);
 
-    buf = (char *)gc_deref(js_malloc(ctx, URL_GET_BUF_SIZE));
+    buf = (char *)gc_alloc(URL_GET_BUF_SIZE, JS_GC_OBJ_TYPE_DATA);
     if (!buf)
         goto fail;
 
@@ -2029,7 +2029,7 @@ static JSValue js_os_setReadHandler(JSContext *ctx, JSValueConst this_val,
             return JS_ThrowTypeError(ctx, "not a function");
         rh = find_rh(ts, fd);
         if (!rh) {
-            rh = (JSOSRWHandler *)gc_deref(js_mallocz(ctx, sizeof(*rh)));
+            rh = (JSOSRWHandler *)gc_allocz(sizeof(*rh), JS_GC_OBJ_TYPE_DATA);
             if (!rh)
                 return JS_EXCEPTION;
             rh->fd = fd;
@@ -2105,7 +2105,7 @@ static JSValue js_os_signal(JSContext *ctx, JSValueConst this_val,
             return JS_ThrowTypeError(ctx, "not a function");
         sh = find_sh(ts, sig_num);
         if (!sh) {
-            sh = (JSOSSignalHandler *)gc_deref(js_mallocz(ctx, sizeof(*sh)));
+            sh = (JSOSSignalHandler *)gc_allocz(sizeof(*sh), JS_GC_OBJ_TYPE_DATA);
             if (!sh)
                 return JS_EXCEPTION;
             sh->sig_num = sig_num;
@@ -2176,7 +2176,7 @@ static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowTypeError(ctx, "not a function");
     if (JS_ToInt64(ctx, &delay, argv[1]))
         return JS_EXCEPTION;
-    th = (JSOSTimer *)gc_deref(js_mallocz(ctx, sizeof(*th)));
+    th = (JSOSTimer *)gc_allocz(sizeof(*th), JS_GC_OBJ_TYPE_DATA);
     if (!th)
         return JS_EXCEPTION;
     th->timer_id = ts->next_timer_id;
@@ -2236,7 +2236,7 @@ static JSValue js_os_sleepAsync(JSContext *ctx, JSValueConst this_val,
     if (JS_IsException(promise))
         return JS_EXCEPTION;
 
-    th = (JSOSTimer *)gc_deref(js_mallocz(ctx, sizeof(*th)));
+    th = (JSOSTimer *)gc_allocz(sizeof(*th), JS_GC_OBJ_TYPE_DATA);
     if (!th) {
 
 
@@ -3004,7 +3004,7 @@ static char **build_envp(JSContext *ctx, JSValueConst obj)
     if (JS_GetOwnPropertyNames(ctx, &tab, &len, obj,
                                JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) < 0)
         return NULL;
-    envp = (char **)gc_deref(js_mallocz(ctx, sizeof(envp[0]) * ((size_t)len + 1)));
+    envp = (char **)gc_allocz(sizeof(envp[0]) * ((size_t)len + 1), JS_GC_OBJ_TYPE_DATA);
     if (!envp)
         goto fail;
     for(i = 0; i < len; i++) {
@@ -3022,7 +3022,7 @@ static char **build_envp(JSContext *ctx, JSValueConst obj)
         }
         key_len = strlen(key);
         str_len = strlen(str);
-        pair = (char *)gc_deref(js_malloc(ctx, key_len + str_len + 2));
+        pair = (char *)gc_alloc(key_len + str_len + 2, JS_GC_OBJ_TYPE_DATA);
         if (!pair) {
             JS_FreeCString(ctx, key);
             JS_FreeCString(ctx, str);
@@ -3131,7 +3131,7 @@ static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
     if (exec_argc < 1 || exec_argc > 65535) {
         return JS_ThrowTypeError(ctx, "invalid number of arguments");
     }
-    exec_argv = (const char **)gc_deref(js_mallocz(ctx, sizeof(exec_argv[0]) * (exec_argc + 1)));
+    exec_argv = (const char **)gc_allocz(sizeof(exec_argv[0]) * (exec_argc + 1), JS_GC_OBJ_TYPE_DATA);
     if (!exec_argv)
         return JS_EXCEPTION;
     for(i = 0; i < exec_argc; i++) {
@@ -3644,7 +3644,7 @@ static JSValue js_worker_ctor_internal(JSContext *ctx, JSValueConst new_target,
 
     if (JS_IsException(obj))
         goto fail;
-    s = gc_deref(js_mallocz(ctx, sizeof(*s)));
+    s = gc_allocz(sizeof(*s), JS_GC_OBJ_TYPE_DATA);
     if (!s)
         goto fail;
     s->recv_pipe = js_dup_message_pipe(recv_pipe);
@@ -3829,7 +3829,7 @@ static JSValue js_worker_set_onmessage(JSContext *ctx, JSValueConst this_val,
         if (!JS_IsFunction(ctx, func))
             return JS_ThrowTypeError(ctx, "not a function");
         if (!port) {
-            port = (JSWorkerMessageHandler *)gc_deref(js_mallocz(ctx, sizeof(*port)));
+            port = (JSWorkerMessageHandler *)gc_allocz(sizeof(*port), JS_GC_OBJ_TYPE_DATA);
             if (!port)
                 return JS_EXCEPTION;
             port->recv_pipe = js_dup_message_pipe(worker->recv_pipe);
