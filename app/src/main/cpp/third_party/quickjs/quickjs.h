@@ -340,7 +340,159 @@ typedef const GCValue GCValueConst;
 /* For reference types, you get the handle - never the pointer */
 #define GC_VALUE_GET_HANDLE(v) ((v).u.handle)
 
-/* Type predicate macros */
+/* ============================================================================
+ * GCHandle-based macros for GC-safe object access
+ * ============================================================================
+ * These macros work directly with GCHandles instead of pointers, ensuring
+ * that object references remain valid across GC compaction.
+ */
+
+/* 
+ * GC_OBJ_HANDLE - Get a field of type GCHandle from an object accessed via handle.
+ * Usage: GCHandle proto_handle = GC_OBJ_HANDLE(obj_handle, JSObject, shape_handle);
+ */
+#define GC_OBJ_HANDLE(handle, type, field) ({ \
+    void *_gc_ptr = gc_deref(handle); \
+    (_gc_ptr != NULL) ? ((type *)_gc_ptr)->field : GC_HANDLE_NULL; \
+})
+
+/*
+ * GC_OBJ_HANDLE_SET - Set a GCHandle field in an object accessed via handle.
+ * Usage: GC_OBJ_HANDLE_SET(obj_handle, JSObject, shape_handle, new_shape_handle);
+ */
+#define GC_OBJ_HANDLE_SET(handle, type, field, value) do { \
+    void *_gc_ptr = gc_deref(handle); \
+    if (_gc_ptr != NULL) { \
+        ((type *)_gc_ptr)->field = (value); \
+    } \
+} while(0)
+
+/*
+ * GC_HANDLE_TO_VALUE - Create a GCValue from a GCHandle and tag.
+ * This is the handle-based replacement for JS_MKPTR.
+ * Usage: GCValue val = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, obj_handle);
+ */
+#define GC_HANDLE_TO_VALUE(tag, handle) GC_MKHANDLE(tag, handle)
+
+/*
+ * GC_VALUE_TO_HANDLE - Extract the GCHandle from a GCValue.
+ * This is the handle-based replacement for JS_VALUE_GET_OBJ (when used for handles).
+ * Usage: GCHandle obj_handle = GC_VALUE_TO_HANDLE(val);
+ */
+#define GC_VALUE_TO_HANDLE(v) GC_VALUE_GET_HANDLE(v)
+
+/* ============================================================================
+ * GC-safe field access macros for JSObject and related structures
+ * ============================================================================
+ */
+
+/*
+ * GC_PROP_GET_HANDLE - Get a GCHandle property from a GCValue object.
+ * This macro accesses the property and returns the handle, not a pointer.
+ */
+#define GC_PROP_GET_HANDLE(ctx, obj, atom, field_type, field_name) ({ \
+    GCHandle _gc_handle = GC_HANDLE_NULL; \
+    int _gc_tag = GC_VALUE_GET_TAG(obj); \
+    if (_gc_tag < 0) { \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
+        if (_gc_ptr != NULL) { \
+            field_type *_obj = (field_type *)_gc_ptr; \
+            _gc_handle = _obj->field_name; \
+        } \
+    } \
+    _gc_handle; \
+})
+
+/*
+ * GC_PTR_TO_HANDLE - Convert a GC-managed pointer to a GCHandle.
+ * This is used when transitioning from pointer-based to handle-based code.
+ * Returns GC_HANDLE_NULL if ptr is NULL.
+ */
+#define GC_PTR_TO_HANDLE(ptr) gc_ptr_to_handle(ptr)
+
+/*
+ * ============================================================================
+ * GC-Safe Field Access Macros - NEVER store the result of gc_deref()
+ * ============================================================================
+ * 
+ * These macros access fields of GC-managed objects through handles.
+ * They ensure that pointers are never stored across potential GC points.
+ * 
+ * CRITICAL RULE: Never do this:
+ *   JSObject *p = gc_deref(handle);  // WRONG - storing pointer!
+ *   p->field = value;                // p may be invalid here!
+ * 
+ * Instead, use these macros which access fields through handles:
+ *   GC_FIELD_SET(obj_handle, JSObject, field_handle, value_handle);
+ */
+
+/*
+ * GC_FIELD_GET - Get a GCHandle field from a GC-managed object.
+ * The pointer is dereferenced, the field is read, and the pointer is discarded.
+ * Usage: GCHandle proto = GC_FIELD_GET(obj_handle, JSObject, proto_handle);
+ */
+#define GC_FIELD_GET(handle, type, field) ({ \
+    GCHandle _field_handle = GC_HANDLE_NULL; \
+    void *_ptr = gc_deref(handle); \
+    if (_ptr != NULL) { \
+        _field_handle = ((type *)_ptr)->field; \
+    } \
+    _field_handle; \
+})
+
+/*
+ * GC_FIELD_SET - Set a GCHandle field in a GC-managed object.
+ * Usage: GC_FIELD_SET(obj_handle, JSObject, proto_handle, new_proto_handle);
+ */
+#define GC_FIELD_SET(handle, type, field, value) do { \
+    void *_ptr = gc_deref(handle); \
+    if (_ptr != NULL) { \
+        ((type *)_ptr)->field = (value); \
+    } \
+} while(0)
+
+/*
+ * GC_FIELD_GET_PTR - Get a non-GC pointer field from a GC-managed object.
+ * This is for data pointers (like byte_code_buf), not GC object pointers.
+ * Usage: uint8_t *bytecode = GC_FIELD_GET_PTR(func_handle, JSFunctionBytecode, byte_code_buf);
+ */
+#define GC_FIELD_GET_PTR(handle, type, field, ptr_type) ({ \
+    ptr_type *_field_ptr = NULL; \
+    void *_ptr = gc_deref(handle); \
+    if (_ptr != NULL) { \
+        _field_ptr = ((type *)_ptr)->field; \
+    } \
+    _field_ptr; \
+})
+
+/*
+ * GC_OBJ_DEREF - Immediately dereference a handle and call a function with the pointer.
+ * This macro ensures the pointer is never stored.
+ * Usage: GC_OBJ_DEREF(obj_handle, JSObject, js_object_method, ctx, arg1, arg2);
+ */
+#define GC_OBJ_DEREF(handle, type, func, ...) ({ \
+    void *_ptr = gc_deref(handle); \
+    int _result = -1; \
+    if (_ptr != NULL) { \
+        _result = func(__VA_ARGS__, (type *)_ptr); \
+    } \
+    _result; \
+})
+
+/*
+ * GC_SHAPE_DEREF - Dereference a shape handle to get a temporary JSShape pointer.
+ * WARNING: The pointer is only valid until the next GC point.
+ * NEVER store this pointer. Only use it for immediate field access.
+ */
+#define GC_SHAPE_DEREF(handle) ((JSShape *)gc_deref(handle))
+
+/*
+ * GC_OBJ_GET_SHAPE - Get the shape handle from an object.
+ * Usage: GCHandle shape_handle = GC_OBJ_GET_SHAPE(obj_handle);
+ */
+#define GC_OBJ_GET_SHAPE(obj_handle) GC_FIELD_GET(obj_handle, JSObject, shape_handle)
+
+/* Type predicate macros */}]}</invoke>
 #define GC_IS_OBJECT(v)       (GC_VALUE_GET_TAG(v) == JS_TAG_OBJECT)
 #define GC_IS_NULL(v)         (GC_VALUE_GET_TAG(v) == JS_TAG_NULL)
 #define GC_IS_UNDEFINED(v)    (GC_VALUE_GET_TAG(v) == JS_TAG_UNDEFINED)

@@ -162,6 +162,21 @@ static inline GCHeader *gc_header(void *user_ptr) {
     return (GCHeader*)((uint8_t*)user_ptr - sizeof(GCHeader));
 }
 
+/*
+ * Get the existing GCHandle for a GC-managed pointer.
+ * This returns the handle that was allocated when the object was created.
+ * Returns GC_HANDLE_NULL if ptr is NULL.
+ * 
+ * IMPORTANT: This should only be used during object creation or when
+ * converting from the old pointer-based API to the handle-based API.
+ * Never store the pointer - always store the handle.
+ */
+static inline GCHandle gc_ptr_to_handle(void *ptr) {
+    if (!ptr) return GC_HANDLE_NULL;
+    GCHeader *hdr = gc_header(ptr);
+    return hdr ? hdr->handle : GC_HANDLE_NULL;
+}
+
 typedef struct GCState {
     uint8_t *heap;
     size_t heap_size;
