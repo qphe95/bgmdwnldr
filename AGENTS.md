@@ -56,3 +56,14 @@ APP_PID=$(adb shell pidof com.bgmdwldr.vulkan)
 # View js_quickjs logs
 adb logcat -d --pid=$APP_PID | grep -E "js_quickjs:|HtmlExtract:|Executed|Captured"
 ```
+
+## Debugging
+
+For LLDB debugging of QuickJS shape corruption issues, see the debug guide:
+
+**`lldb/LLDB_DEBUG_GUIDE.md`**
+
+This guide documents 48+ scripts in the `lldb/` folder including:
+- Shell script entry points (e.g., `run_comprehensive_debug.sh`, `debug_attach.sh`)
+- Python LLDB modules (e.g., `lldb_master_debug.py`, `lldb_comprehensive_debug.py`)
+- Command reference and common debugging workflows
