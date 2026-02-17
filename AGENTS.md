@@ -59,11 +59,8 @@ adb logcat -d --pid=$APP_PID | grep -E "js_quickjs:|HtmlExtract:|Executed|Captur
 
 ## Debugging
 
-For LLDB debugging of QuickJS shape corruption issues, see the debug guide:
+### LLDB debug system
 
-**`lldb/LLDB_DEBUG_GUIDE.md`**
+For LLDB debugging, use the debug system in the lldb/ folder
 
-This guide documents 48+ scripts in the `lldb/` folder including:
-- Shell script entry points (e.g., `run_comprehensive_debug.sh`, `debug_attach.sh`)
-- Python LLDB modules (e.g., `lldb_master_debug.py`, `lldb_comprehensive_debug.py`)
-- Command reference and common debugging workflows
+**`lldb/README.md`** - Quick start guide and usage instructions
