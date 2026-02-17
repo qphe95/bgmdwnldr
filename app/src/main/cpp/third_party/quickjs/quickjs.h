@@ -108,324 +108,307 @@ struct GCHeader;
 #define JS_FLOAT64_NAN NAN
 
 #ifdef CONFIG_CHECK_JSVALUE
-/* JSValue consistency : it is not possible to run the code in this
-   mode, but it is useful to detect simple reference counting
-   errors. It would be interesting to modify a static C analyzer to
-   handle specific annotations (clang has such annotations but only
-   for objective C) */
-typedef struct __JSValue *JSValue;
-typedef const struct __JSValue *JSValueConst;
+/* GCValue consistency checking mode */
+typedef struct __GCValue *GCValue;
+typedef const struct __GCValue *GCValueConst;
 
-#define JS_VALUE_GET_TAG(v) (int)((uintptr_t)(v) & 0xf)
-/* same as JS_VALUE_GET_TAG, but return JS_TAG_FLOAT64 with NaN boxing */
-#define JS_VALUE_GET_NORM_TAG(v) JS_VALUE_GET_TAG(v)
-#define JS_VALUE_GET_INT(v) (int)((intptr_t)(v) >> 4)
-#define JS_VALUE_GET_BOOL(v) JS_VALUE_GET_INT(v)
-#define JS_VALUE_GET_FLOAT64(v) (double)JS_VALUE_GET_INT(v)
-#define JS_VALUE_GET_SHORT_BIG_INT(v) JS_VALUE_GET_INT(v)
-/* JS_VALUE_GET_PTR for CONFIG_CHECK_JSVALUE - needs handle indirection */
-static inline void *js_value_get_ptr_check(JSValue v) {
-    /* Extract tag from lower 4 bits. 
-     * Note: In CONFIG_CHECK_JSVALUE, tags are stored as signed values,
-     * but when masked to 4 bits, negative tags become high unsigned values.
-     * JS_TAG_OBJECT = -1 = 0xF, JS_TAG_FIRST = -9 = 0x7, etc.
-     * Reference types have tags >= 0x7 (JS_TAG_FIRST as unsigned 4-bit)
-     */
+#define GC_VALUE_GET_TAG(v) (int)((uintptr_t)(v) & 0xf)
+#define GC_VALUE_GET_NORM_TAG(v) GC_VALUE_GET_TAG(v)
+#define GC_VALUE_GET_INT(v) (int)((intptr_t)(v) >> 4)
+#define GC_VALUE_GET_BOOL(v) GC_VALUE_GET_INT(v)
+#define GC_VALUE_GET_FLOAT64(v) (double)GC_VALUE_GET_INT(v)
+#define GC_VALUE_GET_SHORT_BIG_INT(v) GC_VALUE_GET_INT(v)
+
+/* GC_VALUE_GET_PTR for CONFIG_CHECK_JSVALUE - needs handle indirection */
+static inline void *gc_value_get_ptr_check(GCValue v) {
     unsigned int tag = (unsigned int)((uintptr_t)(v) & 0xf);
-    if (tag >= 0x7) {  /* JS_TAG_FIRST = -9 = 0x7 as unsigned 4-bit */
-        /* Reference type - use handle indirection
-         * The handle is stored in the upper bits of the pointer value
-         * We use bits 4-31 for the handle index
-         */
-        JSGCHandle handle = (JSGCHandle)((uintptr_t)(v) >> 4);
-        /* Validate handle before dereferencing */
+    if (tag >= 0x7) {  /* Reference types */
+        GCHandle handle = (GCHandle)((uintptr_t)(v) >> 4);
         if (handle == 0) {
             extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
             __android_log_print(6 /* ANDROID_LOG_ERROR */, "quickjs",
-                "JS_VALUE_GET_PTR: handle=0 for v=%p tag=%u", (void*)v, tag);
+                "GC_VALUE_GET_PTR: handle=0 for v=%p tag=%u", (void*)v, tag);
             return NULL;
         }
         void *ptr = gc_deref(handle);
         if (!ptr) {
             extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
             __android_log_print(6 /* ANDROID_LOG_ERROR */, "quickjs",
-                "JS_VALUE_GET_PTR: gc_deref returned NULL for handle=%u v=%p", handle, (void*)v);
+                "GC_VALUE_GET_PTR: gc_deref returned NULL for handle=%u v=%p", handle, (void*)v);
         }
         return ptr;
     }
-    /* Non-reference type - mask off tag bits */
     return (void *)((intptr_t)(v) & ~0xf);
 }
-#define JS_VALUE_GET_PTR(v) js_value_get_ptr_check(v)
+#define GC_VALUE_GET_PTR(v) gc_value_get_ptr_check(v)
 
-#define JS_MKVAL(tag, val) (JSValue)(intptr_t)(((val) << 4) | (tag))
+#define GC_MKVAL(tag, val) (GCValue)(intptr_t)(((val) << 4) | (tag))
 
-/* JS_MKPTR for CONFIG_CHECK_JSVALUE - stores handle instead of pointer */
-static inline JSValue js_mkptr_check(int tag, void *p) {
+/* GC_MKPTR for CONFIG_CHECK_JSVALUE - stores handle instead of pointer */
+static inline GCValue gc_mkptr_check(int tag, void *p) {
     if (p == NULL) {
-        return (JSValue)(intptr_t)(tag);
+        return (GCValue)(intptr_t)(tag);
     }
     if (tag < 0) {
-        /* GC-managed object - allocate handle and store in upper bits */
-        JSGCHandle handle = gc_alloc_handle_for_ptr(p);
-        /* Validate handle allocation */
+        GCHandle handle = gc_alloc_handle_for_ptr(p);
         if (handle == 0) {
             extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
             __android_log_print(6 /* ANDROID_LOG_ERROR */, "quickjs", 
-                "JS_MKPTR: FAILED to allocate handle for ptr=%p tag=%d", p, tag);
+                "GC_MKPTR: FAILED to allocate handle for ptr=%p tag=%d", p, tag);
         }
-        JSValue result = (JSValue)(intptr_t)(((uintptr_t)handle << 4) | (uintptr_t)(tag));
-        /* Debug: log suspicious values */
+        GCValue result = (GCValue)(intptr_t)(((uintptr_t)handle << 4) | (uintptr_t)(tag));
         if (((uintptr_t)result >> 4) == 0) {
             extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
             __android_log_print(6 /* ANDROID_LOG_ERROR */, "quickjs",
-                "JS_MKPTR: WARNING handle=0 for ptr=%p tag=%d result=%p", p, tag, (void*)result);
+                "GC_MKPTR: WARNING handle=0 for ptr=%p tag=%d result=%p", p, tag, (void*)result);
         }
         return result;
     }
-    /* Non-GC pointer - just OR with tag */
-    return (JSValue)((intptr_t)(p) | (tag));
+    return (GCValue)((intptr_t)(p) | (tag));
 }
-#define JS_MKPTR(tag, p) js_mkptr_check(tag, p)
+#define GC_MKPTR(tag, p) gc_mkptr_check(tag, p)
 
-#define JS_TAG_IS_FLOAT64(tag) ((unsigned)(tag) == JS_TAG_FLOAT64)
+#define GC_TAG_IS_FLOAT64(tag) ((unsigned)(tag) == JS_TAG_FLOAT64)
 
-#define JS_NAN JS_MKVAL(JS_TAG_FLOAT64, 1)
+#define GC_NAN GC_MKVAL(JS_TAG_FLOAT64, 1)
 
-static inline JSValue __JS_NewFloat64(JSContext *ctx, double d)
+static inline GCValue GC_NewFloat64ConfigCheck(double d)
 {
-    return JS_MKVAL(JS_TAG_FLOAT64, (int)d);
+    return GC_MKVAL(JS_TAG_FLOAT64, (int)d);
 }
 
-static inline JS_BOOL JS_VALUE_IS_NAN(JSValue v)
+static inline JS_BOOL GC_VALUE_IS_NAN_CHECK(GCValue v)
 {
     return 0;
 }
 
-static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int32_t d)
+static inline GCValue GC_NewShortBigIntConfigCheck(int32_t d)
 {
-    return JS_MKVAL(JS_TAG_SHORT_BIG_INT, d);
+    return GC_MKVAL(JS_TAG_SHORT_BIG_INT, d);
 }
 
 #elif defined(JS_NAN_BOXING)
 
-typedef uint64_t JSValue;
+/* NaN boxing implementation for GCValue */
+typedef uint64_t GCValue;
+typedef uint64_t GCValueConst;
 
-#define JSValueConst JSValue
-
-#define JS_VALUE_GET_TAG(v) (int)((v) >> 32)
-#define JS_VALUE_GET_INT(v) (int)(v)
-#define JS_VALUE_GET_BOOL(v) (int)(v)
-#define JS_VALUE_GET_SHORT_BIG_INT(v) (int)(v)
+#define GC_VALUE_GET_TAG(v) (int)((v) >> 32)
+#define GC_VALUE_GET_INT(v) (int)(v)
+#define GC_VALUE_GET_BOOL(v) (int)(v)
+#define GC_VALUE_GET_SHORT_BIG_INT(v) (int)(v)
 
 /* For NaN boxing, we use the lower 32 bits to store handle for reference types */
-static inline void *js_value_get_ptr_nan(JSValue v) {
+static inline void *gc_value_get_ptr_nan(GCValue v) {
     int tag = (int)(v >> 32);
-    JSGCHandle handle = (JSGCHandle)(v & 0xFFFFFFFF);
+    GCHandle handle = (GCHandle)(v & 0xFFFFFFFF);
     if (tag < 0) {
-        /* Reference type - lower 32 bits are handle */
         void *ptr = gc_deref(handle);
         if (!ptr) {
-            __android_log_print(ANDROID_LOG_ERROR, "quickjs", "js_value_get_ptr_nan: handle=%u returned NULL (handle_count=%u, v=0x%llx)", 
-                               handle, gc_handle_count(), (unsigned long long)v);
-        } else {
-            __android_log_print(ANDROID_LOG_INFO, "quickjs", "js_value_get_ptr_nan: handle=%u -> ptr=%p (v=0x%llx)", 
-                               handle, ptr, (unsigned long long)v);
+            extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
+            __android_log_print(ANDROID_LOG_ERROR, "quickjs", "gc_value_get_ptr_nan: handle=%u returned NULL (v=0x%llx)", 
+                               handle, (unsigned long long)v);
         }
         return ptr;
     }
-    /* Non-reference type - directly store pointer (unlikely) */
     return (void *)(intptr_t)(v & 0xFFFFFFFF);
 }
-#define JS_VALUE_GET_PTR(v) js_value_get_ptr_nan(v)
+#define GC_VALUE_GET_PTR(v) gc_value_get_ptr_nan(v)
 
-#define JS_MKVAL(tag, val) (((uint64_t)(tag) << 32) | (uint32_t)(val))
+#define GC_MKVAL_NAN(tag, val) (((uint64_t)(tag) << 32) | (uint32_t)(val))
 
-static inline JSValue js_mkptr_nan(int tag, void *p) {
+static inline GCValue gc_mkptr_nan(int tag, void *p) {
     if (p == NULL) {
         return ((uint64_t)(tag) << 32);
     }
     if (tag < 0) {
         /* GC-managed object - store handle in lower 32 bits */
-        JSGCHandle handle = gc_alloc_handle_for_ptr(p);
+        GCHandle handle = gc_alloc_handle_for_ptr(p);
         if (handle == 0) {
-            __android_log_print(ANDROID_LOG_ERROR, "quickjs", "js_mkptr_nan: gc_alloc_handle_for_ptr returned 0 for ptr=%p", p);
-        } else {
-            __android_log_print(ANDROID_LOG_INFO, "quickjs", "js_mkptr_nan: ptr=%p -> handle=%u", p, handle);
+            extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
+            __android_log_print(ANDROID_LOG_ERROR, "quickjs", "gc_mkptr_nan: gc_alloc_handle_for_ptr returned 0 for ptr=%p", p);
         }
         return (((uint64_t)(tag) << 32) | handle);
     }
     /* Non-GC pointer - store directly (shouldn't happen for tagged ptrs) */
     return (((uint64_t)(tag) << 32) | (uintptr_t)(p));
 }
-#define JS_MKPTR(tag, p) js_mkptr_nan(tag, p)
+#define GC_MKPTR_NAN(tag, p) gc_mkptr_nan(tag, p)
 
-#define JS_FLOAT64_TAG_ADDEND (0x7ff80000 - JS_TAG_FIRST + 1) /* quiet NaN encoding */
+#define GC_FLOAT64_TAG_ADDEND (0x7ff80000 - JS_TAG_FIRST + 1) /* quiet NaN encoding */
 
-static inline double JS_VALUE_GET_FLOAT64(JSValue v)
+static inline double GC_VALUE_GET_FLOAT64_NAN(GCValue v)
 {
     union {
-        JSValue v;
+        GCValue v;
         double d;
     } u;
     u.v = v;
-    u.v += (uint64_t)JS_FLOAT64_TAG_ADDEND << 32;
+    u.v += (uint64_t)GC_FLOAT64_TAG_ADDEND << 32;
     return u.d;
 }
 
-#define JS_NAN (0x7ff8000000000000 - ((uint64_t)JS_FLOAT64_TAG_ADDEND << 32))
+#define GC_NAN_NAN (0x7ff8000000000000 - ((uint64_t)GC_FLOAT64_TAG_ADDEND << 32))
 
-static inline JSValue __JS_NewFloat64(JSContext *ctx, double d)
+static inline GCValue GC_NewFloat64Nan(double d)
 {
     union {
         double d;
         uint64_t u64;
     } u;
-    JSValue v;
+    GCValue v;
     u.d = d;
-    /* normalize NaN */
     if (js_unlikely((u.u64 & 0x7fffffffffffffff) > 0x7ff0000000000000))
-        v = JS_NAN;
+        v = GC_NAN_NAN;
     else
-        v = u.u64 - ((uint64_t)JS_FLOAT64_TAG_ADDEND << 32);
+        v = u.u64 - ((uint64_t)GC_FLOAT64_TAG_ADDEND << 32);
     return v;
 }
 
-#define JS_TAG_IS_FLOAT64(tag) ((unsigned)((tag) - JS_TAG_FIRST) >= (JS_TAG_FLOAT64 - JS_TAG_FIRST))
-
-/* same as JS_VALUE_GET_TAG, but return JS_TAG_FLOAT64 with NaN boxing */
-static inline int JS_VALUE_GET_NORM_TAG(JSValue v)
+/* same as GC_VALUE_GET_TAG, but return JS_TAG_FLOAT64 with NaN boxing */
+static inline int GC_VALUE_GET_NORM_TAG_NAN(GCValue v)
 {
     uint32_t tag;
-    tag = JS_VALUE_GET_TAG(v);
-    if (JS_TAG_IS_FLOAT64(tag))
+    tag = GC_VALUE_GET_TAG(v);
+    if (GC_TAG_IS_FLOAT64(tag))
         return JS_TAG_FLOAT64;
     else
         return tag;
 }
 
-static inline JS_BOOL JS_VALUE_IS_NAN(JSValue v)
+static inline JS_BOOL GC_VALUE_IS_NAN_NAN(GCValue v)
 {
     uint32_t tag;
-    tag = JS_VALUE_GET_TAG(v);
-    return tag == (JS_NAN >> 32);
+    tag = GC_VALUE_GET_TAG(v);
+    return tag == (GC_NAN_NAN >> 32);
 }
 
-static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int32_t d)
+static inline GCValue GC_NewShortBigIntNan(int32_t d)
 {
-    return JS_MKVAL(JS_TAG_SHORT_BIG_INT, d);
+    return GC_MKVAL_NAN(JS_TAG_SHORT_BIG_INT, d);
 }
 
 #else /* !JS_NAN_BOXING */
 
-typedef union JSValueUnion {
+/* ============================================================================
+ * GCValue - GC-safe value type using GCHandle
+ * ============================================================================
+ * 
+ * GCValue is the replacement for the old GCValue which stored raw pointers.
+ * The problem with raw pointers is that the GC can compact memory, moving
+ * objects and invalidating pointers stored in C variables.
+ * 
+ * GCValue stores a GCHandle (an index into the handle table) for reference
+ * types. The handle remains stable across GC compaction. The actual pointer
+ * is only obtained when needed through gc_deref(), used immediately, and
+ * never stored.
+ * 
+ * CRITICAL RULE: Never call gc_deref() and store the result in a variable.
+ * Always use the GC_PROP_* macros which dereference and use in one operation.
+ */
+
+typedef union GCValueUnion {
     int32_t int32;
     double float64;
-    void *ptr;
 #if JS_SHORT_BIG_INT_BITS == 32
     int32_t short_big_int;
 #else
     int64_t short_big_int;
 #endif
-    /* Handle storage for GC-managed objects */
-    JSGCHandle handle;
-} JSValueUnion;
+    /* Handle storage for GC-managed reference types (tag < 0) */
+    GCHandle handle;
+} GCValueUnion;
 
-typedef struct JSValue {
-    JSValueUnion u;
+typedef struct GCValue {
+    GCValueUnion u;
     int64_t tag;
-} JSValue;
+} GCValue;
 
-#define JSValueConst JSValue
+/* For const-correctness */
+typedef const GCValue GCValueConst;
 
-#define JS_VALUE_GET_TAG(v) ((int32_t)(v).tag)
-/* same as JS_VALUE_GET_TAG, but return JS_TAG_FLOAT64 with NaN boxing */
-#define JS_VALUE_GET_NORM_TAG(v) JS_VALUE_GET_TAG(v)
-#define JS_VALUE_GET_INT(v) ((v).u.int32)
-#define JS_VALUE_GET_BOOL(v) ((v).u.int32)
-#define JS_VALUE_GET_FLOAT64(v) ((v).u.float64)
-#define JS_VALUE_GET_SHORT_BIG_INT(v) ((v).u.short_big_int)
+/* Type checking macros */
+#define GC_VALUE_GET_TAG(v) ((int32_t)(v).tag)
+#define GC_VALUE_GET_NORM_TAG(v) GC_VALUE_GET_TAG(v)
 
-/* 
- * Handle-based pointer retrieval for GC-managed objects.
- * Negative tags indicate reference types that need handle indirection.
- * This allows GC compaction to update pointers via the handle table.
- */
-/* Forward declaration of Android log function - defined in <android/log.h> */
-#ifndef __ANDROID_LOG_H_
-extern int __android_log_write(int prio, const char *tag, const char *msg);
-#endif
+/* Value extraction macros for non-reference types */
+#define GC_VALUE_GET_INT(v) ((v).u.int32)
+#define GC_VALUE_GET_BOOL(v) ((v).u.int32)
+#define GC_VALUE_GET_FLOAT64(v) ((v).u.float64)
+#define GC_VALUE_GET_SHORT_BIG_INT(v) ((v).u.short_big_int)
 
-/* Forward declaration for gc_deref */
-extern void *gc_deref(JSGCHandle handle);
+/* For reference types, you get the handle - never the pointer */
+#define GC_VALUE_GET_HANDLE(v) ((v).u.handle)
 
-static inline void *js_value_get_ptr_impl(JSValue v) {
-    /* If it's a reference type (negative tag), use handle indirection */
-    if (v.tag < 0) {
-        /* It's a handle - dereference through handle table */
-        JSGCHandle handle = v.u.handle;
-        /* ALWAYS log for debugging */
-        {
-            extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
-            __android_log_print(6, "quickjs", "js_value_get_ptr_impl: tag=%d handle=%u", (int)v.tag, handle);
-        }
-        if (handle == 0) {
-            __android_log_write(6 /* ANDROID_LOG_ERROR */, "quickjs",
-                "js_value_get_ptr_impl: handle=0!");
-            return NULL;
-        }
-        void *ptr = gc_deref(handle);
-        {
-            extern int __android_log_print(int prio, const char *tag, const char *fmt, ...);
-            __android_log_print(6, "quickjs", "js_value_get_ptr_impl: handle=%u -> ptr=%p", handle, ptr);
-        }
-        if (!ptr) {
-            __android_log_write(6 /* ANDROID_LOG_ERROR */, "quickjs",
-                "js_value_get_ptr_impl: gc_deref returned NULL");
-        }
-        return ptr;
-    }
-    /* Non-reference type - return raw pointer (shouldn't happen for tagged ptrs) */
-    return v.u.ptr;
-}
-#define JS_VALUE_GET_PTR(v) js_value_get_ptr_impl(v)
+/* Type predicate macros */
+#define GC_IS_OBJECT(v)       (GC_VALUE_GET_TAG(v) == JS_TAG_OBJECT)
+#define GC_IS_NULL(v)         (GC_VALUE_GET_TAG(v) == JS_TAG_NULL)
+#define GC_IS_UNDEFINED(v)    (GC_VALUE_GET_TAG(v) == JS_TAG_UNDEFINED)
+#define GC_IS_BOOL(v)         (GC_VALUE_GET_TAG(v) == JS_TAG_BOOL)
+#define GC_IS_INT(v)          (GC_VALUE_GET_TAG(v) == JS_TAG_INT)
+#define GC_IS_FLOAT64(v)      (GC_VALUE_GET_TAG(v) == JS_TAG_FLOAT64)
+#define GC_IS_STRING(v)       (GC_VALUE_GET_TAG(v) == JS_TAG_STRING || \
+                               GC_VALUE_GET_TAG(v) == JS_TAG_STRING_ROPE)
+#define GC_IS_SYMBOL(v)       (GC_VALUE_GET_TAG(v) == JS_TAG_SYMBOL)
+#define GC_IS_BIG_INT(v)      (GC_VALUE_GET_TAG(v) == JS_TAG_BIG_INT || \
+                               GC_VALUE_GET_TAG(v) == JS_TAG_SHORT_BIG_INT)
+#define GC_IS_EXCEPTION(v)    (GC_VALUE_GET_TAG(v) == JS_TAG_EXCEPTION)
 
-#define JS_MKVAL(tag, val) (JSValue){ (JSValueUnion){ .int32 = val }, tag }
+/* Reference types have negative tags */
+#define GC_IS_REFERENCE(v)    (GC_VALUE_GET_TAG(v) < 0)
+
+/* Create GCValue for primitive types */
+#define GC_MKVAL(tag, val) (GCValue){ (GCValueUnion){ .int32 = val }, tag }
+
+/* Create GCValue from a handle for reference types */
+#define GC_MKHANDLE(tag, handle_val) (GCValue){ (GCValueUnion){ .handle = handle_val }, tag }
 
 /* 
- * Create a JSValue from a pointer using handle indirection for GC objects.
- * The handle is stored instead of the raw pointer, allowing GC to update
- * the pointer during compaction.
+ * GC_WRAP_PTR - Wrap a pointer in a GCValue by allocating a handle.
+ * This is used when creating new objects that will be managed by the GC.
  */
-static inline JSValue js_mkptr_impl(int tag, void *p) {
-    JSValue v;
+static inline GCValue GC_WRAP_PTR(int tag, void *p) {
+    GCValue v;
     v.tag = tag;
     if (p == NULL) {
-        v.u.handle = JS_GC_HANDLE_NULL;
-    } else if (tag < 0) {
-        /* It's a GC-managed object - store a handle */
-        v.u.handle = gc_alloc_handle_for_ptr(p);
+        v.u.handle = GC_HANDLE_NULL;
     } else {
-        /* Non-GC pointer (shouldn't happen with negative tags) */
-        v.u.ptr = p;
+        /* Always use handle indirection for reference types */
+        v.u.handle = gc_alloc_handle_for_ptr(p);
     }
     return v;
 }
-#define JS_MKPTR(tag, p) js_mkptr_impl(tag, p)
 
-#define JS_TAG_IS_FLOAT64(tag) ((unsigned)(tag) == JS_TAG_FLOAT64)
+#define GC_TAG_IS_FLOAT64(tag) ((unsigned)(tag) == JS_TAG_FLOAT64)
 
-#define JS_NAN (JSValue){ .u.float64 = JS_FLOAT64_NAN, JS_TAG_FLOAT64 }
+/* Special values */
+#define GC_NAN (GCValue){ .u.float64 = JS_FLOAT64_NAN, JS_TAG_FLOAT64 }
+#define GC_NULL      GC_MKVAL(JS_TAG_NULL, 0)
+#define GC_UNDEFINED GC_MKVAL(JS_TAG_UNDEFINED, 0)
+#define GC_FALSE     GC_MKVAL(JS_TAG_BOOL, 0)
+#define GC_TRUE      GC_MKVAL(JS_TAG_BOOL, 1)
+#define GC_EXCEPTION GC_MKVAL(JS_TAG_EXCEPTION, 0)
 
-static inline JSValue __JS_NewFloat64(JSContext *ctx, double d)
+/* Constructors for primitive types */
+static inline GCValue GC_NewFloat64(double d)
 {
-    JSValue v;
+    GCValue v;
     v.tag = JS_TAG_FLOAT64;
     v.u.float64 = d;
     return v;
 }
 
-static inline JS_BOOL JS_VALUE_IS_NAN(JSValue v)
+static inline GCValue GC_NewInt32(int32_t n)
+{
+    return GC_MKVAL(JS_TAG_INT, n);
+}
+
+static inline GCValue GC_NewBool(JS_BOOL b)
+{
+    return GC_MKVAL(JS_TAG_BOOL, b ? 1 : 0);
+}
+
+static inline JS_BOOL GC_VALUE_IS_NAN(GCValue v)
 {
     union {
         double d;
@@ -437,9 +420,9 @@ static inline JS_BOOL JS_VALUE_IS_NAN(JSValue v)
     return (u.u64 & 0x7fffffffffffffff) > 0x7ff0000000000000;
 }
 
-static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int64_t d)
+static inline GCValue GC_NewShortBigInt(int64_t d)
 {
-    JSValue v;
+    GCValue v;
     v.tag = JS_TAG_SHORT_BIG_INT;
     v.u.short_big_int = d;
     return v;
@@ -454,22 +437,138 @@ static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int64_t d)
  */
 struct JSRuntime;
 struct JSContext;
-static inline JSValue JS_DupValue(struct JSContext *ctx, JSValueConst v) { (void)ctx; return (JSValue)v; }
-static inline void JS_FreeValue(struct JSContext *ctx, JSValue v) { (void)ctx; (void)v; }
-static inline void JS_FreeValueRT(struct JSRuntime *rt, JSValue v) { (void)rt; (void)v; }
+/* GCValue reference management - no-ops for mark-and-sweep GC */
+static inline GCValue GC_DupValue(JSContext *ctx, GCValueConst v) { (void)ctx; return (GCValue)v; }
+static inline void GC_FreeValue(JSContext *ctx, GCValue v) { (void)ctx; (void)v; }
+static inline void GC_FreeValueRT(JSRuntime *rt, GCValue v) { (void)rt; (void)v; }
 
-#define JS_VALUE_IS_BOTH_INT(v1, v2) ((JS_VALUE_GET_TAG(v1) | JS_VALUE_GET_TAG(v2)) == 0)
-#define JS_VALUE_IS_BOTH_FLOAT(v1, v2) (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(v1)) && JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(v2)))
+#define GC_VALUE_IS_BOTH_INT(v1, v2) ((GC_VALUE_GET_TAG(v1) | GC_VALUE_GET_TAG(v2)) == 0)
+#define GC_VALUE_IS_BOTH_FLOAT(v1, v2) (GC_TAG_IS_FLOAT64(GC_VALUE_GET_TAG(v1)) && GC_TAG_IS_FLOAT64(GC_VALUE_GET_TAG(v2)))
 
-#define JS_VALUE_HAS_REF_COUNT(v) ((unsigned)JS_VALUE_GET_TAG(v) >= (unsigned)JS_TAG_FIRST)
+#define GC_VALUE_HAS_REF_COUNT(v) ((unsigned)GC_VALUE_GET_TAG(v) >= (unsigned)JS_TAG_FIRST)
 
-/* special values */
-#define JS_NULL      JS_MKVAL(JS_TAG_NULL, 0)
-#define JS_UNDEFINED JS_MKVAL(JS_TAG_UNDEFINED, 0)
-#define JS_FALSE     JS_MKVAL(JS_TAG_BOOL, 0)
-#define JS_TRUE      JS_MKVAL(JS_TAG_BOOL, 1)
-#define JS_EXCEPTION JS_MKVAL(JS_TAG_EXCEPTION, 0)
-#define JS_UNINITIALIZED JS_MKVAL(JS_TAG_UNINITIALIZED, 0)
+/* Special values */
+#define GC_NULL      GC_MKVAL(JS_TAG_NULL, 0)
+#define GC_UNDEFINED GC_MKVAL(JS_TAG_UNDEFINED, 0)
+#define GC_FALSE     GC_MKVAL(JS_TAG_BOOL, 0)
+#define GC_TRUE      GC_MKVAL(JS_TAG_BOOL, 1)
+#define GC_EXCEPTION GC_MKVAL(JS_TAG_EXCEPTION, 0)
+#define GC_UNINITIALIZED GC_MKVAL(JS_TAG_UNINITIALIZED, 0)
+
+/* ============================================================================
+ * GCValue Property Access Macros
+ * ============================================================================
+ * 
+ * These macros provide safe property access for GCValue/GCValue objects.
+ * They dereference the handle and access the property in one operation,
+ * ensuring the pointer is never stored across potential GC points.
+ * 
+ * RULE: Never store the result of GC_VALUE_GET_PTR(). Always use these
+ * macros which get the pointer and use it immediately.
+ */
+
+/*
+ * GC_PROP_GET_STR - Get string property from a GCValue object.
+ * 
+ * This macro:
+ * 1. Checks if the value is a reference type (tag < 0)
+ * 2. Dereferences the handle to get the current pointer
+ * 3. Immediately calls the property getter
+ * 4. Does not store the pointer anywhere
+ * 
+ * Usage:
+ *   GCValue obj = ...;
+ *   GCValue prop = GC_PROP_GET_STR(ctx, obj, "propertyName");
+ * 
+ * IMPORTANT: The pointer obtained from gc_deref is used immediately within
+ * the macro and never stored. This ensures GC safety.
+ */
+#define GC_PROP_GET_STR(ctx, obj, prop) ({ \
+    GCValue _gc_result = GC_UNDEFINED; \
+    int _gc_tag = GC_VALUE_GET_TAG(obj); \
+    if (_gc_tag < 0) { \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
+        if (_gc_ptr != NULL) { \
+            GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
+            _gc_result = JS_GetPropertyStr((ctx), _gc_obj, (prop)); \
+        } \
+    } \
+    _gc_result; \
+})
+
+/*
+ * GC_PROP_SET_STR - Set string property on a GCValue object.
+ */
+#define GC_PROP_SET_STR(ctx, obj, prop, val) ({ \
+    int _gc_result = -1; \
+    int _gc_tag = GC_VALUE_GET_TAG(obj); \
+    if (_gc_tag < 0) { \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
+        if (_gc_ptr != NULL) { \
+            GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
+            _gc_result = JS_SetPropertyStr((ctx), _gc_obj, (prop), (val)); \
+        } \
+    } \
+    _gc_result; \
+})
+
+/*
+ * GC_PROP_GET_UINT32 - Get property by numeric index.
+ */
+#define GC_PROP_GET_UINT32(ctx, obj, idx) ({ \
+    GCValue _gc_result = GC_UNDEFINED; \
+    int _gc_tag = GC_VALUE_GET_TAG(obj); \
+    if (_gc_tag < 0) { \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
+        if (_gc_ptr != NULL) { \
+            GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
+            _gc_result = JS_GetPropertyUint32((ctx), _gc_obj, (idx)); \
+        } \
+    } \
+    _gc_result; \
+})
+
+/*
+ * GC_PROP_SET_UINT32 - Set property by numeric index.
+ */
+#define GC_PROP_SET_UINT32(ctx, obj, idx, val) ({ \
+    int _gc_result = -1; \
+    int _gc_tag = GC_VALUE_GET_TAG(obj); \
+    if (_gc_tag < 0) { \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
+        if (_gc_ptr != NULL) { \
+            GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
+            _gc_result = JS_SetPropertyUint32((ctx), _gc_obj, (idx), (val)); \
+        } \
+    } \
+    _gc_result; \
+})
+
+/*
+ * GC_IS_OBJECT - Check if GCValue is an object.
+ */
+#define GC_IS_OBJECT(v) (GC_VALUE_GET_TAG(v) == JS_TAG_OBJECT)
+
+/*
+ * GC_IS_NULL - Check if GCValue is null.
+ */
+#define GC_IS_NULL(v) (GC_VALUE_GET_TAG(v) == JS_TAG_NULL)
+
+/*
+ * GC_IS_UNDEFINED - Check if GCValue is undefined.
+ */
+#define GC_IS_UNDEFINED(v) (GC_VALUE_GET_TAG(v) == JS_TAG_UNDEFINED)
+
+/*
+ * GC_IS_STRING - Check if GCValue is a string.
+ */
+#define GC_IS_STRING(v) (GC_VALUE_GET_TAG(v) == JS_TAG_STRING || \
+                         GC_VALUE_GET_TAG(v) == JS_TAG_STRING_ROPE)
+
+/* ============================================================================
+ * Backwards compatibility: JS property functions work with GCValue
+ * ============================================================================
+ */
 
 /* flags for object properties */
 #define JS_PROP_CONFIGURABLE  (1 << 0)
@@ -523,9 +622,9 @@ static inline void JS_FreeValueRT(struct JSRuntime *rt, JSValue v) { (void)rt; (
    promise. Only allowed with JS_EVAL_TYPE_GLOBAL */
 #define JS_EVAL_FLAG_ASYNC (1 << 7)
 
-typedef JSValue JSCFunction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-typedef JSValue JSCFunctionMagic(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic);
-typedef JSValue JSCFunctionData(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic, JSValue *func_data);
+typedef GCValue JSCFunction(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv);
+typedef GCValue JSCFunctionMagic(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv, int magic);
+typedef GCValue JSCFunctionData(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv, int magic, GCValue *func_data);
 
 typedef struct JSMallocState {
     size_t malloc_count;
@@ -555,9 +654,9 @@ void JS_FreeRuntime(JSRuntime *rt);
 void *JS_GetRuntimeOpaque(JSRuntime *rt);
 void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque);
 typedef void JS_MarkFunc(JSRuntime *rt, void *user_ptr);
-void JS_MarkValue(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func);
+void JS_MarkValue(JSRuntime *rt, GCValueConst val, JS_MarkFunc *mark_func);
 void JS_RunGC(JSRuntime *rt);
-JS_BOOL JS_IsLiveObject(JSRuntime *rt, JSValueConst obj);
+JS_BOOL JS_IsLiveObject(JSRuntime *rt, GCValueConst obj);
 
 JSContext *JS_NewContext(JSRuntime *rt);
 void JS_FreeContext(JSContext *s);
@@ -565,8 +664,8 @@ JSContext *JS_DupContext(JSContext *ctx);
 void *JS_GetContextOpaque(JSContext *ctx);
 void JS_SetContextOpaque(JSContext *ctx, void *opaque);
 JSRuntime *JS_GetRuntime(JSContext *ctx);
-void JS_SetClassProto(JSContext *ctx, JSClassID class_id, JSValue obj);
-JSValue JS_GetClassProto(JSContext *ctx, JSClassID class_id);
+void JS_SetClassProto(JSContext *ctx, JSClassID class_id, GCValue obj);
+GCValue JS_GetClassProto(JSContext *ctx, JSClassID class_id);
 
 /* the following functions are used to select the intrinsic object to
    save memory */
@@ -584,8 +683,8 @@ int JS_AddIntrinsicTypedArrays(JSContext *ctx);
 int JS_AddIntrinsicPromise(JSContext *ctx);
 int JS_AddIntrinsicWeakRef(JSContext *ctx);
 
-JSValue js_string_codePointRange(JSContext *ctx, JSValueConst this_val,
-                                 int argc, JSValueConst *argv);
+GCValue js_string_codePointRange(JSContext *ctx, GCValueConst this_val,
+                                 int argc, GCValueConst *argv);
 
 /* GC allocation functions - use gc_alloc/gc_realloc directly
  * 
@@ -629,14 +728,14 @@ JSAtom JS_NewAtomUInt32(JSContext *ctx, uint32_t n);
 JSAtom JS_DupAtom(JSContext *ctx, JSAtom v);
 void JS_FreeAtom(JSContext *ctx, JSAtom v);
 void JS_FreeAtomRT(JSRuntime *rt, JSAtom v);
-JSValue JS_AtomToValue(JSContext *ctx, JSAtom atom);
-JSValue JS_AtomToString(JSContext *ctx, JSAtom atom);
+GCValue JS_AtomToValue(JSContext *ctx, JSAtom atom);
+GCValue JS_AtomToString(JSContext *ctx, JSAtom atom);
 const char *JS_AtomToCStringLen(JSContext *ctx, size_t *plen, JSAtom atom);
 static inline const char *JS_AtomToCString(JSContext *ctx, JSAtom atom)
 {
     return JS_AtomToCStringLen(ctx, NULL, atom);
 }
-JSAtom JS_ValueToAtom(JSContext *ctx, JSValueConst val);
+JSAtom JS_ValueToAtom(JSContext *ctx, GCValueConst val);
 
 /* object class support */
 
@@ -647,9 +746,9 @@ typedef struct JSPropertyEnum {
 
 typedef struct JSPropertyDescriptor {
     int flags;
-    JSValue value;
-    JSValue getter;
-    JSValue setter;
+    GCValue value;
+    GCValue getter;
+    GCValue setter;
 } JSPropertyDescriptor;
 
 typedef struct JSClassExoticMethods {
@@ -657,48 +756,48 @@ typedef struct JSClassExoticMethods {
        FALSE if the property does not exists, TRUE if it exists. If 1 is
        returned, the property descriptor 'desc' is filled if != NULL. */
     int (*get_own_property)(JSContext *ctx, JSPropertyDescriptor *desc,
-                             JSValueConst obj, JSAtom prop);
+                             GCValueConst obj, JSAtom prop);
     /* '*ptab' should hold the '*plen' property keys. Return 0 if OK,
        -1 if exception. The 'is_enumerable' field is ignored.
     */
     int (*get_own_property_names)(JSContext *ctx, JSPropertyEnum **ptab,
                                   uint32_t *plen,
-                                  JSValueConst obj);
+                                  GCValueConst obj);
     /* return < 0 if exception, or TRUE/FALSE */
-    int (*delete_property)(JSContext *ctx, JSValueConst obj, JSAtom prop);
+    int (*delete_property)(JSContext *ctx, GCValueConst obj, JSAtom prop);
     /* return < 0 if exception or TRUE/FALSE */
-    int (*define_own_property)(JSContext *ctx, JSValueConst this_obj,
-                               JSAtom prop, JSValueConst val,
-                               JSValueConst getter, JSValueConst setter,
+    int (*define_own_property)(JSContext *ctx, GCValueConst this_obj,
+                               JSAtom prop, GCValueConst val,
+                               GCValueConst getter, GCValueConst setter,
                                int flags);
     /* The following methods can be emulated with the previous ones,
        so they are usually not needed */
     /* return < 0 if exception or TRUE/FALSE */
-    int (*has_property)(JSContext *ctx, JSValueConst obj, JSAtom atom);
-    JSValue (*get_property)(JSContext *ctx, JSValueConst obj, JSAtom atom,
-                            JSValueConst receiver);
+    int (*has_property)(JSContext *ctx, GCValueConst obj, JSAtom atom);
+    GCValue (*get_property)(JSContext *ctx, GCValueConst obj, JSAtom atom,
+                            GCValueConst receiver);
     /* return < 0 if exception or TRUE/FALSE */
-    int (*set_property)(JSContext *ctx, JSValueConst obj, JSAtom atom,
-                        JSValueConst value, JSValueConst receiver, int flags);
+    int (*set_property)(JSContext *ctx, GCValueConst obj, JSAtom atom,
+                        GCValueConst value, GCValueConst receiver, int flags);
 
     /* To get a consistent object behavior when get_prototype != NULL,
        get_property, set_property and set_prototype must be != NULL
-       and the object must be created with a JS_NULL prototype. */
-    JSValue (*get_prototype)(JSContext *ctx, JSValueConst obj);
+       and the object must be created with a GC_NULL prototype. */
+    GCValue (*get_prototype)(JSContext *ctx, GCValueConst obj);
     /* return < 0 if exception or TRUE/FALSE */
-    int (*set_prototype)(JSContext *ctx, JSValueConst obj, JSValueConst proto_val);
+    int (*set_prototype)(JSContext *ctx, GCValueConst obj, GCValueConst proto_val);
     /* return < 0 if exception or TRUE/FALSE */
-    int (*is_extensible)(JSContext *ctx, JSValueConst obj);
+    int (*is_extensible)(JSContext *ctx, GCValueConst obj);
     /* return < 0 if exception or TRUE/FALSE */
-    int (*prevent_extensions)(JSContext *ctx, JSValueConst obj);
+    int (*prevent_extensions)(JSContext *ctx, GCValueConst obj);
 } JSClassExoticMethods;
 
-typedef void JSClassFinalizer(JSRuntime *rt, JSValue val);
-typedef void JSClassGCMark(JSRuntime *rt, JSValueConst val,
+typedef void JSClassFinalizer(JSRuntime *rt, GCValue val);
+typedef void JSClassGCMark(JSRuntime *rt, GCValueConst val,
                            JS_MarkFunc *mark_func);
 #define JS_CALL_FLAG_CONSTRUCTOR (1 << 0)
-typedef JSValue JSClassCall(JSContext *ctx, JSValueConst func_obj,
-                            JSValueConst this_val, int argc, JSValueConst *argv,
+typedef GCValue JSClassCall(JSContext *ctx, GCValueConst func_obj,
+                            GCValueConst this_val, int argc, GCValueConst *argv,
                             int flags);
 
 typedef struct JSClassDef {
@@ -719,30 +818,30 @@ typedef struct JSClassDef {
 #define JS_INVALID_CLASS_ID 0
 JSClassID JS_NewClassID(JSClassID *pclass_id);
 /* Returns the class ID if `v` is an object, otherwise returns JS_INVALID_CLASS_ID. */
-JSClassID JS_GetClassID(JSValue v);
+JSClassID JS_GetClassID(GCValue v);
 int JS_NewClass(JSRuntime *rt, JSClassID class_id, const JSClassDef *class_def);
 int JS_IsRegisteredClass(JSRuntime *rt, JSClassID class_id);
 
 /* value handling */
 
-static js_force_inline JSValue JS_NewBool(JSContext *ctx, JS_BOOL val)
+static js_force_inline GCValue JS_NewBool(JSContext *ctx, JS_BOOL val)
 {
-    return JS_MKVAL(JS_TAG_BOOL, (val != 0));
+    return GC_MKVAL(JS_TAG_BOOL, (val != 0));
 }
 
-static js_force_inline JSValue JS_NewInt32(JSContext *ctx, int32_t val)
+static js_force_inline GCValue JS_NewInt32(JSContext *ctx, int32_t val)
 {
-    return JS_MKVAL(JS_TAG_INT, val);
+    return GC_MKVAL(JS_TAG_INT, val);
 }
 
-static js_force_inline JSValue JS_NewCatchOffset(JSContext *ctx, int32_t val)
+static js_force_inline GCValue JS_NewCatchOffset(JSContext *ctx, int32_t val)
 {
-    return JS_MKVAL(JS_TAG_CATCH_OFFSET, val);
+    return GC_MKVAL(JS_TAG_CATCH_OFFSET, val);
 }
 
-static js_force_inline JSValue JS_NewInt64(JSContext *ctx, int64_t val)
+static js_force_inline GCValue JS_NewInt64(JSContext *ctx, int64_t val)
 {
-    JSValue v;
+    GCValue v;
     if (val == (int32_t)val) {
         v = JS_NewInt32(ctx, val);
     } else {
@@ -751,9 +850,9 @@ static js_force_inline JSValue JS_NewInt64(JSContext *ctx, int64_t val)
     return v;
 }
 
-static js_force_inline JSValue JS_NewUint32(JSContext *ctx, uint32_t val)
+static js_force_inline GCValue JS_NewUint32(JSContext *ctx, uint32_t val)
 {
-    JSValue v;
+    GCValue v;
     if (val <= 0x7fffffff) {
         v = JS_NewInt32(ctx, val);
     } else {
@@ -762,10 +861,10 @@ static js_force_inline JSValue JS_NewUint32(JSContext *ctx, uint32_t val)
     return v;
 }
 
-JSValue JS_NewBigInt64(JSContext *ctx, int64_t v);
-JSValue JS_NewBigUint64(JSContext *ctx, uint64_t v);
+GCValue JS_NewBigInt64(JSContext *ctx, int64_t v);
+GCValue JS_NewBigUint64(JSContext *ctx, uint64_t v);
 
-static js_force_inline JSValue JS_NewFloat64(JSContext *ctx, double d)
+static js_force_inline GCValue JS_NewFloat64(JSContext *ctx, double d)
 {
     int32_t val;
     union {
@@ -779,164 +878,164 @@ static js_force_inline JSValue JS_NewFloat64(JSContext *ctx, double d)
         /* -0 cannot be represented as integer, so we compare the bit
            representation */
         if (u.u == t.u)
-            return JS_MKVAL(JS_TAG_INT, val);
+            return GC_MKVAL(JS_TAG_INT, val);
     }
     return __JS_NewFloat64(ctx, d);
 }
 
-static inline JS_BOOL JS_IsNumber(JSValueConst v)
+static inline JS_BOOL JS_IsNumber(GCValueConst v)
 {
-    int tag = JS_VALUE_GET_TAG(v);
-    return tag == JS_TAG_INT || JS_TAG_IS_FLOAT64(tag);
+    int tag = GC_VALUE_GET_TAG(v);
+    return tag == JS_TAG_INT || GC_TAG_IS_FLOAT64(tag);
 }
 
-static inline JS_BOOL JS_IsBigInt(JSContext *ctx, JSValueConst v)
+static inline JS_BOOL JS_IsBigInt(JSContext *ctx, GCValueConst v)
 {
-    int tag = JS_VALUE_GET_TAG(v);
+    int tag = GC_VALUE_GET_TAG(v);
     return tag == JS_TAG_BIG_INT || tag == JS_TAG_SHORT_BIG_INT;
 }
 
-static inline JS_BOOL JS_IsBool(JSValueConst v)
+static inline JS_BOOL JS_IsBool(GCValueConst v)
 {
-    return JS_VALUE_GET_TAG(v) == JS_TAG_BOOL;
+    return GC_VALUE_GET_TAG(v) == JS_TAG_BOOL;
 }
 
-static inline JS_BOOL JS_IsNull(JSValueConst v)
+static inline JS_BOOL JS_IsNull(GCValueConst v)
 {
-    return JS_VALUE_GET_TAG(v) == JS_TAG_NULL;
+    return GC_VALUE_GET_TAG(v) == JS_TAG_NULL;
 }
 
-static inline JS_BOOL JS_IsUndefined(JSValueConst v)
+static inline JS_BOOL JS_IsUndefined(GCValueConst v)
 {
-    return JS_VALUE_GET_TAG(v) == JS_TAG_UNDEFINED;
+    return GC_VALUE_GET_TAG(v) == JS_TAG_UNDEFINED;
 }
 
-static inline JS_BOOL JS_IsException(JSValueConst v)
+static inline JS_BOOL JS_IsException(GCValueConst v)
 {
-    return js_unlikely(JS_VALUE_GET_TAG(v) == JS_TAG_EXCEPTION);
+    return js_unlikely(GC_VALUE_GET_TAG(v) == JS_TAG_EXCEPTION);
 }
 
-static inline JS_BOOL JS_IsUninitialized(JSValueConst v)
+static inline JS_BOOL JS_IsUninitialized(GCValueConst v)
 {
-    return js_unlikely(JS_VALUE_GET_TAG(v) == JS_TAG_UNINITIALIZED);
+    return js_unlikely(GC_VALUE_GET_TAG(v) == JS_TAG_UNINITIALIZED);
 }
 
-static inline JS_BOOL JS_IsString(JSValueConst v)
+static inline JS_BOOL JS_IsString(GCValueConst v)
 {
-    return JS_VALUE_GET_TAG(v) == JS_TAG_STRING ||
-        JS_VALUE_GET_TAG(v) == JS_TAG_STRING_ROPE;
+    return GC_VALUE_GET_TAG(v) == JS_TAG_STRING ||
+        GC_VALUE_GET_TAG(v) == JS_TAG_STRING_ROPE;
 }
 
-static inline JS_BOOL JS_IsSymbol(JSValueConst v)
+static inline JS_BOOL JS_IsSymbol(GCValueConst v)
 {
-    return JS_VALUE_GET_TAG(v) == JS_TAG_SYMBOL;
+    return GC_VALUE_GET_TAG(v) == JS_TAG_SYMBOL;
 }
 
-static inline JS_BOOL JS_IsObject(JSValueConst v)
+static inline JS_BOOL JS_IsObject(GCValueConst v)
 {
-    return JS_VALUE_GET_TAG(v) == JS_TAG_OBJECT;
+    return GC_VALUE_GET_TAG(v) == JS_TAG_OBJECT;
 }
 
-JSValue JS_Throw(JSContext *ctx, JSValue obj);
+GCValue JS_Throw(JSContext *ctx, GCValue obj);
 void JS_SetUncatchableException(JSContext *ctx, JS_BOOL flag);
-JSValue JS_GetException(JSContext *ctx);
+GCValue JS_GetException(JSContext *ctx);
 JS_BOOL JS_HasException(JSContext *ctx);
-JS_BOOL JS_IsError(JSContext *ctx, JSValueConst val);
-JSValue JS_NewError(JSContext *ctx);
-JSValue __js_printf_like(2, 3) JS_ThrowSyntaxError(JSContext *ctx, const char *fmt, ...);
-JSValue __js_printf_like(2, 3) JS_ThrowTypeError(JSContext *ctx, const char *fmt, ...);
-JSValue __js_printf_like(2, 3) JS_ThrowReferenceError(JSContext *ctx, const char *fmt, ...);
-JSValue __js_printf_like(2, 3) JS_ThrowRangeError(JSContext *ctx, const char *fmt, ...);
-JSValue __js_printf_like(2, 3) JS_ThrowInternalError(JSContext *ctx, const char *fmt, ...);
-JSValue JS_ThrowOutOfMemory(JSContext *ctx);
+JS_BOOL JS_IsError(JSContext *ctx, GCValueConst val);
+GCValue JS_NewError(JSContext *ctx);
+GCValue __js_printf_like(2, 3) JS_ThrowSyntaxError(JSContext *ctx, const char *fmt, ...);
+GCValue __js_printf_like(2, 3) JS_ThrowTypeError(JSContext *ctx, const char *fmt, ...);
+GCValue __js_printf_like(2, 3) JS_ThrowReferenceError(JSContext *ctx, const char *fmt, ...);
+GCValue __js_printf_like(2, 3) JS_ThrowRangeError(JSContext *ctx, const char *fmt, ...);
+GCValue __js_printf_like(2, 3) JS_ThrowInternalError(JSContext *ctx, const char *fmt, ...);
+GCValue JS_ThrowOutOfMemory(JSContext *ctx);
 
 /* Note: Reference counting functions (JS_FreeValue, JS_DupValue, etc.) removed.
    Using mark-and-sweep GC only. */
 
-JS_BOOL JS_StrictEq(JSContext *ctx, JSValueConst op1, JSValueConst op2);
-JS_BOOL JS_SameValue(JSContext *ctx, JSValueConst op1, JSValueConst op2);
-JS_BOOL JS_SameValueZero(JSContext *ctx, JSValueConst op1, JSValueConst op2);
+JS_BOOL JS_StrictEq(JSContext *ctx, GCValueConst op1, GCValueConst op2);
+JS_BOOL JS_SameValue(JSContext *ctx, GCValueConst op1, GCValueConst op2);
+JS_BOOL JS_SameValueZero(JSContext *ctx, GCValueConst op1, GCValueConst op2);
 
-int JS_ToBool(JSContext *ctx, JSValueConst val); /* return -1 for JS_EXCEPTION */
-int JS_ToInt32(JSContext *ctx, int32_t *pres, JSValueConst val);
-static inline int JS_ToUint32(JSContext *ctx, uint32_t *pres, JSValueConst val)
+int JS_ToBool(JSContext *ctx, GCValueConst val); /* return -1 for GC_EXCEPTION */
+int JS_ToInt32(JSContext *ctx, int32_t *pres, GCValueConst val);
+static inline int JS_ToUint32(JSContext *ctx, uint32_t *pres, GCValueConst val)
 {
     return JS_ToInt32(ctx, (int32_t*)pres, val);
 }
-int JS_ToInt64(JSContext *ctx, int64_t *pres, JSValueConst val);
-int JS_ToIndex(JSContext *ctx, uint64_t *plen, JSValueConst val);
-int JS_ToFloat64(JSContext *ctx, double *pres, JSValueConst val);
+int JS_ToInt64(JSContext *ctx, int64_t *pres, GCValueConst val);
+int JS_ToIndex(JSContext *ctx, uint64_t *plen, GCValueConst val);
+int JS_ToFloat64(JSContext *ctx, double *pres, GCValueConst val);
 /* return an exception if 'val' is a Number */
-int JS_ToBigInt64(JSContext *ctx, int64_t *pres, JSValueConst val);
+int JS_ToBigInt64(JSContext *ctx, int64_t *pres, GCValueConst val);
 /* same as JS_ToInt64() but allow BigInt */
-int JS_ToInt64Ext(JSContext *ctx, int64_t *pres, JSValueConst val);
+int JS_ToInt64Ext(JSContext *ctx, int64_t *pres, GCValueConst val);
 
-JSValue JS_NewStringLen(JSContext *ctx, const char *str1, size_t len1);
-static inline JSValue JS_NewString(JSContext *ctx, const char *str)
+GCValue JS_NewStringLen(JSContext *ctx, const char *str1, size_t len1);
+static inline GCValue JS_NewString(JSContext *ctx, const char *str)
 {
     return JS_NewStringLen(ctx, str, strlen(str));
 }
-JSValue JS_NewAtomString(JSContext *ctx, const char *str);
-JSValue JS_ToString(JSContext *ctx, JSValueConst val);
-JSValue JS_ToPropertyKey(JSContext *ctx, JSValueConst val);
-const char *JS_ToCStringLen2(JSContext *ctx, size_t *plen, JSValueConst val1, JS_BOOL cesu8);
-static inline const char *JS_ToCStringLen(JSContext *ctx, size_t *plen, JSValueConst val1)
+GCValue JS_NewAtomString(JSContext *ctx, const char *str);
+GCValue JS_ToString(JSContext *ctx, GCValueConst val);
+GCValue JS_ToPropertyKey(JSContext *ctx, GCValueConst val);
+const char *JS_ToCStringLen2(JSContext *ctx, size_t *plen, GCValueConst val1, JS_BOOL cesu8);
+static inline const char *JS_ToCStringLen(JSContext *ctx, size_t *plen, GCValueConst val1)
 {
     return JS_ToCStringLen2(ctx, plen, val1, 0);
 }
-static inline const char *JS_ToCString(JSContext *ctx, JSValueConst val1)
+static inline const char *JS_ToCString(JSContext *ctx, GCValueConst val1)
 {
     return JS_ToCStringLen2(ctx, NULL, val1, 0);
 }
 void JS_FreeCString(JSContext *ctx, const char *ptr);
 
-JSValue JS_NewObjectProtoClass(JSContext *ctx, JSValueConst proto, JSClassID class_id);
-JSValue JS_NewObjectClass(JSContext *ctx, int class_id);
-JSValue JS_NewObjectProto(JSContext *ctx, JSValueConst proto);
-JSValue JS_NewObject(JSContext *ctx);
+GCValue JS_NewObjectProtoClass(JSContext *ctx, GCValueConst proto, JSClassID class_id);
+GCValue JS_NewObjectClass(JSContext *ctx, int class_id);
+GCValue JS_NewObjectProto(JSContext *ctx, GCValueConst proto);
+GCValue JS_NewObject(JSContext *ctx);
 
-JS_BOOL JS_IsFunction(JSContext* ctx, JSValueConst val);
-JS_BOOL JS_IsConstructor(JSContext* ctx, JSValueConst val);
-JS_BOOL JS_SetConstructorBit(JSContext *ctx, JSValueConst func_obj, JS_BOOL val);
+JS_BOOL JS_IsFunction(JSContext* ctx, GCValueConst val);
+JS_BOOL JS_IsConstructor(JSContext* ctx, GCValueConst val);
+JS_BOOL JS_SetConstructorBit(JSContext *ctx, GCValueConst func_obj, JS_BOOL val);
 
-JSValue JS_NewArray(JSContext *ctx);
-int JS_IsArray(JSContext *ctx, JSValueConst val);
+GCValue JS_NewArray(JSContext *ctx);
+int JS_IsArray(JSContext *ctx, GCValueConst val);
 
-JSValue JS_NewDate(JSContext *ctx, double epoch_ms);
+GCValue JS_NewDate(JSContext *ctx, double epoch_ms);
 
-JSValue JS_GetPropertyInternal(JSContext *ctx, JSValueConst obj,
-                               JSAtom prop, JSValueConst receiver,
+GCValue JS_GetPropertyInternal(JSContext *ctx, GCValueConst obj,
+                               JSAtom prop, GCValueConst receiver,
                                JS_BOOL throw_ref_error);
-static js_force_inline JSValue JS_GetProperty(JSContext *ctx, JSValueConst this_obj,
+static js_force_inline GCValue JS_GetProperty(JSContext *ctx, GCValueConst this_obj,
                                               JSAtom prop)
 {
     return JS_GetPropertyInternal(ctx, this_obj, prop, this_obj, 0);
 }
-JSValue JS_GetPropertyStr(JSContext *ctx, JSValueConst this_obj,
+GCValue JS_GetPropertyStr(JSContext *ctx, GCValueConst this_obj,
                           const char *prop);
-JSValue JS_GetPropertyUint32(JSContext *ctx, JSValueConst this_obj,
+GCValue JS_GetPropertyUint32(JSContext *ctx, GCValueConst this_obj,
                              uint32_t idx);
 
-int JS_SetPropertyInternal(JSContext *ctx, JSValueConst obj,
-                           JSAtom prop, JSValue val, JSValueConst this_obj,
+int JS_SetPropertyInternal(JSContext *ctx, GCValueConst obj,
+                           JSAtom prop, GCValue val, GCValueConst this_obj,
                            int flags);
-static inline int JS_SetProperty(JSContext *ctx, JSValueConst this_obj,
-                                 JSAtom prop, JSValue val)
+static inline int JS_SetProperty(JSContext *ctx, GCValueConst this_obj,
+                                 JSAtom prop, GCValue val)
 {
     return JS_SetPropertyInternal(ctx, this_obj, prop, val, this_obj, JS_PROP_THROW);
 }
-int JS_SetPropertyUint32(JSContext *ctx, JSValueConst this_obj,
-                         uint32_t idx, JSValue val);
-int JS_SetPropertyInt64(JSContext *ctx, JSValueConst this_obj,
-                        int64_t idx, JSValue val);
-int JS_SetPropertyStr(JSContext *ctx, JSValueConst this_obj,
-                      const char *prop, JSValue val);
-int JS_HasProperty(JSContext *ctx, JSValueConst this_obj, JSAtom prop);
-int JS_IsExtensible(JSContext *ctx, JSValueConst obj);
-int JS_PreventExtensions(JSContext *ctx, JSValueConst obj);
-int JS_DeleteProperty(JSContext *ctx, JSValueConst obj, JSAtom prop, int flags);
-int JS_SetPrototype(JSContext *ctx, JSValueConst obj, JSValueConst proto_val);
-JSValue JS_GetPrototype(JSContext *ctx, JSValueConst val);
+int JS_SetPropertyUint32(JSContext *ctx, GCValueConst this_obj,
+                         uint32_t idx, GCValue val);
+int JS_SetPropertyInt64(JSContext *ctx, GCValueConst this_obj,
+                        int64_t idx, GCValue val);
+int JS_SetPropertyStr(JSContext *ctx, GCValueConst this_obj,
+                      const char *prop, GCValue val);
+int JS_HasProperty(JSContext *ctx, GCValueConst this_obj, JSAtom prop);
+int JS_IsExtensible(JSContext *ctx, GCValueConst obj);
+int JS_PreventExtensions(JSContext *ctx, GCValueConst obj);
+int JS_DeleteProperty(JSContext *ctx, GCValueConst obj, JSAtom prop, int flags);
+int JS_SetPrototype(JSContext *ctx, GCValueConst obj, GCValueConst proto_val);
+GCValue JS_GetPrototype(JSContext *ctx, GCValueConst val);
 
 #define JS_GPN_STRING_MASK  (1 << 0)
 #define JS_GPN_SYMBOL_MASK  (1 << 1)
@@ -947,64 +1046,64 @@ JSValue JS_GetPrototype(JSContext *ctx, JSValueConst val);
 #define JS_GPN_SET_ENUM     (1 << 5)
 
 int JS_GetOwnPropertyNames(JSContext *ctx, JSPropertyEnum **ptab,
-                           uint32_t *plen, JSValueConst obj, int flags);
+                           uint32_t *plen, GCValueConst obj, int flags);
 void JS_FreePropertyEnum(JSContext *ctx, JSPropertyEnum *tab,
                          uint32_t len);
 int JS_GetOwnProperty(JSContext *ctx, JSPropertyDescriptor *desc,
-                      JSValueConst obj, JSAtom prop);
+                      GCValueConst obj, JSAtom prop);
 
-JSValue JS_Call(JSContext *ctx, JSValueConst func_obj, JSValueConst this_obj,
-                int argc, JSValueConst *argv);
-JSValue JS_Invoke(JSContext *ctx, JSValueConst this_val, JSAtom atom,
-                  int argc, JSValueConst *argv);
-JSValue JS_CallConstructor(JSContext *ctx, JSValueConst func_obj,
-                           int argc, JSValueConst *argv);
-JSValue JS_CallConstructor2(JSContext *ctx, JSValueConst func_obj,
-                            JSValueConst new_target,
-                            int argc, JSValueConst *argv);
+GCValue JS_Call(JSContext *ctx, GCValueConst func_obj, GCValueConst this_obj,
+                int argc, GCValueConst *argv);
+GCValue JS_Invoke(JSContext *ctx, GCValueConst this_val, JSAtom atom,
+                  int argc, GCValueConst *argv);
+GCValue JS_CallConstructor(JSContext *ctx, GCValueConst func_obj,
+                           int argc, GCValueConst *argv);
+GCValue JS_CallConstructor2(JSContext *ctx, GCValueConst func_obj,
+                            GCValueConst new_target,
+                            int argc, GCValueConst *argv);
 JS_BOOL JS_DetectModule(const char *input, size_t input_len);
 /* 'input' must be zero terminated i.e. input[input_len] = '\0'. */
-JSValue JS_Eval(JSContext *ctx, const char *input, size_t input_len,
+GCValue JS_Eval(JSContext *ctx, const char *input, size_t input_len,
                 const char *filename, int eval_flags);
 /* same as JS_Eval() but with an explicit 'this_obj' parameter */
-JSValue JS_EvalThis(JSContext *ctx, JSValueConst this_obj,
+GCValue JS_EvalThis(JSContext *ctx, GCValueConst this_obj,
                     const char *input, size_t input_len,
                     const char *filename, int eval_flags);
-JSValue JS_GetGlobalObject(JSContext *ctx);
-int JS_IsInstanceOf(JSContext *ctx, JSValueConst val, JSValueConst obj);
-int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,
-                      JSAtom prop, JSValueConst val,
-                      JSValueConst getter, JSValueConst setter, int flags);
-int JS_DefinePropertyValue(JSContext *ctx, JSValueConst this_obj,
-                           JSAtom prop, JSValue val, int flags);
-int JS_DefinePropertyValueUint32(JSContext *ctx, JSValueConst this_obj,
-                                 uint32_t idx, JSValue val, int flags);
-int JS_DefinePropertyValueStr(JSContext *ctx, JSValueConst this_obj,
-                              const char *prop, JSValue val, int flags);
-int JS_DefinePropertyGetSet(JSContext *ctx, JSValueConst this_obj,
-                            JSAtom prop, JSValue getter, JSValue setter,
+GCValue JS_GetGlobalObject(JSContext *ctx);
+int JS_IsInstanceOf(JSContext *ctx, GCValueConst val, GCValueConst obj);
+int JS_DefineProperty(JSContext *ctx, GCValueConst this_obj,
+                      JSAtom prop, GCValueConst val,
+                      GCValueConst getter, GCValueConst setter, int flags);
+int JS_DefinePropertyValue(JSContext *ctx, GCValueConst this_obj,
+                           JSAtom prop, GCValue val, int flags);
+int JS_DefinePropertyValueUint32(JSContext *ctx, GCValueConst this_obj,
+                                 uint32_t idx, GCValue val, int flags);
+int JS_DefinePropertyValueStr(JSContext *ctx, GCValueConst this_obj,
+                              const char *prop, GCValue val, int flags);
+int JS_DefinePropertyGetSet(JSContext *ctx, GCValueConst this_obj,
+                            JSAtom prop, GCValue getter, GCValue setter,
                             int flags);
-void JS_SetOpaque(JSValue obj, void *opaque);
-void *JS_GetOpaque(JSValueConst obj, JSClassID class_id);
-void *JS_GetOpaque2(JSContext *ctx, JSValueConst obj, JSClassID class_id);
-void *JS_GetAnyOpaque(JSValueConst obj, JSClassID *class_id);
+void JS_SetOpaque(GCValue obj, void *opaque);
+void *JS_GetOpaque(GCValueConst obj, JSClassID class_id);
+void *JS_GetOpaque2(JSContext *ctx, GCValueConst obj, JSClassID class_id);
+void *JS_GetAnyOpaque(GCValueConst obj, JSClassID *class_id);
 
 /* 'buf' must be zero terminated i.e. buf[buf_len] = '\0'. */
-JSValue JS_ParseJSON(JSContext *ctx, const char *buf, size_t buf_len,
+GCValue JS_ParseJSON(JSContext *ctx, const char *buf, size_t buf_len,
                      const char *filename);
 #define JS_PARSE_JSON_EXT (1 << 0) /* allow extended JSON */
-JSValue JS_ParseJSON2(JSContext *ctx, const char *buf, size_t buf_len,
+GCValue JS_ParseJSON2(JSContext *ctx, const char *buf, size_t buf_len,
                       const char *filename, int flags);
-JSValue JS_JSONStringify(JSContext *ctx, JSValueConst obj,
-                         JSValueConst replacer, JSValueConst space0);
+GCValue JS_JSONStringify(JSContext *ctx, GCValueConst obj,
+                         GCValueConst replacer, GCValueConst space0);
 
 typedef void JSFreeArrayBufferDataFunc(JSRuntime *rt, void *opaque, void *ptr);
-JSValue JS_NewArrayBuffer(JSContext *ctx, uint8_t *buf, size_t len,
+GCValue JS_NewArrayBuffer(JSContext *ctx, uint8_t *buf, size_t len,
                           JSFreeArrayBufferDataFunc *free_func, void *opaque,
                           JS_BOOL is_shared);
-JSValue JS_NewArrayBufferCopy(JSContext *ctx, const uint8_t *buf, size_t len);
-void JS_DetachArrayBuffer(JSContext *ctx, JSValueConst obj);
-uint8_t *JS_GetArrayBuffer(JSContext *ctx, size_t *psize, JSValueConst obj);
+GCValue JS_NewArrayBufferCopy(JSContext *ctx, const uint8_t *buf, size_t len);
+void JS_DetachArrayBuffer(JSContext *ctx, GCValueConst obj);
+uint8_t *JS_GetArrayBuffer(JSContext *ctx, size_t *psize, GCValueConst obj);
 
 typedef enum JSTypedArrayEnum {
     JS_TYPED_ARRAY_UINT8C = 0,
@@ -1021,9 +1120,9 @@ typedef enum JSTypedArrayEnum {
     JS_TYPED_ARRAY_FLOAT64,
 } JSTypedArrayEnum;
 
-JSValue JS_NewTypedArray(JSContext *ctx, int argc, JSValueConst *argv,
+GCValue JS_NewTypedArray(JSContext *ctx, int argc, GCValueConst *argv,
                          JSTypedArrayEnum array_type);
-JSValue JS_GetTypedArrayBuffer(JSContext *ctx, JSValueConst obj,
+GCValue JS_GetTypedArrayBuffer(JSContext *ctx, GCValueConst obj,
                                size_t *pbyte_offset,
                                size_t *pbyte_length,
                                size_t *pbytes_per_element);
@@ -1042,13 +1141,13 @@ typedef enum JSPromiseStateEnum {
     JS_PROMISE_REJECTED,
 } JSPromiseStateEnum;
 
-JSValue JS_NewPromiseCapability(JSContext *ctx, JSValue *resolving_funcs);
-JSPromiseStateEnum JS_PromiseState(JSContext *ctx, JSValue promise);
-JSValue JS_PromiseResult(JSContext *ctx, JSValue promise);
+GCValue JS_NewPromiseCapability(JSContext *ctx, GCValue *resolving_funcs);
+JSPromiseStateEnum JS_PromiseState(JSContext *ctx, GCValue promise);
+GCValue JS_PromiseResult(JSContext *ctx, GCValue promise);
 
 /* is_handled = TRUE means that the rejection is handled */
-typedef void JSHostPromiseRejectionTracker(JSContext *ctx, JSValueConst promise,
-                                           JSValueConst reason,
+typedef void JSHostPromiseRejectionTracker(JSContext *ctx, GCValueConst promise,
+                                           GCValueConst reason,
                                            JS_BOOL is_handled, void *opaque);
 void JS_SetHostPromiseRejectionTracker(JSRuntime *rt, JSHostPromiseRejectionTracker *cb, void *opaque);
 
@@ -1064,7 +1163,7 @@ void JS_SetStripInfo(JSRuntime *rt, int flags);
 int JS_GetStripInfo(JSRuntime *rt);
 
 /* set the [IsHTMLDDA] internal slot */
-void JS_SetIsHTMLDDA(JSContext *ctx, JSValueConst obj);
+void JS_SetIsHTMLDDA(JSContext *ctx, GCValueConst obj);
 
 typedef struct JSModuleDef JSModuleDef;
 
@@ -1077,10 +1176,10 @@ typedef JSModuleDef *JSModuleLoaderFunc(JSContext *ctx,
                                         const char *module_name, void *opaque);
 typedef JSModuleDef *JSModuleLoaderFunc2(JSContext *ctx,
                                          const char *module_name, void *opaque,
-                                         JSValueConst attributes);
+                                         GCValueConst attributes);
 /* return -1 if exception, 0 if OK */
 typedef int JSModuleCheckSupportedImportAttributes(JSContext *ctx, void *opaque,
-                                                   JSValueConst attributes);
+                                                   GCValueConst attributes);
                                                    
 /* module_normalize = NULL is allowed and invokes the default module
    filename normalizer */
@@ -1095,14 +1194,14 @@ void JS_SetModuleLoaderFunc2(JSRuntime *rt,
                              JSModuleCheckSupportedImportAttributes *module_check_attrs,
                              void *opaque);
 /* return the import.meta object of a module */
-JSValue JS_GetImportMeta(JSContext *ctx, JSModuleDef *m);
+GCValue JS_GetImportMeta(JSContext *ctx, JSModuleDef *m);
 JSAtom JS_GetModuleName(JSContext *ctx, JSModuleDef *m);
-JSValue JS_GetModuleNamespace(JSContext *ctx, JSModuleDef *m);
+GCValue JS_GetModuleNamespace(JSContext *ctx, JSModuleDef *m);
 
 /* JS Job support */
 
-typedef JSValue JSJobFunc(JSContext *ctx, int argc, JSValueConst *argv);
-int JS_EnqueueJob(JSContext *ctx, JSJobFunc *job_func, int argc, JSValueConst *argv);
+typedef GCValue JSJobFunc(JSContext *ctx, int argc, GCValueConst *argv);
+int JS_EnqueueJob(JSContext *ctx, JSJobFunc *job_func, int argc, GCValueConst *argv);
 
 JS_BOOL JS_IsJobPending(JSRuntime *rt);
 int JS_ExecutePendingJob(JSRuntime *rt, JSContext **pctx);
@@ -1114,28 +1213,28 @@ int JS_ExecutePendingJob(JSRuntime *rt, JSContext **pctx);
 #define JS_WRITE_OBJ_REFERENCE (1 << 3) /* allow object references to
                                            encode arbitrary object
                                            graph */
-uint8_t *JS_WriteObject(JSContext *ctx, size_t *psize, JSValueConst obj,
+uint8_t *JS_WriteObject(JSContext *ctx, size_t *psize, GCValueConst obj,
                         int flags);
-uint8_t *JS_WriteObject2(JSContext *ctx, size_t *psize, JSValueConst obj,
+uint8_t *JS_WriteObject2(JSContext *ctx, size_t *psize, GCValueConst obj,
                          int flags, uint8_t ***psab_tab, size_t *psab_tab_len);
 
 #define JS_READ_OBJ_BYTECODE  (1 << 0) /* allow function/module */
 #define JS_READ_OBJ_ROM_DATA  (1 << 1) /* avoid duplicating 'buf' data */
 #define JS_READ_OBJ_SAB       (1 << 2) /* allow SharedArrayBuffer */
 #define JS_READ_OBJ_REFERENCE (1 << 3) /* allow object references */
-JSValue JS_ReadObject(JSContext *ctx, const uint8_t *buf, size_t buf_len,
+GCValue JS_ReadObject(JSContext *ctx, const uint8_t *buf, size_t buf_len,
                       int flags);
 /* instantiate and evaluate a bytecode function. Only used when
    reading a script or module with JS_ReadObject() */
-JSValue JS_EvalFunction(JSContext *ctx, JSValue fun_obj);
+GCValue JS_EvalFunction(JSContext *ctx, GCValue fun_obj);
 /* load the dependencies of the module 'obj'. Useful when JS_ReadObject()
    returns a module. */
-int JS_ResolveModule(JSContext *ctx, JSValueConst obj);
+int JS_ResolveModule(JSContext *ctx, GCValueConst obj);
 
 /* only exported for os.Worker() */
 JSAtom JS_GetScriptOrModuleName(JSContext *ctx, int n_stack_levels);
 /* only exported for os.Worker() */
-JSValue JS_LoadModule(JSContext *ctx, const char *basename,
+GCValue JS_LoadModule(JSContext *ctx, const char *basename,
                       const char *filename);
 
 /* C function definition */
@@ -1157,34 +1256,34 @@ typedef enum JSCFunctionEnum {  /* XXX: should rename for namespace isolation */
 
 typedef union JSCFunctionType {
     JSCFunction *generic;
-    JSValue (*generic_magic)(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic);
+    GCValue (*generic_magic)(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv, int magic);
     JSCFunction *constructor;
-    JSValue (*constructor_magic)(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv, int magic);
+    GCValue (*constructor_magic)(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv, int magic);
     JSCFunction *constructor_or_func;
     double (*f_f)(double);
     double (*f_f_f)(double, double);
-    JSValue (*getter)(JSContext *ctx, JSValueConst this_val);
-    JSValue (*setter)(JSContext *ctx, JSValueConst this_val, JSValueConst val);
-    JSValue (*getter_magic)(JSContext *ctx, JSValueConst this_val, int magic);
-    JSValue (*setter_magic)(JSContext *ctx, JSValueConst this_val, JSValueConst val, int magic);
-    JSValue (*iterator_next)(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv, int *pdone, int magic);
+    GCValue (*getter)(JSContext *ctx, GCValueConst this_val);
+    GCValue (*setter)(JSContext *ctx, GCValueConst this_val, GCValueConst val);
+    GCValue (*getter_magic)(JSContext *ctx, GCValueConst this_val, int magic);
+    GCValue (*setter_magic)(JSContext *ctx, GCValueConst this_val, GCValueConst val, int magic);
+    GCValue (*iterator_next)(JSContext *ctx, GCValueConst this_val,
+                             int argc, GCValueConst *argv, int *pdone, int magic);
 } JSCFunctionType;
 
-JSValue JS_NewCFunction2(JSContext *ctx, JSCFunction *func,
+GCValue JS_NewCFunction2(JSContext *ctx, JSCFunction *func,
                          const char *name,
                          int length, JSCFunctionEnum cproto, int magic);
-JSValue JS_NewCFunctionData(JSContext *ctx, JSCFunctionData *func,
+GCValue JS_NewCFunctionData(JSContext *ctx, JSCFunctionData *func,
                             int length, int magic, int data_len,
-                            JSValueConst *data);
+                            GCValueConst *data);
 
-static inline JSValue JS_NewCFunction(JSContext *ctx, JSCFunction *func, const char *name,
+static inline GCValue JS_NewCFunction(JSContext *ctx, JSCFunction *func, const char *name,
                                       int length)
 {
     return JS_NewCFunction2(ctx, func, name, length, JS_CFUNC_generic, 0);
 }
 
-static inline JSValue JS_NewCFunctionMagic(JSContext *ctx, JSCFunctionMagic *func,
+static inline GCValue JS_NewCFunctionMagic(JSContext *ctx, JSCFunctionMagic *func,
                                            const char *name,
                                            int length, JSCFunctionEnum cproto, int magic)
 {
@@ -1192,8 +1291,8 @@ static inline JSValue JS_NewCFunctionMagic(JSContext *ctx, JSCFunctionMagic *fun
     JSCFunctionType ft = { .generic_magic = func };
     return JS_NewCFunction2(ctx, ft.generic, name, length, cproto, magic);
 }
-int JS_SetConstructor(JSContext *ctx, JSValueConst func_obj,
-                      JSValueConst proto);
+int JS_SetConstructor(JSContext *ctx, GCValueConst func_obj,
+                      GCValueConst proto);
 
 /* C property definition */
 
@@ -1258,7 +1357,7 @@ typedef struct JSCFunctionListEntry {
 #define JS_ALIAS_DEF(name, from) { name, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE, JS_DEF_ALIAS, 0, .u = { .alias = { from, -1 } } }
 #define JS_ALIAS_BASE_DEF(name, from, base) { name, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE, JS_DEF_ALIAS, 0, .u = { .alias = { from, base } } }
 
-int JS_SetPropertyFunctionList(JSContext *ctx, JSValueConst obj,
+int JS_SetPropertyFunctionList(JSContext *ctx, GCValueConst obj,
                                const JSCFunctionListEntry *tab,
                                int len);
 
@@ -1274,12 +1373,12 @@ int JS_AddModuleExportList(JSContext *ctx, JSModuleDef *m,
                            const JSCFunctionListEntry *tab, int len);
 /* can only be called after the module is instantiated */
 int JS_SetModuleExport(JSContext *ctx, JSModuleDef *m, const char *export_name,
-                       JSValue val);
+                       GCValue val);
 int JS_SetModuleExportList(JSContext *ctx, JSModuleDef *m,
                            const JSCFunctionListEntry *tab, int len);
-/* associate a JSValue to a C module */
-int JS_SetModulePrivateValue(JSContext *ctx, JSModuleDef *m, JSValue val);
-JSValue JS_GetModulePrivateValue(JSContext *ctx, JSModuleDef *m);
+/* associate a GCValue to a C module */
+int JS_SetModulePrivateValue(JSContext *ctx, JSModuleDef *m, GCValue val);
+GCValue JS_GetModulePrivateValue(JSContext *ctx, JSModuleDef *m);
                         
 /* debug value output */
 
@@ -1297,9 +1396,9 @@ typedef void JSPrintValueWrite(void *opaque, const char *buf, size_t len);
 
 void JS_PrintValueSetDefaultOptions(JSPrintValueOptions *options);
 void JS_PrintValueRT(JSRuntime *rt, JSPrintValueWrite *write_func, void *write_opaque,
-                     JSValueConst val, const JSPrintValueOptions *options);
+                     GCValueConst val, const JSPrintValueOptions *options);
 void JS_PrintValue(JSContext *ctx, JSPrintValueWrite *write_func, void *write_opaque,
-                   JSValueConst val, const JSPrintValueOptions *options);
+                   GCValueConst val, const JSPrintValueOptions *options);
 
 #undef js_unlikely
 #undef js_force_inline

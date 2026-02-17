@@ -12,7 +12,7 @@
 #include <ctype.h>
 #include <android/log.h>
 #include "html_dom.h"
-#include "js_value_helpers.h"
+#include "gc_value_helpers.h"
 
 #define LOG_TAG "html_dom"
 #define LOG_INFO(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -669,17 +669,17 @@ HtmlDocument* html_parse(const char *html, size_t html_len) {
 
 /* Forward declaration from js_quickjs.c */
 extern JSClassID js_video_class_id;
-extern JSValue js_video_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv);
+extern GCValue js_video_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv);
 
 /* Create a JavaScript element for a given tag */
-JSValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribute *attrs) {
+GCValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribute *attrs) {
     if (!tag_name || !ctx) return JS_NULL;
     
-    JSValue element;
+    GCValue element;
     
     /* Special handling for video elements */
     if (strcasecmp(tag_name, "video") == 0) {
-        extern JSValue js_video_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv);
+        extern GCValue js_video_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv);
         element = js_video_constructor(ctx, JS_NULL, 0, NULL);
     } else {
         /* Create generic element */
@@ -694,7 +694,7 @@ JSValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribu
     JS_SetPropertyStr(ctx, element, "tagName", JS_NewString(ctx, tag_name));
     
     /* Create attributes map */
-    JSValue attr_map = JS_NewObject(ctx);
+    GCValue attr_map = JS_NewObject(ctx);
     
     /* Set id and className if present */
     HtmlAttribute *attr = attrs;
@@ -723,10 +723,10 @@ JSValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribu
 }
 
 /* Recursively create DOM nodes in JS with proper JS_FreeValue cleanup */
-static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, JSValue parent) {
+static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, GCValue parent) {
     if (!ctx || !node) return false;
     
-    JSValue js_node = JS_UNDEFINED;
+    GCValue js_node = JS_UNDEFINED;
     
     switch (node->type) {
         case HTML_NODE_ELEMENT: {
@@ -742,12 +742,12 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, JSValu
                 
                 /* If we have a parent, append this element */
                 if (!JS_IsUndefined(parent) && !JS_IsNull(parent)) {
-                    /* Use proper JS_FreeValue for temporary JSValues */
-                    JSValue appendChild = JS_GetPropertyStr(ctx, parent, "appendChild");
+                    /* Use proper JS_FreeValue for temporary GCVAlues */
+                    GCValue appendChild = JS_GetPropertyStr(ctx, parent, "appendChild");
                     
                     if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
-                        JSValue args[1] = { js_node };
-                        JSValue result = JS_Call(ctx, appendChild, parent, 1, args);
+                        GCValue args[1] = { js_node };
+                        GCValue result = JS_Call(ctx, appendChild, parent, 1, args);
                         JS_FreeValue(ctx, result);
                     }
                     JS_FreeValue(ctx, appendChild);
@@ -763,12 +763,12 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, JSValu
                 
                 /* Add to parent's innerHTML or childNodes if needed */
                 if (!JS_IsUndefined(parent) && !JS_IsNull(parent)) {
-                    JSValue childNodes = JS_GetPropertyStr(ctx, parent, "childNodes");
+                    GCValue childNodes = JS_GetPropertyStr(ctx, parent, "childNodes");
                     
                     if (JS_IsArray(ctx, childNodes)) {
-                        JSValue push = JS_GetPropertyStr(ctx, childNodes, "push");
-                        JSValue args[1] = { js_node };
-                        JSValue result = JS_Call(ctx, push, childNodes, 1, args);
+                        GCValue push = JS_GetPropertyStr(ctx, childNodes, "push");
+                        GCValue args[1] = { js_node };
+                        GCValue result = JS_Call(ctx, push, childNodes, 1, args);
                         JS_FreeValue(ctx, result);
                         JS_FreeValue(ctx, push);
                     }
@@ -791,10 +791,10 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, JSValu
 }
 
 /* Create JavaScript document object with parsed HTML structure */
-JSValue html_create_js_document(JSContext *ctx, HtmlDocument *doc) {
+GCValue html_create_js_document(JSContext *ctx, HtmlDocument *doc) {
     if (!ctx || !doc) return JS_NULL;
     
-    JSValue js_doc = JS_NewObject(ctx);
+    GCValue js_doc = JS_NewObject(ctx);
     
     /* Set document properties */
     JS_SetPropertyStr(ctx, js_doc, "nodeType", JS_NewInt32(ctx, 9)); /* DOCUMENT_NODE */
@@ -803,7 +803,7 @@ JSValue html_create_js_document(JSContext *ctx, HtmlDocument *doc) {
     JS_SetPropertyStr(ctx, js_doc, "contentType", JS_NewString(ctx, "text/html"));
     
     /* Create documentElement (html or first root element) */
-    JSValue doc_element = JS_NULL;
+    GCValue doc_element = JS_NULL;
     if (doc->root) {
         doc_element = html_create_element_js(ctx, doc->root->tag_name, doc->root->attributes);
         
@@ -821,7 +821,7 @@ JSValue html_create_js_document(JSContext *ctx, HtmlDocument *doc) {
     JS_SetPropertyStr(ctx, js_doc, "documentElement", doc_element);
     
     /* Create body element reference */
-    JSValue body_element = JS_NULL;
+    GCValue body_element = JS_NULL;
     if (doc->body) {
         body_element = html_create_element_js(ctx, "body", doc->body->attributes);
         
@@ -839,7 +839,7 @@ JSValue html_create_js_document(JSContext *ctx, HtmlDocument *doc) {
     JS_SetPropertyStr(ctx, doc_element, "body", body_element);
     
     /* Create head element reference */
-    JSValue head_element = JS_NULL;
+    GCValue head_element = JS_NULL;
     if (doc->head) {
         head_element = html_create_element_js(ctx, "head", doc->head->attributes);
         
@@ -869,20 +869,20 @@ bool html_create_dom_in_js(JSContext *ctx, HtmlDocument *doc) {
     LOG_INFO("Creating DOM in JS context");
     
     /* Create the document object in JS first (not tracked - persistent) */
-    JSValue js_doc = html_create_js_document(ctx, doc);
+    GCValue js_doc = html_create_js_document(ctx, doc);
     
     if (JS_IsNull(js_doc) || JS_IsException(js_doc)) {
         LOG_ERROR("Failed to create JS document");
         return false;
     }
     
-    /* Use proper JS_FreeValue for all temporary JSValues */
+    /* Use proper JS_FreeValue for all temporary GCVAlues */
     /* Get global object and set document */
-    JSValue global = JS_GetGlobalObject(ctx);
+    GCValue global = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, global, "document", js_doc);
     
     /* Also set documentElement on window */
-    JSValue doc_elem = JS_GetPropertyStr(ctx, js_doc, "documentElement");
+    GCValue doc_elem = JS_GetPropertyStr(ctx, js_doc, "documentElement");
     if (!JS_IsNull(doc_elem) && !JS_IsUndefined(doc_elem)) {
         JS_SetPropertyStr(ctx, global, "documentElement", doc_elem);
     }

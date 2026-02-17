@@ -6,7 +6,7 @@
 
 // Debug function to check if a JSObject has valid shape
 // Returns 1 if valid, 0 if invalid
-static inline int check_object_shape(JSContext *ctx, JSValue obj, const char* name) {
+static inline int check_object_shape(JSContext *ctx, GCValue obj, const char* name) {
     if (JS_IsException(obj) || !JS_IsObject(obj)) {
         __android_log_print(ANDROID_LOG_ERROR, "js_quickjs", "check_object_shape(%s): Not an object!", name);
         return 0;
@@ -16,7 +16,7 @@ static inline int check_object_shape(JSContext *ctx, JSValue obj, const char* na
     // offset 0: class_id (uint16) + weakref_count (uint32)  
     // offset 8: shape pointer (JSShape*)
     
-    // Get the JSObject pointer from the JSValue using JS_VALUE_GET_PTR macro
+    // Get the JSObject pointer from the GCValue using JS_VALUE_GET_PTR macro
     void* obj_ptr = JS_VALUE_GET_PTR(obj);
     
     // Read shape pointer at offset 8

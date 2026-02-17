@@ -58,7 +58,7 @@ struct HtmlNode {
     HtmlNode *parent;
     
     /* QuickJS object reference (created when node is added to document) */
-    JSValue js_object;
+    GCValue js_object;
     int has_js_object;  /* Flag to track if js_object is valid */
 };
 
@@ -99,7 +99,7 @@ void html_document_free(HtmlDocument *doc);
 bool html_create_dom_in_js(JSContext *ctx, HtmlDocument *doc);
 
 /* Create a single HTML element in QuickJS */
-JSValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribute *attrs);
+GCValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribute *attrs);
 
 /* Helper to get element by tag name from document */
 HtmlNode* html_document_get_element_by_tag(HtmlDocument *doc, const char *tag_name);
@@ -109,7 +109,7 @@ int html_document_get_elements_by_tag(HtmlDocument *doc, const char *tag_name,
                                        HtmlNode **out_nodes, int max_nodes);
 
 /* Create JavaScript document object with parsed HTML elements */
-JSValue html_create_js_document(JSContext *ctx, HtmlDocument *doc);
+GCValue html_create_js_document(JSContext *ctx, HtmlDocument *doc);
 
 /* ============================================================================
  * HTML Utility Functions

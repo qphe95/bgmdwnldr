@@ -25,9 +25,9 @@ extern JSClassID js_dom_rect_read_only_class_id;
 extern JSClassID js_map_class_id;
 
 // Initialize all browser stubs
-void init_browser_stubs(JSContext *ctx, JSValue global);
+void init_browser_stubs(JSContext *ctx, GCValue global);
 
 // Helper to get a prototype from a constructor: Constructor.prototype
-JSValue js_get_prototype(JSContext *ctx, JSValueConst ctor);
+GCValue js_get_prototype(JSContext *ctx, GCValueConst ctor);
 
 #endif // BROWSER_STUBS_H
