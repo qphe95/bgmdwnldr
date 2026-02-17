@@ -5,7 +5,8 @@ Core library for LLDB debugging utilities.
 from .memory import MemoryReader, MemoryScanner, MemoryRegion
 from .registers import RegisterSet, RegisterMonitor, ARM64Reg
 from .process import ProcessControl
-from .automation import ExpectScriptBuilder, ExpectInteraction
+from .automation import ExpectScriptBuilder, ExpectInteraction, LLDBServerManager, ADBAutomation
+from .events import EventType, DebugEvent, EventHandler, EventDispatcher
 
 __all__ = [
     'MemoryReader',
@@ -17,4 +18,10 @@ __all__ = [
     'ProcessControl',
     'ExpectScriptBuilder',
     'ExpectInteraction',
+    'LLDBServerManager',
+    'ADBAutomation',
+    'EventType',
+    'DebugEvent',
+    'EventHandler',
+    'EventDispatcher',
 ]

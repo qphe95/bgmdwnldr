@@ -9,6 +9,7 @@ from .memory_corruption import MemoryCorruptionModule
 from .watchpoint_debug import WatchpointDebugModule
 from .register_tracking import RegisterTrackingModule
 from .crash_analysis import CrashAnalysisModule
+from .automation import ExpectAutomationModule
 
 AVAILABLE_MODULES = {
     'shape_tracking': ShapeTrackingModule,
@@ -17,6 +18,8 @@ AVAILABLE_MODULES = {
     'watchpoint_debug': WatchpointDebugModule,
     'register_tracking': RegisterTrackingModule,
     'crash_analysis': CrashAnalysisModule,
+    'expect_automation': ExpectAutomationModule,
+    'automation': ExpectAutomationModule,
 }
 
 __all__ = [
