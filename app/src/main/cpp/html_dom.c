@@ -722,7 +722,7 @@ GCValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribu
     return element;
 }
 
-/* Recursively create DOM nodes in JS with proper JS_FreeValue cleanup */
+/* Recursively create DOM nodes in JS with automatic GC memory management */
 static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, GCValue parent) {
     if (!ctx || !node) return false;
     
@@ -742,15 +742,15 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, GCValu
                 
                 /* If we have a parent, append this element */
                 if (!JS_IsUndefined(parent) && !JS_IsNull(parent)) {
-                    /* Use proper JS_FreeValue for temporary GCVAlues */
+                    Note: GCValue uses automatic garbage collection
                     GCValue appendChild = JS_GetPropertyStr(ctx, parent, "appendChild");
                     
                     if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
                         GCValue args[1] = { js_node };
                         GCValue result = JS_Call(ctx, appendChild, parent, 1, args);
-                        JS_FreeValue(ctx, result);
+                        
                     }
-                    JS_FreeValue(ctx, appendChild);
+                    
                 }
             }
             break;
@@ -769,10 +769,10 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, GCValu
                         GCValue push = JS_GetPropertyStr(ctx, childNodes, "push");
                         GCValue args[1] = { js_node };
                         GCValue result = JS_Call(ctx, push, childNodes, 1, args);
-                        JS_FreeValue(ctx, result);
-                        JS_FreeValue(ctx, push);
+                        
+                        
                     }
-                    JS_FreeValue(ctx, childNodes);
+                    
                 }
             }
             break;
@@ -876,7 +876,7 @@ bool html_create_dom_in_js(JSContext *ctx, HtmlDocument *doc) {
         return false;
     }
     
-    /* Use proper JS_FreeValue for all temporary GCVAlues */
+    Note: GCValue uses automatic garbage collection
     /* Get global object and set document */
     GCValue global = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, global, "document", js_doc);
@@ -886,8 +886,8 @@ bool html_create_dom_in_js(JSContext *ctx, HtmlDocument *doc) {
     if (!JS_IsNull(doc_elem) && !JS_IsUndefined(doc_elem)) {
         JS_SetPropertyStr(ctx, global, "documentElement", doc_elem);
     }
-    JS_FreeValue(ctx, doc_elem);
-    JS_FreeValue(ctx, global);
+    
+    
     
     LOG_INFO("DOM created successfully in JS context");
     return true;

@@ -132,11 +132,7 @@ typedef struct {
 static void js_xhr_finalizer(JSRuntime *rt, GCValue val) {
     XMLHttpRequest *xhr = JS_GetOpaque(val, js_xhr_class_id);
     if (xhr) {
-        // Free GCValue fields to prevent memory leaks
-        JS_FreeValueRT(rt, xhr->headers);
-        JS_FreeValueRT(rt, xhr->onload);
-        JS_FreeValueRT(rt, xhr->onerror);
-        JS_FreeValueRT(rt, xhr->onreadystatechange);
+        // Note: GCValue fields are automatically garbage collected, no cleanup needed
         free(xhr);
     }
 }
@@ -268,14 +264,7 @@ typedef struct {
 static void js_video_finalizer(JSRuntime *rt, GCValue val) {
     HTMLVideoElement *vid = JS_GetOpaque(val, js_video_class_id);
     if (vid) {
-        // Free all event handler references that were duped in setters
-        // These must be freed to prevent memory leaks
-        JS_FreeValueRT(rt, vid->onloadstart);
-        JS_FreeValueRT(rt, vid->onloadedmetadata);
-        JS_FreeValueRT(rt, vid->oncanplay);
-        JS_FreeValueRT(rt, vid->onplay);
-        JS_FreeValueRT(rt, vid->onplaying);
-        JS_FreeValueRT(rt, vid->onerror);
+        // Note: GCValue fields are automatically garbage collected, no cleanup needed
         free(vid);
     }
 }
@@ -424,20 +413,17 @@ static GCValue js_video_get_network_state(JSContext *ctx, GCValueConst this_val)
 }
 
 // Generic getter/setter for event callbacks
-// NOTE: Proper reference counting is critical here. When storing a JSValue
-// in the C struct, we must dup it to prevent use-after-free when the
-// original value is garbage collected.
+// NOTE: With GCValue, we just copy the handle. The GC manages the actual object.
 #define DEFINE_VIDEO_EVENT_HANDLER(name, field) \
     static GCValue js_video_get_##name(JSContext *ctx, GCValueConst this_val) { \
         HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
         if (!vid) return JS_EXCEPTION; \
-        return JS_DupValue(ctx, vid->field); \
+        return vid->field; \
     } \
     static GCValue js_video_set_##name(JSContext *ctx, GCValueConst this_val, GCValueConst val) { \
         HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
         if (!vid) return JS_EXCEPTION; \
-        JS_FreeValue(ctx, vid->field); \
-        vid->field = JS_DupValue(ctx, val); \
+        vid->field = val; \
         return JS_UNDEFINED; \
     }
 
@@ -612,8 +598,8 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     
     // Skip if window doesn't exist or isn't an object
     if (JS_IsUndefined(window_obj) || JS_IsNull(window_obj) || !JS_IsObject(window_obj)) {
-        JS_FreeValue(ctx, window_obj);
-        JS_FreeValue(ctx, global);
+        
+        
         return;
     }
     
@@ -621,16 +607,12 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
     // We check this by comparing using JS_StrictEq which returns 1 if equal
     int is_equal = JS_StrictEq(ctx, window_obj, global);
     if (is_equal == 1) {
-        JS_FreeValue(ctx, window_obj);
-        JS_FreeValue(ctx, global);
         return;
     }
     
     // Skip internal properties
     const char *prop_name = JS_AtomToCString(ctx, var_name);
     if (!prop_name) {
-        JS_FreeValue(ctx, window_obj);
-        JS_FreeValue(ctx, global);
         return;
     }
     
@@ -645,8 +627,6 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
         strcmp(prop_name, "document") == 0 ||
         strcmp(prop_name, "console") == 0) {
         JS_FreeCString(ctx, prop_name);
-        JS_FreeValue(ctx, window_obj);
-        JS_FreeValue(ctx, global);
         return;
     }
     
@@ -660,25 +640,13 @@ void js_quickjs_on_global_var_defined(JSContext *ctx, JSAtom var_name)
             // Skip undefined values - the callback may be called during closure
             // creation before the variable is actually initialized
             if (!JS_IsUndefined(val)) {
-                // Proper reference counting:
-                // 1. JS_GetProperty returns a new reference (val)
-                // 2. JS_SetProperty consumes the reference we pass to it
-                // 3. We don't need val after setting, so pass it directly
-                if (JS_SetProperty(ctx, window_obj, var_name, val) < 0) {
-                    // SetProperty failed, free the reference to avoid leak
-                    JS_FreeValue(ctx, val);
-                }
-                // If successful, val reference is now owned by window_obj
-            } else {
-                // val is undefined, free the reference
-                JS_FreeValue(ctx, val);
+                // With GCValue, just set the property directly
+                JS_SetProperty(ctx, window_obj, var_name, val);
             }
         }
     }
     
     JS_FreeCString(ctx, prop_name);
-    JS_FreeValue(ctx, window_obj);
-    JS_FreeValue(ctx, global);
 }
 
 // Initialize browser environment
@@ -789,7 +757,7 @@ static char* extract_attr(const char *html, const char *tag_end, const char *att
 }
 
 // Create DOM nodes from parsed HTML document
-// Using manual JS_FreeValue for proper memory management
+// Using automatic GC memory management
 static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) {
     if (!ctx || !doc) return 0;
     
@@ -814,13 +782,13 @@ static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) 
                             if (strcasecmp(attr->name, "src") == 0 && attr->value[0]) {
                                 GCValue src_val = JS_NewString(ctx, attr->value);
                                 JS_SetPropertyStr(ctx, elem, "src", src_val);
-                                JS_FreeValue(ctx, src_val);
+                                
                                 record_captured_url(attr->value);
                             }
                             if (strcasecmp(attr->name, "id") == 0 && attr->value[0]) {
                                 GCValue id_val = JS_NewString(ctx, attr->value);
                                 JS_SetPropertyStr(ctx, elem, "id", id_val);
-                                JS_FreeValue(ctx, id_val);
+                                
                             }
                             attr = attr->next;
                         }
@@ -841,16 +809,16 @@ static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) 
                             if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
                                 GCValue args[1] = { elem };
                                 GCValue result = JS_Call(ctx, appendChild, doc_body, 1, args);
-                                JS_FreeValue(ctx, result);
+                                
                             }
-                            JS_FreeValue(ctx, appendChild);
+                            
                         }
-                        JS_FreeValue(ctx, doc_body);
+                        
                     }
-                    JS_FreeValue(ctx, body);
-                    JS_FreeValue(ctx, global);
+                    
+                    
                 }
-                JS_FreeValue(ctx, elem);
+                
             }
             node = node->next_sibling;
         }
@@ -860,7 +828,7 @@ static int create_dom_nodes_from_parsed_html(JSContext *ctx, HtmlDocument *doc) 
 }
 
 // Parse HTML and create elements from <video> tags using the proper DOM parser
-// Using manual JS_FreeValue for proper memory management
+// Using automatic GC memory management
 static int create_video_elements_from_html(JSContext *ctx, const char *html) {
     if (!html) return 0;
     
@@ -891,16 +859,16 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
                 if (strcasecmp(attr->name, "id") == 0 && attr->value[0]) {
                     GCValue id_val = JS_NewString(ctx, attr->value);
                     JS_SetPropertyStr(ctx, video, "id", id_val);
-                    JS_FreeValue(ctx, id_val);
+                    
                 } else if (strcasecmp(attr->name, "src") == 0 && attr->value[0]) {
                     GCValue src_val = JS_NewString(ctx, attr->value);
                     JS_SetPropertyStr(ctx, video, "src", src_val);
-                    JS_FreeValue(ctx, src_val);
+                    
                     record_captured_url(attr->value);
                 } else if (strcasecmp(attr->name, "class") == 0 && attr->value[0]) {
                     GCValue class_val = JS_NewString(ctx, attr->value);
                     JS_SetPropertyStr(ctx, video, "className", class_val);
-                    JS_FreeValue(ctx, class_val);
+                    
                 }
                 attr = attr->next;
             }
@@ -913,10 +881,10 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
                 snprintf(default_id, sizeof(default_id), "video_%d", i);
                 GCValue default_id_val = JS_NewString(ctx, default_id);
                 JS_SetPropertyStr(ctx, video, "id", default_id_val);
-                JS_FreeValue(ctx, default_id_val);
+                
             }
             JS_FreeCString(ctx, current_id);
-            JS_FreeValue(ctx, id_prop);
+            
 
             /* Add to document.body */
             GCValue global = JS_GetGlobalObject(ctx);
@@ -929,17 +897,17 @@ static int create_video_elements_from_html(JSContext *ctx, const char *html) {
                 if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
                     GCValue args[1] = { video };
                     GCValue result = JS_Call(ctx, appendChild, body, 1, args);
-                    JS_FreeValue(ctx, result);
+                    
                     
                     created++;
                 }
-                JS_FreeValue(ctx, appendChild);
+                
             }
-            JS_FreeValue(ctx, body);
-            JS_FreeValue(ctx, doc_obj);
-            JS_FreeValue(ctx, global);
+            
+            
+            
         }
-        JS_FreeValue(ctx, video);
+        
     }
     
     

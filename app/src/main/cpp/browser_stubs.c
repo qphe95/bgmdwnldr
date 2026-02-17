@@ -56,7 +56,7 @@ static int is_obj_usable(JSContext *ctx, GCValue obj) {
     
     GCValue proto = JS_GetPrototype(ctx, obj);
     int usable = !JS_IsException(proto);
-    JS_FreeValue(ctx, proto);
+    
     
     if (!usable) {
         LOG_ERROR("is_obj_usable: object is unusable (shape corrupted) - logged from find_own_property");
@@ -2675,8 +2675,8 @@ void init_browser_stubs(JSContext *ctx, GCValue global) {
     if (!is_obj_usable(ctx, dom_exception_ctor)) {
         LOG_ERROR("dom_exception_ctor not usable before setting constants");
         // Skip setting constants on corrupted object
-        JS_FreeValue(ctx, dom_exception_ctor);
-        JS_FreeValue(ctx, dom_exception_proto);
+        
+        
         // Continue with rest of init
         goto skip_dom_exception;
     }

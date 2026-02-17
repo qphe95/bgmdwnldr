@@ -437,10 +437,9 @@ static inline GCValue GC_NewShortBigInt(int64_t d)
  */
 struct JSRuntime;
 struct JSContext;
-/* GCValue reference management - no-ops for mark-and-sweep GC */
-static inline GCValue GC_DupValue(JSContext *ctx, GCValueConst v) { (void)ctx; return (GCValue)v; }
-static inline void GC_FreeValue(JSContext *ctx, GCValue v) { (void)ctx; (void)v; }
-static inline void GC_FreeValueRT(JSRuntime *rt, GCValue v) { (void)rt; (void)v; }
+/* Note: With GC-based memory management, GCValue doesn't need reference counting.
+   Simply assign/copy GCValue directly - the GC tracks object lifetime via reachability.
+   No manual Dup/Free needed - the stable handle in GCValue is automatically valid. */
 
 #define GC_VALUE_IS_BOTH_INT(v1, v2) ((GC_VALUE_GET_TAG(v1) | GC_VALUE_GET_TAG(v2)) == 0)
 #define GC_VALUE_IS_BOTH_FLOAT(v1, v2) (GC_TAG_IS_FLOAT64(GC_VALUE_GET_TAG(v1)) && GC_TAG_IS_FLOAT64(GC_VALUE_GET_TAG(v2)))
@@ -889,7 +888,7 @@ static inline JS_BOOL JS_IsNumber(GCValueConst v)
     return tag == JS_TAG_INT || GC_TAG_IS_FLOAT64(tag);
 }
 
-static inline JS_BOOL JS_IsBigInt(JSContext *ctx, GCValueConst v)
+static inline JS_BOOL JS_IsBigInt(GCValueConst v)
 {
     int tag = GC_VALUE_GET_TAG(v);
     return tag == JS_TAG_BIG_INT || tag == JS_TAG_SHORT_BIG_INT;
