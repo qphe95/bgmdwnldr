@@ -742,7 +742,7 @@ static bool html_node_create_js_recursive(JSContext *ctx, HtmlNode *node, GCValu
                 
                 /* If we have a parent, append this element */
                 if (!JS_IsUndefined(parent) && !JS_IsNull(parent)) {
-                    Note: GCValue uses automatic garbage collection
+                    /* Note: GCValue uses automatic garbage collection */
                     GCValue appendChild = JS_GetPropertyStr(ctx, parent, "appendChild");
                     
                     if (!JS_IsUndefined(appendChild) && !JS_IsNull(appendChild)) {
@@ -876,7 +876,7 @@ bool html_create_dom_in_js(JSContext *ctx, HtmlDocument *doc) {
         return false;
     }
     
-    Note: GCValue uses automatic garbage collection
+    /* Note: GCValue uses automatic garbage collection */
     /* Get global object and set document */
     GCValue global = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, global, "document", js_doc);

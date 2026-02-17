@@ -46,6 +46,39 @@ typedef enum {
     JS_GC_OBJ_TYPE_COUNT,
 } JSGCObjectTypeEnum;
 
+/*
+ * GC Finalizer function type.
+ * Called during garbage collection when an object is being freed.
+ * The finalizer should clean up external resources (file handles, 
+ * SharedArrayBuffer data, etc.) but NOT free the object memory itself
+ * (the GC handles that).
+ * 
+ * Parameters:
+ *   rt - The JS runtime
+ *   handle - The GCHandle being freed
+ *   user_ptr - Pointer to the object's user data (after GCHeader)
+ */
+typedef void GCFinalizerFunc(JSRuntime *rt, GCHandle handle, void *user_ptr);
+
+/*
+ * Set a finalizer for a specific handle.
+ * The finalizer will be called during GC sweep phase when this object is freed.
+ * Set to NULL to remove the finalizer.
+ */
+void gc_set_handle_finalizer(GCHandle handle, GCFinalizerFunc *finalizer);
+
+/*
+ * Get the finalizer for a specific handle.
+ * Returns NULL if no finalizer is registered.
+ */
+GCFinalizerFunc *gc_get_handle_finalizer(GCHandle handle);
+
+/*
+ * Run finalizer for a specific object if one is registered.
+ * Called internally by the GC during sweep.
+ */
+void gc_run_finalizer(JSRuntime *rt, GCHandle handle);
+
 typedef enum {
     GC_HANDLE_ARRAY_GC,
     GC_HANDLE_ARRAY_CONTEXT,
@@ -69,6 +102,7 @@ typedef struct GCHeader {
     uint32_t size;
     uint8_t flags;
     uint16_t pad;
+    GCFinalizerFunc *finalizer;  /* Per-handle finalizer - called when object is freed */
 } GCHeader;
 
 bool gc_init(void);
@@ -81,8 +115,18 @@ GCHandle gc_alloc_ex(size_t size, JSGCObjectTypeEnum gc_obj_type,
                      GCHandleArrayType array_type);
 GCHandle gc_realloc(GCHandle handle, size_t new_size);
 
+/* Allocate a handle for an existing pointer (used during pointer-to-handle migration) */
+GCHandle gc_alloc_handle_for_ptr(void *ptr);
+
 /* Like gc_realloc but returns slack (extra usable space) for array optimization */
 GCHandle gc_realloc2(GCHandle handle, size_t new_size, size_t *pslack);
+
+/* Forward declaration needed by inline functions below */
+void *gc_deref(GCHandle handle);
+static inline GCHeader *gc_header(void *user_ptr) {
+    if (!user_ptr) return NULL;
+    return (GCHeader*)((uint8_t*)user_ptr - sizeof(GCHeader));
+}
 
 /* Allocate and zero-initialize */
 static inline GCHandle gc_allocz(size_t size, JSGCObjectTypeEnum gc_obj_type) {
@@ -126,8 +170,6 @@ static inline size_t gc_usable_size(GCHandle handle) {
     GCHeader *hdr = gc_header(ptr);
     return hdr->size > sizeof(GCHeader) ? hdr->size - sizeof(GCHeader) : 0;
 }
-
-void *gc_deref(GCHandle handle);
 bool gc_ptr_is_valid(void *ptr);
 
 /* Helper: allocate and return pointer directly (for internal use) */
@@ -156,11 +198,6 @@ size_t gc_total_bytes(void);
 
 void gc_add_root(GCHandle handle);
 void gc_remove_root(GCHandle handle);
-
-static inline GCHeader *gc_header(void *user_ptr) {
-    if (!user_ptr) return NULL;
-    return (GCHeader*)((uint8_t*)user_ptr - sizeof(GCHeader));
-}
 
 /*
  * Get the existing GCHandle for a GC-managed pointer.

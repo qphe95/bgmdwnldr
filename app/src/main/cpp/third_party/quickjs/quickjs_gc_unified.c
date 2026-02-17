@@ -61,6 +61,45 @@ void gc_set_runtime(JSRuntime *rt) {
     g_gc.rt = rt;
 }
 
+void gc_set_handle_finalizer(GCHandle handle, GCFinalizerFunc *finalizer) {
+    if (handle == GC_HANDLE_NULL || handle >= g_gc.handles.count) return;
+    
+    void *ptr = g_gc.handles.ptrs[handle];
+    if (!ptr) return;
+    
+    GCHeader *hdr = gc_header(ptr);
+    if (!hdr) return;
+    
+    hdr->finalizer = finalizer;
+}
+
+GCFinalizerFunc *gc_get_handle_finalizer(GCHandle handle) {
+    if (handle == GC_HANDLE_NULL || handle >= g_gc.handles.count) return NULL;
+    
+    void *ptr = g_gc.handles.ptrs[handle];
+    if (!ptr) return NULL;
+    
+    GCHeader *hdr = gc_header(ptr);
+    if (!hdr) return NULL;
+    
+    return hdr->finalizer;
+}
+
+void gc_run_finalizer(JSRuntime *rt, GCHandle handle) {
+    if (handle == GC_HANDLE_NULL || handle >= g_gc.handles.count) return;
+    
+    void *ptr = g_gc.handles.ptrs[handle];
+    if (!ptr) return;
+    
+    GCHeader *hdr = gc_header(ptr);
+    if (!hdr) return;
+    
+    /* Call per-handle finalizer if registered */
+    if (hdr->finalizer) {
+        hdr->finalizer(rt, handle, ptr);
+    }
+}
+
 static void *bump_alloc(size_t size) {
     size_t total_size = sizeof(GCHeader) + ALIGN16(size);
     
@@ -87,6 +126,7 @@ static void *bump_alloc(size_t size) {
     hdr->size = total_size;
     hdr->flags = 0;
     hdr->pad = 0;
+    hdr->finalizer = NULL;  /* No finalizer by default */
     
     memset(ptr + sizeof(GCHeader), 0, ALIGN16(size));
     return ptr + sizeof(GCHeader);
@@ -248,6 +288,7 @@ static void gc_compact(void) {
     uint8_t *write = read;
     size_t bump = atomic_load(&g_gc.bump.offset);
     size_t new_bytes = 0;
+    JSRuntime *rt = g_gc.rt;
     
     while ((size_t)(read - g_gc.heap) < bump) {
         GCHeader *hdr = (GCHeader*)read;
@@ -270,7 +311,12 @@ static void gc_compact(void) {
             write += size;
             new_bytes += size;
         } else {
+            /* Object is being freed - run finalizer if registered */
             if (hdr->handle < g_gc.handles.count) {
+                /* Call per-handle finalizer if one is registered */
+                if (rt && hdr->finalizer) {
+                    hdr->finalizer(rt, hdr->handle, read + sizeof(GCHeader));
+                }
                 g_gc.handles.ptrs[hdr->handle] = NULL;
             }
         }
