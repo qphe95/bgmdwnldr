@@ -985,6 +985,7 @@ struct JSShape {
     int deleted_prop_count;
     GCHandle shape_hash_next_handle; /* Handle to next shape in JSRuntime.shape_hash[h] list (GC_HANDLE_NULL if none) */
     GCHandle proto_handle; /* Handle to prototype object (GC_HANDLE_NULL if none) */
+    GCHandle handle; /* Handle to this shape (for GC_PTR_TO_HANDLE to work with offset shapes) */
     JSShapeProperty prop[0]; /* prop_size elements */
 };
 
@@ -1069,6 +1070,117 @@ struct JSObject {
         JSGlobalObject global_object;
     } u;
 };
+
+/* ============================================================================
+ * GC Accessor Function Definitions
+ * These functions are declared in quickjs.h but defined here where the
+ * struct definitions are visible.
+ * ============================================================================ */
+
+/* JSObject shape_handle access */
+GCHandle gc_obj_get_shape_handle(GCHandle obj_handle) {
+    void *ptr = gc_deref(obj_handle);
+    if (ptr != NULL) {
+        return ((JSObject *)ptr)->shape_handle;
+    }
+    return GC_HANDLE_NULL;
+}
+
+void gc_obj_set_shape_handle(GCHandle obj_handle, GCHandle val) {
+    void *ptr = gc_deref(obj_handle);
+    if (ptr != NULL) {
+        ((JSObject *)ptr)->shape_handle = val;
+    }
+}
+
+/* JSObject prop_handle access */
+GCHandle gc_obj_get_prop_handle(GCHandle obj_handle) {
+    void *ptr = gc_deref(obj_handle);
+    if (ptr != NULL) {
+        return ((JSObject *)ptr)->prop_handle;
+    }
+    return GC_HANDLE_NULL;
+}
+
+void gc_obj_set_prop_handle(GCHandle obj_handle, GCHandle val) {
+    void *ptr = gc_deref(obj_handle);
+    if (ptr != NULL) {
+        ((JSObject *)ptr)->prop_handle = val;
+    }
+}
+
+/* JSShape proto_handle access */
+GCHandle gc_shape_get_proto_handle(GCHandle shape_handle) {
+    void *ptr = gc_deref(shape_handle);
+    if (ptr != NULL) {
+        return ((JSShape *)ptr)->proto_handle;
+    }
+    return GC_HANDLE_NULL;
+}
+
+void gc_shape_set_proto_handle(GCHandle shape_handle, GCHandle val) {
+    void *ptr = gc_deref(shape_handle);
+    if (ptr != NULL) {
+        ((JSShape *)ptr)->proto_handle = val;
+    }
+}
+
+/* JSObject boolean checks */
+int gc_obj_is_exotic(GCHandle obj_handle) {
+    void *ptr = gc_deref(obj_handle);
+    if (ptr != NULL) {
+        return ((JSObject *)ptr)->is_exotic;
+    }
+    return 0;
+}
+
+int gc_obj_is_fast_array(GCHandle obj_handle) {
+    void *ptr = gc_deref(obj_handle);
+    if (ptr != NULL) {
+        return ((JSObject *)ptr)->fast_array;
+    }
+    return 0;
+}
+
+int gc_obj_is_extensible(GCHandle obj_handle) {
+    void *ptr = gc_deref(obj_handle);
+    if (ptr != NULL) {
+        return ((JSObject *)ptr)->extensible;
+    }
+    return 0;
+}
+
+uint32_t gc_obj_get_weakref_count(GCHandle obj_handle) {
+    void *ptr = gc_deref(obj_handle);
+    if (ptr != NULL) {
+        return ((JSObject *)ptr)->weakref_count;
+    }
+    return 0;
+}
+
+/* JSShape accessors */
+int gc_shape_get_prop_count(GCHandle shape_handle) {
+    void *ptr = gc_deref(shape_handle);
+    if (ptr != NULL) {
+        return ((JSShape *)ptr)->prop_count;
+    }
+    return 0;
+}
+
+int gc_shape_is_hashed(GCHandle shape_handle) {
+    void *ptr = gc_deref(shape_handle);
+    if (ptr != NULL) {
+        return ((JSShape *)ptr)->is_hashed;
+    }
+    return 0;
+}
+
+void gc_shape_set_hashed(GCHandle shape_handle, int val) {
+    void *ptr = gc_deref(shape_handle);
+    if (ptr != NULL) {
+        ((JSShape *)ptr)->is_hashed = val;
+    }
+}
 
 typedef struct JSMapRecord {
     int ref_count; /* used during enumeration to avoid freeing the record */
@@ -5481,8 +5593,13 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
         return GC_HANDLE_NULL;
     }
     QJS_LOGI("js_new_shape_nohash: sh_alloc=%p", sh_alloc);
+    /* Get handle from sh_alloc (the base allocation) before offsetting */
+    GCHandle sh_handle = GC_PTR_TO_HANDLE(sh_alloc);
+    QJS_LOGI("js_new_shape_nohash: sh_handle=%u", sh_handle);
     sh = get_shape_from_alloc(sh_alloc, hash_size);
     QJS_LOGI("js_new_shape_nohash: sh=%p", (void*)sh);
+    /* Store handle in shape for later retrieval (GC_PTR_TO_HANDLE won't work on sh directly) */
+    sh->handle = sh_handle;
     /* Object already registered with GC by gc_alloc_js_object */
     sh->proto_handle = GC_PTR_TO_HANDLE(proto);
     QJS_LOGI("js_new_shape_nohash: memset...");
@@ -5546,6 +5663,9 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     if (!sh_alloc)
         return GC_HANDLE_NULL;
     
+    /* Get handle from sh_alloc before memcpy overwrites it */
+    GCHandle sh_handle = GC_PTR_TO_HANDLE(sh_alloc);
+    
     sh_alloc1 = get_alloc_from_shape(sh1);
     /* Copy shape data. Both allocations return user_ptr (after GCHeader).
      * The header was initialized by gc_alloc_js_object separately. */
@@ -5553,6 +5673,7 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     
     sh = get_shape_from_alloc(sh_alloc, hash_size);
     /* Object already registered with GC by gc_alloc_js_object */
+    sh->handle = sh_handle;  /* Store the correct handle */
     sh->is_hashed = FALSE;
     sh->shape_hash_next_handle = GC_HANDLE_NULL;  /* CRITICAL: cloned shape is not in hash table */
     if (sh->proto_handle != GC_HANDLE_NULL) {
@@ -5969,7 +6090,8 @@ static GCValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
     p->is_HTMLDDA = 0;
     p->weakref_count = 0;
     p->u.opaque = NULL;
-    p->shape_handle = GC_PTR_TO_HANDLE(sh);
+    /* Use sh->handle instead of GC_PTR_TO_HANDLE(sh) because shapes are offset from alloc base */
+    p->shape_handle = sh->handle;
     
     /* DIAGNOSTIC: Verify shape was set correctly */
     QJS_LOGE("JS_NewObjectFromShape: obj=%p shape=%p class_id=%d", (void*)p, (void*)GC_SHAPE_DEREF(p->shape_handle), class_id);
@@ -18695,7 +18817,7 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
             gc_run(); \
         } \
     } while(0); \
-    goto *dispatch_table[opcode = *pc++]
+    goto *dispatch_table[opcode = *pc++];
 #define CASE(op)        case_ ## op
 #define DEFAULT         case_default
 #define BREAK           SWITCH(pc)

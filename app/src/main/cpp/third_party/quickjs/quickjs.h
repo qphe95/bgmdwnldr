@@ -443,53 +443,17 @@ typedef const GCValue GCValueConst;
 struct JSObject;
 struct JSShape;
 
-/* JSObject shape_handle access */
-static inline GCHandle gc_obj_get_shape_handle(GCHandle obj_handle) {
-    void *ptr = gc_deref(obj_handle);
-    if (ptr != NULL) {
-        return ((struct JSObject *)ptr)->shape_handle;
-    }
-    return GC_HANDLE_NULL;
-}
+/* JSObject shape_handle access - defined in quickjs.c */
+GCHandle gc_obj_get_shape_handle(GCHandle obj_handle);
+void gc_obj_set_shape_handle(GCHandle obj_handle, GCHandle val);
 
-static inline void gc_obj_set_shape_handle(GCHandle obj_handle, GCHandle val) {
-    void *ptr = gc_deref(obj_handle);
-    if (ptr != NULL) {
-        ((struct JSObject *)ptr)->shape_handle = val;
-    }
-}
+/* JSObject prop_handle access - defined in quickjs.c */
+GCHandle gc_obj_get_prop_handle(GCHandle obj_handle);
+void gc_obj_set_prop_handle(GCHandle obj_handle, GCHandle val);
 
-/* JSObject prop_handle access */
-static inline GCHandle gc_obj_get_prop_handle(GCHandle obj_handle) {
-    void *ptr = gc_deref(obj_handle);
-    if (ptr != NULL) {
-        return ((struct JSObject *)ptr)->prop_handle;
-    }
-    return GC_HANDLE_NULL;
-}
-
-static inline void gc_obj_set_prop_handle(GCHandle obj_handle, GCHandle val) {
-    void *ptr = gc_deref(obj_handle);
-    if (ptr != NULL) {
-        ((struct JSObject *)ptr)->prop_handle = val;
-    }
-}
-
-/* JSShape proto_handle access */
-static inline GCHandle gc_shape_get_proto_handle(GCHandle shape_handle) {
-    void *ptr = gc_deref(shape_handle);
-    if (ptr != NULL) {
-        return ((struct JSShape *)ptr)->proto_handle;
-    }
-    return GC_HANDLE_NULL;
-}
-
-static inline void gc_shape_set_proto_handle(GCHandle shape_handle, GCHandle val) {
-    void *ptr = gc_deref(shape_handle);
-    if (ptr != NULL) {
-        ((struct JSShape *)ptr)->proto_handle = val;
-    }
-}
+/* JSShape proto_handle access - defined in quickjs.c */
+GCHandle gc_shape_get_proto_handle(GCHandle shape_handle);
+void gc_shape_set_proto_handle(GCHandle shape_handle, GCHandle val);
 
 /*
  * GC_FIELD_GET_PTR - Get a non-GC pointer field from a GC-managed object.
@@ -531,6 +495,12 @@ static inline void gc_shape_set_proto_handle(GCHandle shape_handle, GCHandle val
  * Usage: GCHandle shape_handle = GC_OBJ_GET_SHAPE(obj_handle);
  */
 #define GC_OBJ_GET_SHAPE(obj_handle) GC_FIELD_GET(obj_handle, JSObject, shape_handle)
+
+/*
+ * GC_OBJ_GET_CLASS_ID - Get the class ID from an object handle.
+ * Usage: uint16_t class_id = GC_OBJ_GET_CLASS_ID(obj_handle);
+ */
+#define GC_OBJ_GET_CLASS_ID(obj_handle) GC_FIELD_GET(obj_handle, JSObject, class_id)
 
 /*
  * ============================================================================
@@ -774,62 +744,16 @@ static inline void gc_shape_set_proto_handle(GCHandle shape_handle, GCHandle val
  * Use these functions instead of macros for type safety and better debugging.
  */
 
-/* JSObject boolean checks */
-static inline int gc_obj_is_exotic(GCHandle obj_handle) {
-    void *ptr = gc_deref(obj_handle);
-    if (ptr != NULL) {
-        return ((struct JSObject *)ptr)->is_exotic;
-    }
-    return 0;
-}
+/* JSObject boolean checks - defined in quickjs.c */
+int gc_obj_is_exotic(GCHandle obj_handle);
+int gc_obj_is_fast_array(GCHandle obj_handle);
+int gc_obj_is_extensible(GCHandle obj_handle);
+uint32_t gc_obj_get_weakref_count(GCHandle obj_handle);
 
-static inline int gc_obj_is_fast_array(GCHandle obj_handle) {
-    void *ptr = gc_deref(obj_handle);
-    if (ptr != NULL) {
-        return ((struct JSObject *)ptr)->fast_array;
-    }
-    return 0;
-}
-
-static inline int gc_obj_is_extensible(GCHandle obj_handle) {
-    void *ptr = gc_deref(obj_handle);
-    if (ptr != NULL) {
-        return ((struct JSObject *)ptr)->extensible;
-    }
-    return 0;
-}
-
-static inline uint32_t gc_obj_get_weakref_count(GCHandle obj_handle) {
-    void *ptr = gc_deref(obj_handle);
-    if (ptr != NULL) {
-        return ((struct JSObject *)ptr)->weakref_count;
-    }
-    return 0;
-}
-
-/* JSShape accessors */
-static inline int gc_shape_get_prop_count(GCHandle shape_handle) {
-    void *ptr = gc_deref(shape_handle);
-    if (ptr != NULL) {
-        return ((struct JSShape *)ptr)->prop_count;
-    }
-    return 0;
-}
-
-static inline int gc_shape_is_hashed(GCHandle shape_handle) {
-    void *ptr = gc_deref(shape_handle);
-    if (ptr != NULL) {
-        return ((struct JSShape *)ptr)->is_hashed;
-    }
-    return 0;
-}
-
-static inline void gc_shape_set_hashed(GCHandle shape_handle, int val) {
-    void *ptr = gc_deref(shape_handle);
-    if (ptr != NULL) {
-        ((struct JSShape *)ptr)->is_hashed = val;
-    }
-}
+/* JSShape accessors - defined in quickjs.c */
+int gc_shape_get_prop_count(GCHandle shape_handle);
+int gc_shape_is_hashed(GCHandle shape_handle);
+void gc_shape_set_hashed(GCHandle shape_handle, int val);
 
 /* ============================================================================
  * JSShape-specific Access Macros
