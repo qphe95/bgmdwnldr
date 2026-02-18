@@ -1,5 +1,5 @@
 #!/bin/bash
-# Main debug script - thin wrapper around Python system
+# Main debug script - interactive LLDB debugging with crash catching
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/shell/common.sh"
@@ -11,6 +11,17 @@ qjs_log "Profile: $PROFILE"
 
 # Pre-flight checks
 qjs_check_device || exit 1
+
+# Stop any existing LLDB server
+qjs_stop_lldb_server
+sleep 1
+
+# Start LLDB server on device
+qjs_info "Starting LLDB server..."
+qjs_start_lldb_server 5039
+
+# Setup port forwarding
+qjs_setup_port_forward 5039 5039
 
 # Get or start app
 PID=$(qjs_get_pid)
@@ -28,11 +39,33 @@ fi
 
 qjs_log "App PID: $PID"
 
-# Setup LLDB
-qjs_setup_port_forward
+# Create LLDB init script with proper remote debugging
+cat > /tmp/qjs_lldb_init.txt << EOF
+# Connect to remote Android device
+platform select remote-android
+platform connect connect://localhost:5039
 
-# Run Python-based debugger
-lldb -p "$PID" \
-    -o "command script import ${SCRIPT_DIR}/../main.py" \
-    -o "qjs-debug $PROFILE" \
-    -o "continue"
+# Attach to process
+process attach -p $PID
+
+# Load QuickJS debugging module
+command script import ${SCRIPT_DIR}/../main.py
+
+# Set up debugging profile
+qjs-debug $PROFILE
+
+# Show status
+qjs-status
+EOF
+
+qjs_log "Starting LLDB interactive session..."
+qjs_info "Commands to trigger crash:"
+qjs_info "  adb shell input tap 540 1126"
+qjs_info "  adb shell input text 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'"
+qjs_info "  adb shell input keyevent 66"
+echo ""
+
+# Start LLDB interactive session
+lldb -s /tmp/qjs_lldb_init.txt
+
+qjs_log "LLDB session ended"

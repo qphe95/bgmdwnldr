@@ -21,10 +21,20 @@ fi
 
 qjs_log "Attaching to PID: $PID"
 
+# Start LLDB server
+qjs_start_lldb_server 5039
+
 # Setup port forwarding
-qjs_setup_port_forward
+qjs_setup_port_forward 5039 5039
+
+# Create init script for remote debugging
+cat > /tmp/qjs_attach.txt << EOF
+platform select remote-android
+platform connect connect://localhost:5039
+process attach -p $PID
+command script import ${SCRIPT_DIR}/../main.py
+qjs-debug $PROFILE
+EOF
 
 # Attach with LLDB
-lldb -p "$PID" \
-    -o "command script import ${SCRIPT_DIR}/../main.py" \
-    -o "qjs-debug $PROFILE"
+lldb -s /tmp/qjs_attach.txt

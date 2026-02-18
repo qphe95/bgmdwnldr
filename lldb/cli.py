@@ -141,7 +141,8 @@ Examples:
     )
     
     parser.add_argument(
-        "--async",
+        "--async-mode",
+        dest="async_mode",
         action="store_true",
         help="Use async mode to prevent ANR"
     )
@@ -248,7 +249,7 @@ Examples:
         f"qjs-debug {args.profile}",
     ]
     
-    if args.async:
+    if args.async_mode:
         init_cmds.insert(0, "settings set target.async true")
     
     for cmd in init_cmds:
