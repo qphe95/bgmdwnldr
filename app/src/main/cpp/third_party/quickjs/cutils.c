@@ -313,8 +313,6 @@ int unicode_from_utf8(const uint8_t *p, int max_len, const uint8_t **pp)
     return c;
 }
 
-#if 0
-
 #if defined(EMSCRIPTEN) || defined(__ANDROID__)
 
 static void *rqsort_arg;
@@ -334,8 +332,6 @@ void rqsort(void *base, size_t nmemb, size_t size,
     rqsort_cmp = cmp;
     qsort(base, nmemb, size, rqsort_cmp2);
 }
-
-#endif
 
 #else
 
