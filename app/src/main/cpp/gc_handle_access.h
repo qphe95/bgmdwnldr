@@ -20,31 +20,7 @@ extern "C" {
 #endif
 
 /* ============================================================================
- * Handle-Based Shape Access Macros
- * ============================================================================
- * These macros provide safe access to JSShape fields through GCHandles.
- */
-
-/* Note: GC_SHAPE_GET_FIELD, GC_SHAPE_SET_FIELD, and related macros are now defined in quickjs.h
- * They use the generic GC_FIELD_GET and GC_FIELD_SET macros:
- *   GC_SHAPE_GET_FIELD(shape_handle, field) -> GC_FIELD_GET(shape_handle, JSShape, field)
- *   GC_SHAPE_SET_FIELD(shape_handle, field, value) -> GC_FIELD_SET(shape_handle, JSShape, field, value)
- */
-
-/* ============================================================================
- * Handle-Based Object Access Macros
- * ============================================================================
- */
-
-/* Note: GC_OBJ_GET_FIELD, GC_OBJ_SET_FIELD, and related macros are now defined in quickjs.h
- * They use the generic GC_FIELD_GET and GC_FIELD_SET macros:
- *   GC_OBJ_GET_SHAPE_HANDLE(obj_handle) -> GC_FIELD_GET(obj_handle, JSObject, shape_handle)
- *   GC_OBJ_SET_SHAPE_HANDLE(obj_handle, val) -> GC_FIELD_SET(obj_handle, JSObject, shape_handle, val)
- *   etc.
- */
-
-/* ============================================================================
- * Proto-Chain Walking Macros (Critical for Migration)
+ * Proto-Chain Walking Macros
  * ============================================================================
  * 
  * These macros enable safe prototype chain traversal without storing
@@ -264,36 +240,6 @@ extern "C" {
     } \
     _next; \
 })
-
-/* ============================================================================
- * Debug/Verification Macros
- * ============================================================================
- */
-
-#ifdef DEBUG_HANDLE_ACCESS
-#include <android/log.h>
-#define GC_HANDLE_CHECK(handle, expected_type) ({ \
-    void *_ptr = gc_deref(handle); \
-    if (!_ptr) { \
-        __android_log_print(ANDROID_LOG_ERROR, "GC_HANDLE", \
-            "NULL dereference of handle %u at %s:%d", \
-            (unsigned)(handle), __FILE__, __LINE__); \
-    } \
-    _ptr; \
-})
-
-#define GC_HANDLE_VERIFY_TYPE(handle, type_enum) ({ \
-    JSGCObjectTypeEnum _actual = gc_handle_get_type(handle); \
-    if (_actual != (type_enum)) { \
-        __android_log_print(ANDROID_LOG_ERROR, "GC_HANDLE", \
-            "Type mismatch: expected %d, got %d for handle %u at %s:%d", \
-            (type_enum), _actual, (unsigned)(handle), __FILE__, __LINE__); \
-    } \
-})
-#else
-#define GC_HANDLE_CHECK(handle, expected_type) gc_deref(handle)
-#define GC_HANDLE_VERIFY_TYPE(handle, type_enum) ((void)0)
-#endif
 
 /* ============================================================================
  * Fast Array Access via Handles

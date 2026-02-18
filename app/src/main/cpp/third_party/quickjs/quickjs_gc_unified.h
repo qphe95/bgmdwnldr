@@ -115,7 +115,7 @@ GCHandle gc_alloc_ex(size_t size, JSGCObjectTypeEnum gc_obj_type,
                      GCHandleArrayType array_type);
 GCHandle gc_realloc(GCHandle handle, size_t new_size);
 
-/* Allocate a handle for an existing pointer (used during pointer-to-handle migration) */
+/* Allocate a handle for an existing pointer */
 GCHandle gc_alloc_handle_for_ptr(void *ptr);
 
 /* Like gc_realloc but returns slack (extra usable space) for array optimization */
@@ -201,12 +201,7 @@ void gc_remove_root(GCHandle handle);
 
 /*
  * Get the existing GCHandle for a GC-managed pointer.
- * This returns the handle that was allocated when the object was created.
  * Returns GC_HANDLE_NULL if ptr is NULL.
- * 
- * IMPORTANT: This should only be used during object creation or when
- * converting from the old pointer-based API to the handle-based API.
- * Never store the pointer - always store the handle.
  */
 static inline GCHandle gc_ptr_to_handle(void *ptr) {
     if (!ptr) return GC_HANDLE_NULL;

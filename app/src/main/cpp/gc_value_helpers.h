@@ -26,37 +26,6 @@ extern "C" {
 
 /*
  * ============================================================================
- * GCValue Safety Rules
- * ============================================================================
- * 
- * 1. NEVER store raw pointers obtained from gc_deref():
- *      // WRONG - pointer becomes invalid after GC
- *      void *ptr = gc_deref(obj.u.handle);
- *      // ... GC might run here ...
- *      JS_SetPropertyStr(ctx, make_value(ptr), "x", val);
- * 
- * 2. ALWAYS use GC_PROP_* macros for property access:
- *      // CORRECT - pointer used immediately
- *      GC_PROP_SET_STR(ctx, obj, "x", val);
- * 
- * 3. If you need to call a function taking GCValue, use GC_WRAP_PTR:
- *      // CORRECT - pointer wrapped immediately
- *      void *ptr = gc_deref(handle);
- *      GCValue val = GC_WRAP_PTR(tag, ptr);
- *      JS_SomeFunction(ctx, val);
- * 
- * 4. Keep GCValue (which contains the stable handle), not pointer:
- *      // WRONG
- *      void *obj = create_object();
- *      // store obj somewhere
- *      
- *      // CORRECT
- *      GCValue obj = GC_WRAP_PTR(JS_TAG_OBJECT, create_object());
- *      // store obj somewhere - handle remains valid across GC
- */
-
-/*
- * ============================================================================
  * Convenience Functions
  * ============================================================================
  */
