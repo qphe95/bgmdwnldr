@@ -157,6 +157,25 @@ qjs_trigger_url_entry() {
 }
 
 # ============================================================================
+# Cross-platform Timeout
+# ============================================================================
+
+# Cross-platform timeout function
+# Usage: qjs_timeout <seconds> <command> [args...]
+qjs_timeout() {
+    local duration=$1
+    shift
+    if command -v timeout &> /dev/null; then
+        timeout "$duration" "$@"
+    elif command -v gtimeout &> /dev/null; then
+        gtimeout "$duration" "$@"
+    else
+        # macOS fallback using Perl
+        perl -e 'alarm shift; exec @ARGV' "$duration" "$@"
+    fi
+}
+
+# ============================================================================
 # Utility Functions
 # ============================================================================
 qjs_get_script_dir() {

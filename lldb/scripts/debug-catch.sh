@@ -72,7 +72,7 @@ qjs_info "Trigger crash in another terminal with:"
 qjs_info "  ./lldb/scripts/trigger-crash.sh"
 
 # Run LLDB and capture output
-timeout 300 lldb -s /tmp/qjs_lldb_catch.txt 2>&1 | tee "$OUTPUT_DIR/lldb-session.log" &
+qjs_timeout 300 lldb -s /tmp/qjs_lldb_catch.txt 2>&1 | tee "$OUTPUT_DIR/lldb-session.log" &
 LLDB_PID=$!
 
 # Monitor for crash in background
