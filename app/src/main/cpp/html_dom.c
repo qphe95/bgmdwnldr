@@ -669,7 +669,7 @@ HtmlDocument* html_parse(const char *html, size_t html_len) {
 
 /* Forward declaration from js_quickjs.c */
 extern JSClassID js_video_class_id;
-extern GCValue js_video_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv);
+extern GCValue js_video_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv);
 
 /* Create a JavaScript element for a given tag */
 GCValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribute *attrs) {
@@ -679,7 +679,7 @@ GCValue html_create_element_js(JSContext *ctx, const char *tag_name, HtmlAttribu
     
     /* Special handling for video elements */
     if (strcasecmp(tag_name, "video") == 0) {
-        extern GCValue js_video_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv);
+        extern GCValue js_video_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv);
         element = js_video_constructor(ctx, JS_NULL, 0, NULL);
     } else {
         /* Create generic element */

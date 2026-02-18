@@ -12,39 +12,39 @@
 #define LOG_ERROR(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // External symbols from js_quickjs.c
-extern GCValue js_document_create_element(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv);
+extern GCValue js_document_create_element(JSContext *ctx, GCValue this_val, int argc, GCValue *argv);
 
 // Forward declarations for internal functions
-static GCValue js_dummy_function(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv);
-static GCValue js_dummy_function_true(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv);
+static GCValue js_dummy_function(JSContext *ctx, GCValue this_val, int argc, GCValue *argv);
+static GCValue js_dummy_function_true(JSContext *ctx, GCValue this_val, int argc, GCValue *argv);
 
 // Basic stub function definitions (must be before use in function lists)
-static GCValue js_undefined(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_undefined(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     return JS_UNDEFINED;
 }
 
-static GCValue js_null(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_null(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     return JS_NULL;
 }
 
-static GCValue js_empty_array(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_empty_array(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val; (void)argc; (void)argv;
     return JS_NewArray(ctx);
 }
 
-static GCValue js_empty_string(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_empty_string(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val; (void)argc; (void)argv;
     return JS_NewString(ctx, "");
 }
 
-static GCValue js_false(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_false(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     return JS_FALSE;
 }
 
-static GCValue js_true(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_true(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     return JS_TRUE;
 }
@@ -65,8 +65,8 @@ static int is_obj_usable(JSContext *ctx, GCValue obj) {
 }
 
 // Safe wrapper for JS_SetPropertyStr that validates objects first
-static int safe_set_property_str(JSContext *ctx, GCValueConst this_obj, 
-                                  const char *prop, GCValueConst val) {
+static int safe_set_property_str(JSContext *ctx, GCValue this_obj, 
+                                  const char *prop, GCValue val) {
     if (!is_obj_usable(ctx, this_obj)) {
         LOG_ERROR("safe_set_property_str: refusing to set property '%s' on unusable object", prop);
         return -1;
@@ -75,7 +75,7 @@ static int safe_set_property_str(JSContext *ctx, GCValueConst this_obj,
 }
 
 // Safe wrapper for JS_GetPropertyStr that validates objects first
-static GCValue safe_get_property_str(JSContext *ctx, GCValueConst this_obj, const char *prop) {
+static GCValue safe_get_property_str(JSContext *ctx, GCValue this_obj, const char *prop) {
     if (!is_obj_usable(ctx, this_obj)) {
         LOG_ERROR("safe_get_property_str: refusing to get property '%s' from unusable object", prop);
         return JS_EXCEPTION;
@@ -93,22 +93,22 @@ static GCValue safe_new_cfunction(JSContext *ctx, JSCFunction *func, const char 
 }
 
 // Helper to get a prototype from a constructor: Constructor.prototype
-GCValue js_get_prototype(JSContext *ctx, GCValueConst ctor) {
+GCValue js_get_prototype(JSContext *ctx, GCValue ctor) {
     return JS_GetPropertyStr(ctx, ctor, "prototype");
 }
 
-static GCValue js_zero(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_zero(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val; (void)argc; (void)argv;
     return JS_NewInt32(ctx, 0);
 }
 
-static GCValue js_console_log(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_console_log(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     return JS_UNDEFINED;
 }
 
 // getComputedStyle stub - returns a CSSStyleDeclaration-like object
-static GCValue js_get_computed_style(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_get_computed_style(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val; (void)argc; (void)argv;
     // Return an object with getPropertyValue method
     GCValue style = JS_NewObject(ctx);
@@ -121,13 +121,13 @@ static GCValue js_get_computed_style(JSContext *ctx, GCValueConst this_val, int 
     return style;
 }
 
-static GCValue js_dummy_function_true(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_dummy_function_true(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     return JS_TRUE;
 }
 
 // Generic dummy function that returns undefined
-static GCValue js_dummy_function(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_dummy_function(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)ctx; (void)this_val; (void)argc; (void)argv;
     return JS_UNDEFINED;
 }
@@ -179,7 +179,7 @@ static JSClassDef js_dom_exception_class_def = {
     .finalizer = js_dom_exception_finalizer,
 };
 
-static GCValue js_dom_exception_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_dom_exception_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     DOM_EX_LOGD("DOMException constructor called");
     DOMExceptionData *de = calloc(1, sizeof(DOMExceptionData));
     if (!de) return JS_EXCEPTION;
@@ -233,19 +233,19 @@ static GCValue js_dom_exception_constructor(JSContext *ctx, GCValueConst new_tar
     return obj;
 }
 
-static GCValue js_dom_exception_get_name(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_dom_exception_get_name(JSContext *ctx, GCValue this_val) {
     DOMExceptionData *de = JS_GetOpaque2(ctx, this_val, js_dom_exception_class_id);
     if (!de) return JS_EXCEPTION;
     return JS_NewString(ctx, de->name);
 }
 
-static GCValue js_dom_exception_get_message(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_dom_exception_get_message(JSContext *ctx, GCValue this_val) {
     DOMExceptionData *de = JS_GetOpaque2(ctx, this_val, js_dom_exception_class_id);
     if (!de) return JS_EXCEPTION;
     return JS_NewString(ctx, de->message);
 }
 
-static GCValue js_dom_exception_get_code(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_dom_exception_get_code(JSContext *ctx, GCValue this_val) {
     DOMExceptionData *de = JS_GetOpaque2(ctx, this_val, js_dom_exception_class_id);
     if (!de) return JS_EXCEPTION;
     return JS_NewInt32(ctx, de->code);
@@ -262,7 +262,7 @@ static const JSCFunctionListEntry js_dom_exception_proto_funcs[] = {
 // ============================================================================
 
 // Object.getPrototypeOf polyfill
-static GCValue js_object_get_prototype_of(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_object_get_prototype_of(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val;
     if (argc < 1) return JS_EXCEPTION;
     
@@ -290,7 +290,7 @@ static GCValue js_object_get_prototype_of(JSContext *ctx, GCValueConst this_val,
 // SAFE_FREE_VALUE is no longer needed with mark-and-sweep GC
 #define SAFE_FREE_VALUE(ctx, val) do { (void)(val); } while(0)
 
-static GCValue js_object_define_property(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_object_define_property(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void) this_val;
     
     JSAtom prop_atom = 0;
@@ -386,7 +386,7 @@ cleanup:
 }
 
 // Object.create polyfill
-static GCValue js_object_create(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_object_create(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val;
     if (argc < 1) return JS_EXCEPTION;
     
@@ -443,7 +443,7 @@ static GCValue js_object_create(JSContext *ctx, GCValueConst this_val, int argc,
 }
 
 // Object.defineProperties polyfill
-static GCValue js_object_define_properties(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_object_define_properties(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val;
     if (argc < 2) return JS_EXCEPTION;
     
@@ -493,7 +493,7 @@ static GCValue js_object_define_properties(JSContext *ctx, GCValueConst this_val
 }
 
 // Object.getOwnPropertyDescriptor polyfill
-static GCValue js_object_get_own_property_descriptor(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_object_get_own_property_descriptor(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val;
     if (argc < 2) return JS_UNDEFINED;
     
@@ -523,7 +523,7 @@ static GCValue js_object_get_own_property_descriptor(JSContext *ctx, GCValueCons
 }
 
 // Object.setPrototypeOf polyfill
-static GCValue js_object_set_prototype_of(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_object_set_prototype_of(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     if (argc < 2) return JS_EXCEPTION;
     
     GCValue obj = argv[0];
@@ -542,13 +542,13 @@ static GCValue js_object_set_prototype_of(JSContext *ctx, GCValueConst this_val,
 }
 
 // Object.getOwnPropertySymbols polyfill - returns empty array
-static GCValue js_object_get_own_property_symbols(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_object_get_own_property_symbols(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val; (void)argc; (void)argv;
     return JS_NewArray(ctx);
 }
 
 // Object.assign polyfill
-static GCValue js_object_assign(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_object_assign(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val;
     if (argc < 1) return JS_UNDEFINED;
     
@@ -589,7 +589,7 @@ static GCValue js_object_assign(JSContext *ctx, GCValueConst this_val, int argc,
 }
 
 // Reflect.construct polyfill
-static GCValue js_reflect_construct(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_reflect_construct(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val;
     if (argc < 2) return JS_EXCEPTION;
     
@@ -619,7 +619,7 @@ static GCValue js_reflect_construct(JSContext *ctx, GCValueConst this_val, int a
 }
 
 // Reflect.apply polyfill
-static GCValue js_reflect_apply(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_reflect_apply(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val;
     if (argc < 3) return JS_EXCEPTION;
     
@@ -650,7 +650,7 @@ static GCValue js_reflect_apply(JSContext *ctx, GCValueConst this_val, int argc,
 }
 
 // Reflect.has polyfill
-static GCValue js_reflect_has(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_reflect_has(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val;
     if (argc < 2) return JS_EXCEPTION;
     
@@ -667,7 +667,7 @@ static GCValue js_reflect_has(JSContext *ctx, GCValueConst this_val, int argc, G
 }
 
 // Promise.prototype.finally polyfill
-static GCValue js_promise_finally(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_promise_finally(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     if (argc < 1 || !JS_IsObject(this_val)) return JS_EXCEPTION;
     
     GCValue on_finally = argv[0];
@@ -685,7 +685,7 @@ static GCValue js_promise_finally(JSContext *ctx, GCValueConst this_val, int arg
 }
 
 // String.prototype.includes polyfill
-static GCValue js_string_includes(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_string_includes(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     const char *str = JS_ToCString(ctx, this_val);
     if (!str) return JS_FALSE;
     
@@ -720,7 +720,7 @@ static GCValue js_string_includes(JSContext *ctx, GCValueConst this_val, int arg
 }
 
 // Array.prototype.includes polyfill
-static GCValue js_array_includes(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_array_includes(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     if (argc < 1) return JS_FALSE;
     
     GCValue search_element = argv[0];
@@ -749,7 +749,7 @@ static GCValue js_array_includes(JSContext *ctx, GCValueConst this_val, int argc
 }
 
 // Array.from polyfill
-static GCValue js_array_from(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_array_from(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)this_val;
     if (argc < 1) return JS_NewArray(ctx);
     
@@ -796,7 +796,7 @@ static JSClassDef js_map_class_def = {
     .finalizer = js_map_finalizer,
 };
 
-static GCValue js_map_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_map_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     MapData *map = calloc(1, sizeof(MapData));
     if (!map) return JS_EXCEPTION;
     
@@ -808,7 +808,7 @@ static GCValue js_map_constructor(JSContext *ctx, GCValueConst new_target, int a
     return obj;
 }
 
-static GCValue js_map_set(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_map_set(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
     if (!map || argc < 2) return JS_EXCEPTION;
     
@@ -827,7 +827,7 @@ static GCValue js_map_set(JSContext *ctx, GCValueConst this_val, int argc, GCVal
     return this_val;
 }
 
-static GCValue js_map_get(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_map_get(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
     if (!map || argc < 1) return JS_EXCEPTION;
     
@@ -840,7 +840,7 @@ static GCValue js_map_get(JSContext *ctx, GCValueConst this_val, int argc, GCVal
     return val;
 }
 
-static GCValue js_map_has(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_map_has(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
     if (!map || argc < 1) return JS_EXCEPTION;
     
@@ -855,7 +855,7 @@ static GCValue js_map_has(JSContext *ctx, GCValueConst this_val, int argc, GCVal
     return JS_NewBool(ctx, exists);
 }
 
-static GCValue js_map_delete(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_map_delete(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
     if (!map || argc < 1) return JS_EXCEPTION;
     
@@ -875,7 +875,7 @@ static GCValue js_map_delete(JSContext *ctx, GCValueConst this_val, int argc, GC
     return JS_NewBool(ctx, exists);
 }
 
-static GCValue js_map_clear(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_map_clear(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)argc; (void)argv;
     MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
     if (!map) return JS_EXCEPTION;
@@ -886,7 +886,7 @@ static GCValue js_map_clear(JSContext *ctx, GCValueConst this_val, int argc, GCV
     return JS_UNDEFINED;
 }
 
-static GCValue js_map_get_size(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_map_get_size(JSContext *ctx, GCValue this_val) {
     MapData *map = JS_GetOpaque2(ctx, this_val, js_map_class_id);
     if (!map) return JS_EXCEPTION;
     return JS_NewInt32(ctx, map->size);
@@ -903,9 +903,9 @@ static const JSCFunctionListEntry js_map_proto_funcs[] = {
 
 extern JSClassID js_xhr_class_id;
 extern JSClassID js_video_class_id;
-extern GCValue js_xhr_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv);
-extern GCValue js_video_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv);
-extern GCValue js_fetch(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv);
+extern GCValue js_xhr_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv);
+extern GCValue js_video_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv);
+extern GCValue js_fetch(JSContext *ctx, GCValue this_val, int argc, GCValue *argv);
 extern const JSCFunctionListEntry js_xhr_proto_funcs[];
 extern const JSCFunctionListEntry js_video_proto_funcs[];
 extern const size_t js_xhr_proto_funcs_count;
@@ -948,7 +948,7 @@ JSClassID js_dom_rect_read_only_class_id = 0;
     JS_SetPropertyStr(ctx, obj, name, JS_UNDEFINED)
 
 // Dummy then function for mock promises
-static GCValue js_promise_then(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_promise_then(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Call the onFulfilled callback immediately with undefined
     if (argc > 0 && JS_IsFunction(ctx, argv[0])) {
         GCValue undefined = JS_UNDEFINED;
@@ -1058,25 +1058,25 @@ static JSClassDef js_shadow_root_class_def = {
     .finalizer = js_shadow_root_finalizer,
 };
 
-static GCValue js_shadow_root_get_host(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_shadow_root_get_host(JSContext *ctx, GCValue this_val) {
     ShadowRootData *sr = JS_GetOpaque2(ctx, this_val, js_shadow_root_class_id);
     if (!sr) return JS_EXCEPTION;
     return sr->host;
 }
 
-static GCValue js_shadow_root_get_mode(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_shadow_root_get_mode(JSContext *ctx, GCValue this_val) {
     ShadowRootData *sr = JS_GetOpaque2(ctx, this_val, js_shadow_root_class_id);
     if (!sr) return JS_EXCEPTION;
     return JS_NewString(ctx, sr->mode);
 }
 
-static GCValue js_shadow_root_get_innerHTML(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_shadow_root_get_innerHTML(JSContext *ctx, GCValue this_val) {
     ShadowRootData *sr = JS_GetOpaque2(ctx, this_val, js_shadow_root_class_id);
     if (!sr) return JS_EXCEPTION;
     return sr->innerHTML;
 }
 
-static GCValue js_shadow_root_set_innerHTML(JSContext *ctx, GCValueConst this_val, GCValueConst val) {
+static GCValue js_shadow_root_set_innerHTML(JSContext *ctx, GCValue this_val, GCValue val) {
     ShadowRootData *sr = JS_GetOpaque2(ctx, this_val, js_shadow_root_class_id);
     if (!sr) return JS_EXCEPTION;
 
@@ -1084,15 +1084,15 @@ static GCValue js_shadow_root_set_innerHTML(JSContext *ctx, GCValueConst this_va
     return JS_UNDEFINED;
 }
 
-static GCValue js_shadow_root_querySelector(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_shadow_root_querySelector(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NULL;
 }
 
-static GCValue js_shadow_root_querySelectorAll(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_shadow_root_querySelectorAll(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NewArray(ctx);
 }
 
-static GCValue js_shadow_root_getElementById(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_shadow_root_getElementById(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NULL;
 }
 
@@ -1110,7 +1110,7 @@ static const JSCFunctionListEntry js_shadow_root_proto_funcs[] = {
 };
 
 // Element.prototype.attachShadow()
-static GCValue js_element_attach_shadow(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_attach_shadow(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     if (argc < 1 || !JS_IsObject(argv[0])) {
         return JS_ThrowTypeError(ctx, "attachShadow requires an init object");
     }
@@ -1145,7 +1145,7 @@ static GCValue js_element_attach_shadow(JSContext *ctx, GCValueConst this_val, i
 }
 
 // Element.prototype.shadowRoot getter
-static GCValue js_element_get_shadow_root(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_get_shadow_root(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)argc; (void)argv;
     GCValue shadow = JS_GetPropertyStr(ctx, this_val, "__shadowRoot");
     if (JS_IsUndefined(shadow)) {
@@ -1164,22 +1164,22 @@ static GCValue js_element_get_shadow_root(JSContext *ctx, GCValueConst this_val,
 }
 
 // Element.prototype.querySelector
-static GCValue js_element_querySelector(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_querySelector(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NULL;
 }
 
 // Element.prototype.querySelectorAll
-static GCValue js_element_querySelectorAll(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_querySelectorAll(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NewArray(ctx);
 }
 
 // Element.prototype.getAttribute
-static GCValue js_element_get_attribute(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_get_attribute(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NULL;
 }
 
 // Element.prototype.setAttribute
-static GCValue js_element_set_attribute(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_set_attribute(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
@@ -1187,7 +1187,7 @@ static GCValue js_element_set_attribute(JSContext *ctx, GCValueConst this_val, i
 // EventTarget Implementation
 // ============================================================================
 
-static GCValue js_event_target_addEventListener(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_event_target_addEventListener(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Store event handlers on the element for dispatch
     if (argc < 2) return JS_UNDEFINED;
     
@@ -1201,12 +1201,12 @@ static GCValue js_event_target_addEventListener(JSContext *ctx, GCValueConst thi
     return JS_UNDEFINED;
 }
 
-static GCValue js_event_target_removeEventListener(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_event_target_removeEventListener(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Stub - just return undefined
     return JS_UNDEFINED;
 }
 
-static GCValue js_event_target_dispatchEvent(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_event_target_dispatchEvent(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_TRUE;
 }
 
@@ -1214,28 +1214,28 @@ static GCValue js_event_target_dispatchEvent(JSContext *ctx, GCValueConst this_v
 // Node Implementation
 // ============================================================================
 
-static GCValue js_node_appendChild(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_node_appendChild(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     if (argc < 1) return JS_NULL;
     // Return the appended child
     return argv[0];
 }
 
-static GCValue js_node_insertBefore(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_node_insertBefore(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     if (argc < 1) return JS_NULL;
     return argv[0];
 }
 
-static GCValue js_node_removeChild(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_node_removeChild(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     if (argc < 1) return JS_NULL;
     return argv[0];
 }
 
-static GCValue js_node_cloneNode(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_node_cloneNode(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Return a new empty object as cloned node
     return JS_NewObject(ctx);
 }
 
-static GCValue js_node_contains(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_node_contains(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_FALSE;
 }
 
@@ -1261,7 +1261,7 @@ static JSClassDef js_custom_element_registry_class_def = {
 };
 
 // customElements.define(name, constructor, options)
-static GCValue js_custom_elements_define(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_custom_elements_define(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     if (argc < 2) {
         return JS_ThrowTypeError(ctx, "define requires at least 2 arguments");
     }
@@ -1283,7 +1283,7 @@ static GCValue js_custom_elements_define(JSContext *ctx, GCValueConst this_val, 
 }
 
 // customElements.get(name)
-static GCValue js_custom_elements_get(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_custom_elements_get(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     if (argc < 1) return JS_UNDEFINED;
     
     const char *name = JS_ToCString(ctx, argv[0]);
@@ -1300,7 +1300,7 @@ static GCValue js_custom_elements_get(JSContext *ctx, GCValueConst this_val, int
 }
 
 // customElements.whenDefined(name)
-static GCValue js_custom_elements_when_defined(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_custom_elements_when_defined(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Return a resolved promise
     return js_create_empty_resolved_promise(ctx);
 }
@@ -1354,7 +1354,7 @@ static JSClassDef js_keyframe_effect_class_def = {
 };
 
 // Animation constructor
-static GCValue js_animation_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_animation_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     AnimationData *anim = calloc(1, sizeof(AnimationData));
     if (!anim) return JS_EXCEPTION;
     
@@ -1384,7 +1384,7 @@ static GCValue js_animation_constructor(JSContext *ctx, GCValueConst new_target,
 }
 
 // Animation.prototype.play()
-static GCValue js_animation_play(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_animation_play(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
     anim->play_state = 1;  // running
@@ -1392,7 +1392,7 @@ static GCValue js_animation_play(JSContext *ctx, GCValueConst this_val, int argc
 }
 
 // Animation.prototype.pause()
-static GCValue js_animation_pause(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_animation_pause(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
     anim->play_state = 2;  // paused
@@ -1400,7 +1400,7 @@ static GCValue js_animation_pause(JSContext *ctx, GCValueConst this_val, int arg
 }
 
 // Animation.prototype.finish()
-static GCValue js_animation_finish(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_animation_finish(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
     anim->play_state = 3;  // finished
@@ -1414,7 +1414,7 @@ static GCValue js_animation_finish(JSContext *ctx, GCValueConst this_val, int ar
 }
 
 // Animation.prototype.cancel()
-static GCValue js_animation_cancel(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_animation_cancel(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
     anim->play_state = 0;  // idle
@@ -1423,12 +1423,12 @@ static GCValue js_animation_cancel(JSContext *ctx, GCValueConst this_val, int ar
 }
 
 // Animation.prototype.reverse()
-static GCValue js_animation_reverse(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_animation_reverse(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // Animation.playState getter
-static GCValue js_animation_get_play_state(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_animation_get_play_state(JSContext *ctx, GCValue this_val) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
     const char *states[] = {"idle", "running", "paused", "finished"};
@@ -1436,14 +1436,14 @@ static GCValue js_animation_get_play_state(JSContext *ctx, GCValueConst this_val
 }
 
 // Animation.currentTime getter
-static GCValue js_animation_get_current_time(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_animation_get_current_time(JSContext *ctx, GCValue this_val) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
     return JS_NewFloat64(ctx, anim->current_time);
 }
 
 // Animation.effect getter
-static GCValue js_animation_get_effect(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_animation_get_effect(JSContext *ctx, GCValue this_val) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
     if (JS_IsNull(anim->effect)) return JS_NULL;
@@ -1451,13 +1451,13 @@ static GCValue js_animation_get_effect(JSContext *ctx, GCValueConst this_val) {
 }
 
 // Animation.onfinish getter/setter
-static GCValue js_animation_get_onfinish(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_animation_get_onfinish(JSContext *ctx, GCValue this_val) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
     return anim->onfinish;
 }
 
-static GCValue js_animation_set_onfinish(JSContext *ctx, GCValueConst this_val, GCValueConst val) {
+static GCValue js_animation_set_onfinish(JSContext *ctx, GCValue this_val, GCValue val) {
     AnimationData *anim = JS_GetOpaque2(ctx, this_val, js_animation_class_id);
     if (!anim) return JS_EXCEPTION;
 
@@ -1478,7 +1478,7 @@ static const JSCFunctionListEntry js_animation_proto_funcs[] = {
 };
 
 // KeyframeEffect constructor
-static GCValue js_keyframe_effect_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_keyframe_effect_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     KeyFrameEffectData *effect = calloc(1, sizeof(KeyFrameEffectData));
     if (!effect) return JS_EXCEPTION;
     
@@ -1516,7 +1516,7 @@ static GCValue js_keyframe_effect_constructor(JSContext *ctx, GCValueConst new_t
 }
 
 // KeyframeEffect.target getter
-static GCValue js_keyframe_effect_get_target(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_keyframe_effect_get_target(JSContext *ctx, GCValue this_val) {
     KeyFrameEffectData *effect = JS_GetOpaque2(ctx, this_val, js_keyframe_effect_class_id);
     if (!effect) return JS_EXCEPTION;
     if (JS_IsNull(effect->target)) return JS_NULL;
@@ -1524,7 +1524,7 @@ static GCValue js_keyframe_effect_get_target(JSContext *ctx, GCValueConst this_v
 }
 
 // KeyframeEffect.duration getter
-static GCValue js_keyframe_effect_get_duration(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_keyframe_effect_get_duration(JSContext *ctx, GCValue this_val) {
     KeyFrameEffectData *effect = JS_GetOpaque2(ctx, this_val, js_keyframe_effect_class_id);
     if (!effect) return JS_EXCEPTION;
     return JS_NewFloat64(ctx, effect->duration);
@@ -1536,7 +1536,7 @@ static const JSCFunctionListEntry js_keyframe_effect_proto_funcs[] = {
 };
 
 // Element.prototype.animate(keyframes, options)
-static GCValue js_element_animate(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_animate(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Create KeyframeEffect
     GCValue effect_args[3];
     effect_args[0] = this_val;  // target
@@ -1609,7 +1609,7 @@ static JSClassDef js_font_face_set_class_def = {
 };
 
 // FontFace constructor
-static GCValue js_font_face_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_font_face_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     FontFaceData *ff = calloc(1, sizeof(FontFaceData));
     if (!ff) return JS_EXCEPTION;
     
@@ -1645,7 +1645,7 @@ static GCValue js_font_face_constructor(JSContext *ctx, GCValueConst new_target,
 }
 
 // FontFace.load()
-static GCValue js_font_face_load(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_font_face_load(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Return a resolved promise with this FontFace
     GCValue this_dup = this_val;
     GCValue result = js_create_resolved_promise(ctx, this_dup);
@@ -1654,7 +1654,7 @@ static GCValue js_font_face_load(JSContext *ctx, GCValueConst this_val, int argc
 }
 
 // FontFace.loaded getter - returns a Promise that resolves to this FontFace
-static GCValue js_font_face_get_loaded(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_font_face_get_loaded(JSContext *ctx, GCValue this_val) {
     FontFaceData *ff = JS_GetOpaque2(ctx, this_val, js_font_face_class_id);
     if (!ff) return JS_EXCEPTION;
     // Return a resolved promise with this FontFace
@@ -1665,14 +1665,14 @@ static GCValue js_font_face_get_loaded(JSContext *ctx, GCValueConst this_val) {
 }
 
 // FontFace.family getter
-static GCValue js_font_face_get_family(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_font_face_get_family(JSContext *ctx, GCValue this_val) {
     FontFaceData *ff = JS_GetOpaque2(ctx, this_val, js_font_face_class_id);
     if (!ff) return JS_EXCEPTION;
     return JS_NewString(ctx, ff->family);
 }
 
 // FontFace.status getter
-static GCValue js_font_face_get_status(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_font_face_get_status(JSContext *ctx, GCValue this_val) {
     return JS_NewString(ctx, "loaded");
 }
 
@@ -1684,7 +1684,7 @@ static const JSCFunctionListEntry js_font_face_proto_funcs[] = {
 };
 
 // FontFaceSet.load(fontSpec)
-static GCValue js_font_face_set_load(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_font_face_set_load(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Return a resolved promise with empty array (all fonts "loaded")
     GCValue empty_array = JS_NewArray(ctx);
     GCValue result = js_create_resolved_promise(ctx, empty_array);
@@ -1693,49 +1693,49 @@ static GCValue js_font_face_set_load(JSContext *ctx, GCValueConst this_val, int 
 }
 
 // FontFaceSet.check(fontSpec)
-static GCValue js_font_face_set_check(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_font_face_set_check(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Always return true (fonts are available)
     return JS_TRUE;
 }
 
 // FontFaceSet.ready getter
-static GCValue js_font_face_set_get_ready(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_font_face_set_get_ready(JSContext *ctx, GCValue this_val) {
     // Return a resolved promise
     return js_create_empty_resolved_promise(ctx);
 }
 
 // FontFaceSet.status getter
-static GCValue js_font_face_set_get_status(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_font_face_set_get_status(JSContext *ctx, GCValue this_val) {
     return JS_NewString(ctx, "loaded");
 }
 
 // FontFaceSet.add(fontFace)
-static GCValue js_font_face_set_add(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_font_face_set_add(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // FontFaceSet.delete(fontFace)
-static GCValue js_font_face_set_delete(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_font_face_set_delete(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_TRUE;
 }
 
 // FontFaceSet.clear()
-static GCValue js_font_face_set_clear(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_font_face_set_clear(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // FontFaceSet.has(fontFace)
-static GCValue js_font_face_set_has(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_font_face_set_has(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_TRUE;
 }
 
 // FontFaceSet.forEach(callback)
-static GCValue js_font_face_set_forEach(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_font_face_set_forEach(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // FontFaceSet[Symbol.iterator]()
-static GCValue js_font_face_set_iterator(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_font_face_set_iterator(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     GCValue global = JS_GetGlobalObject(ctx);
     GCValue array_ctor = JS_GetPropertyStr(ctx, global, "Array");
     GCValue empty_array = JS_CallConstructor(ctx, array_ctor, 0, NULL);
@@ -1787,7 +1787,7 @@ static JSClassDef js_mutation_observer_class_def = {
 };
 
 // MutationObserver constructor
-static GCValue js_mutation_observer_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_mutation_observer_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
         return JS_ThrowTypeError(ctx, "MutationObserver constructor requires a callback function");
     }
@@ -1804,17 +1804,17 @@ static GCValue js_mutation_observer_constructor(JSContext *ctx, GCValueConst new
 }
 
 // MutationObserver.prototype.observe(target, options)
-static GCValue js_mutation_observer_observe(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_mutation_observer_observe(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // MutationObserver.prototype.disconnect()
-static GCValue js_mutation_observer_disconnect(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_mutation_observer_disconnect(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // MutationObserver.prototype.takeRecords()
-static GCValue js_mutation_observer_takeRecords(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_mutation_observer_takeRecords(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NewArray(ctx);
 }
 
@@ -1847,7 +1847,7 @@ static JSClassDef js_resize_observer_class_def = {
 };
 
 // ResizeObserver constructor
-static GCValue js_resize_observer_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_resize_observer_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
         return JS_ThrowTypeError(ctx, "ResizeObserver constructor requires a callback function");
     }
@@ -1864,17 +1864,17 @@ static GCValue js_resize_observer_constructor(JSContext *ctx, GCValueConst new_t
 }
 
 // ResizeObserver.prototype.observe(target)
-static GCValue js_resize_observer_observe(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_resize_observer_observe(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // ResizeObserver.prototype.unobserve(target)
-static GCValue js_resize_observer_unobserve(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_resize_observer_unobserve(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // ResizeObserver.prototype.disconnect()
-static GCValue js_resize_observer_disconnect(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_resize_observer_disconnect(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
@@ -1911,7 +1911,7 @@ static JSClassDef js_intersection_observer_class_def = {
 };
 
 // IntersectionObserver constructor
-static GCValue js_intersection_observer_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_intersection_observer_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
         return JS_ThrowTypeError(ctx, "IntersectionObserver constructor requires a callback function");
     }
@@ -1951,22 +1951,22 @@ static GCValue js_intersection_observer_constructor(JSContext *ctx, GCValueConst
 }
 
 // IntersectionObserver.prototype.observe(target)
-static GCValue js_intersection_observer_observe(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_intersection_observer_observe(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // IntersectionObserver.prototype.unobserve(target)
-static GCValue js_intersection_observer_unobserve(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_intersection_observer_unobserve(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // IntersectionObserver.prototype.disconnect()
-static GCValue js_intersection_observer_disconnect(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_intersection_observer_disconnect(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // IntersectionObserver.prototype.takeRecords()
-static GCValue js_intersection_observer_takeRecords(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_intersection_observer_takeRecords(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NewArray(ctx);
 }
 
@@ -2037,7 +2037,7 @@ static JSClassDef js_performance_observer_class_def = {
 // Performance.now()
 static double g_performance_time = 0.0;
 
-static GCValue js_performance_now(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_now(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Return a monotonically increasing timestamp (in milliseconds)
     // Use a static counter since we don't need actual wall-clock time
     g_performance_time += 0.1;  // Increment slightly on each call
@@ -2045,42 +2045,42 @@ static GCValue js_performance_now(JSContext *ctx, GCValueConst this_val, int arg
 }
 
 // Performance.timeOrigin getter
-static GCValue js_performance_get_time_origin(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_performance_get_time_origin(JSContext *ctx, GCValue this_val) {
     return JS_NewFloat64(ctx, 0.0);
 }
 
 // Performance.getEntries()
-static GCValue js_performance_get_entries(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_get_entries(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NewArray(ctx);
 }
 
 // Performance.getEntriesByType(type)
-static GCValue js_performance_get_entries_by_type(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_get_entries_by_type(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NewArray(ctx);
 }
 
 // Performance.getEntriesByName(name, type)
-static GCValue js_performance_get_entries_by_name(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_get_entries_by_name(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NewArray(ctx);
 }
 
 // Performance.mark(name)
-static GCValue js_performance_mark(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_mark(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // Performance.measure(name, startMark, endMark)
-static GCValue js_performance_measure(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_measure(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // Performance.clearMarks(name)
-static GCValue js_performance_clear_marks(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_clear_marks(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // Performance.clearMeasures(name)
-static GCValue js_performance_clear_measures(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_clear_measures(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
@@ -2122,7 +2122,7 @@ static JSClassDef js_performance_timing_class_def = {
 };
 
 #define DEF_TIMING_GETTER(field) \
-static GCValue js_performance_timing_get_##field(JSContext *ctx, GCValueConst this_val) { \
+static GCValue js_performance_timing_get_##field(JSContext *ctx, GCValue this_val) { \
     PerformanceTimingData *timing = JS_GetOpaque2(ctx, this_val, js_performance_timing_class_id); \
     if (!timing) return JS_EXCEPTION; \
     return JS_NewFloat64(ctx, timing->field); \
@@ -2178,7 +2178,7 @@ static const JSCFunctionListEntry js_performance_timing_proto_funcs[] = {
 };
 
 // Performance.timing getter
-static GCValue js_performance_get_timing(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_performance_get_timing(JSContext *ctx, GCValue this_val) {
     // Get the timing object from the Performance instance's opaque data
     // For simplicity, we store the timing object as a property on the performance instance
     GCValue timing_prop = JS_GetPropertyStr(ctx, this_val, "__timing");
@@ -2214,28 +2214,28 @@ static const JSCFunctionListEntry js_performance_proto_funcs[] = {
 };
 
 // PerformanceEntry.name getter
-static GCValue js_performance_entry_get_name(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_performance_entry_get_name(JSContext *ctx, GCValue this_val) {
     PerformanceEntryData *entry = JS_GetOpaque2(ctx, this_val, js_performance_entry_class_id);
     if (!entry) return JS_EXCEPTION;
     return JS_NewString(ctx, entry->name);
 }
 
 // PerformanceEntry.entryType getter
-static GCValue js_performance_entry_get_entry_type(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_performance_entry_get_entry_type(JSContext *ctx, GCValue this_val) {
     PerformanceEntryData *entry = JS_GetOpaque2(ctx, this_val, js_performance_entry_class_id);
     if (!entry) return JS_EXCEPTION;
     return JS_NewString(ctx, entry->entryType);
 }
 
 // PerformanceEntry.startTime getter
-static GCValue js_performance_entry_get_start_time(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_performance_entry_get_start_time(JSContext *ctx, GCValue this_val) {
     PerformanceEntryData *entry = JS_GetOpaque2(ctx, this_val, js_performance_entry_class_id);
     if (!entry) return JS_EXCEPTION;
     return JS_NewFloat64(ctx, entry->startTime);
 }
 
 // PerformanceEntry.duration getter
-static GCValue js_performance_entry_get_duration(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_performance_entry_get_duration(JSContext *ctx, GCValue this_val) {
     PerformanceEntryData *entry = JS_GetOpaque2(ctx, this_val, js_performance_entry_class_id);
     if (!entry) return JS_EXCEPTION;
     return JS_NewFloat64(ctx, entry->duration);
@@ -2249,7 +2249,7 @@ static const JSCFunctionListEntry js_performance_entry_proto_funcs[] = {
 };
 
 // PerformanceObserver constructor
-static GCValue js_performance_observer_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_performance_observer_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
         return JS_ThrowTypeError(ctx, "PerformanceObserver constructor requires a callback function");
     }
@@ -2266,22 +2266,22 @@ static GCValue js_performance_observer_constructor(JSContext *ctx, GCValueConst 
 }
 
 // PerformanceObserver.prototype.observe(options)
-static GCValue js_performance_observer_observe(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_observer_observe(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // PerformanceObserver.prototype.disconnect()
-static GCValue js_performance_observer_disconnect(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_observer_disconnect(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // PerformanceObserver.prototype.takeRecords()
-static GCValue js_performance_observer_takeRecords(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_performance_observer_takeRecords(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NewArray(ctx);
 }
 
 // PerformanceObserver.supportedEntryTypes getter
-static GCValue js_performance_observer_get_supported_entry_types(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_performance_observer_get_supported_entry_types(JSContext *ctx, GCValue this_val) {
     // Return an array of supported entry types
     GCValue array = JS_NewArray(ctx);
     return array;
@@ -2334,7 +2334,7 @@ static JSClassDef js_dom_rect_read_only_class_def = {
 };
 
 // DOMRect constructor
-static GCValue js_dom_rect_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_dom_rect_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     DOMRectData *rect = calloc(1, sizeof(DOMRectData));
     if (!rect) return JS_EXCEPTION;
     
@@ -2363,7 +2363,7 @@ static GCValue js_dom_rect_constructor(JSContext *ctx, GCValueConst new_target, 
 }
 
 // DOMRectReadOnly constructor
-static GCValue js_dom_rect_read_only_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+static GCValue js_dom_rect_read_only_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     DOMRectData *rect = calloc(1, sizeof(DOMRectData));
     if (!rect) return JS_EXCEPTION;
     
@@ -2392,7 +2392,7 @@ static GCValue js_dom_rect_read_only_constructor(JSContext *ctx, GCValueConst ne
 }
 
 // DOMRect.fromRect(other)
-static GCValue js_dom_rect_from_rect(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_dom_rect_from_rect(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     double x = 0, y = 0, width = 0, height = 0;
     
     if (argc > 0 && JS_IsObject(argv[0])) {
@@ -2427,7 +2427,7 @@ static GCValue js_dom_rect_from_rect(JSContext *ctx, GCValueConst this_val, int 
 }
 
 // DOMRectReadOnly.fromRect(other)
-static GCValue js_dom_rect_read_only_from_rect(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_dom_rect_read_only_from_rect(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     double x = 0, y = 0, width = 0, height = 0;
     
     if (argc > 0 && JS_IsObject(argv[0])) {
@@ -2462,7 +2462,7 @@ static GCValue js_dom_rect_read_only_from_rect(JSContext *ctx, GCValueConst this
 }
 
 #define DEF_DOM_RECT_GETTER(name, field) \
-static GCValue js_dom_rect_get_##name(JSContext *ctx, GCValueConst this_val) { \
+static GCValue js_dom_rect_get_##name(JSContext *ctx, GCValue this_val) { \
     DOMRectData *rect = JS_GetOpaque2(ctx, this_val, js_dom_rect_class_id); \
     if (!rect) { \
         rect = JS_GetOpaque2(ctx, this_val, js_dom_rect_read_only_class_id); \
@@ -2483,7 +2483,7 @@ DEF_DOM_RECT_GETTER(left, left)
 #undef DEF_DOM_RECT_GETTER
 
 #define DEF_DOM_RECT_SETTER(name, field) \
-static GCValue js_dom_rect_set_##name(JSContext *ctx, GCValueConst this_val, GCValueConst val) { \
+static GCValue js_dom_rect_set_##name(JSContext *ctx, GCValue this_val, GCValue val) { \
     DOMRectData *rect = JS_GetOpaque2(ctx, this_val, js_dom_rect_class_id); \
     if (!rect) return JS_EXCEPTION; \
     JS_ToFloat64(ctx, &rect->field, val); \

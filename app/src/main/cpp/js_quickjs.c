@@ -64,7 +64,7 @@ void js_quickjs_set_asset_manager(AAssetManager *mgr) {
 #define URL_MAX_LEN 2048
 
 // Forward declarations
-static GCValue js_dummy_function(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv);
+static GCValue js_dummy_function(JSContext *ctx, GCValue this_val, int argc, GCValue *argv);
 
 static JSClassID js_http_response_class_id;
 JSClassID js_xhr_class_id = 0;
@@ -137,7 +137,7 @@ static void js_xhr_finalizer(JSRuntime *rt, GCValue val) {
     }
 }
 
-GCValue js_xhr_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+GCValue js_xhr_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     XMLHttpRequest *xhr = calloc(1, sizeof(XMLHttpRequest));
     if (!xhr) return JS_EXCEPTION;
     
@@ -153,7 +153,7 @@ GCValue js_xhr_constructor(JSContext *ctx, GCValueConst new_target, int argc, GC
     return obj;
 }
 
-static GCValue js_xhr_open(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_xhr_open(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     XMLHttpRequest *xhr = JS_GetOpaque2(ctx, this_val, js_xhr_class_id);
     if (!xhr) return JS_EXCEPTION;
     
@@ -174,7 +174,7 @@ static GCValue js_xhr_open(JSContext *ctx, GCValueConst this_val, int argc, GCVa
     return JS_UNDEFINED;
 }
 
-static GCValue js_xhr_send(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_xhr_send(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     XMLHttpRequest *xhr = JS_GetOpaque2(ctx, this_val, js_xhr_class_id);
     if (!xhr) return JS_EXCEPTION;
     
@@ -195,33 +195,33 @@ static GCValue js_xhr_send(JSContext *ctx, GCValueConst this_val, int argc, GCVa
     return JS_UNDEFINED;
 }
 
-static GCValue js_xhr_set_request_header(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_xhr_set_request_header(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
-static GCValue js_xhr_get_response_header(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_xhr_get_response_header(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NULL;
 }
 
-static GCValue js_xhr_get_all_response_headers(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_xhr_get_all_response_headers(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     XMLHttpRequest *xhr = JS_GetOpaque2(ctx, this_val, js_xhr_class_id);
     if (!xhr) return JS_EXCEPTION;
     return JS_NewString(ctx, xhr->response_headers);
 }
 
-static GCValue js_xhr_get_ready_state(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_xhr_get_ready_state(JSContext *ctx, GCValue this_val) {
     XMLHttpRequest *xhr = JS_GetOpaque2(ctx, this_val, js_xhr_class_id);
     if (!xhr) return JS_EXCEPTION;
     return JS_NewInt32(ctx, xhr->ready_state);
 }
 
-static GCValue js_xhr_get_status(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_xhr_get_status(JSContext *ctx, GCValue this_val) {
     XMLHttpRequest *xhr = JS_GetOpaque2(ctx, this_val, js_xhr_class_id);
     if (!xhr) return JS_EXCEPTION;
     return JS_NewInt32(ctx, xhr->status);
 }
 
-static GCValue js_xhr_get_response_text(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_xhr_get_response_text(JSContext *ctx, GCValue this_val) {
     XMLHttpRequest *xhr = JS_GetOpaque2(ctx, this_val, js_xhr_class_id);
     if (!xhr) return JS_EXCEPTION;
     return JS_NewString(ctx, xhr->response_text);
@@ -269,7 +269,7 @@ static void js_video_finalizer(JSRuntime *rt, GCValue val) {
     }
 }
 
-GCValue js_video_constructor(JSContext *ctx, GCValueConst new_target, int argc, GCValueConst *argv) {
+GCValue js_video_constructor(JSContext *ctx, GCValue new_target, int argc, GCValue *argv) {
     HTMLVideoElement *vid = calloc(1, sizeof(HTMLVideoElement));
     if (!vid) return JS_EXCEPTION;
     
@@ -290,7 +290,7 @@ GCValue js_video_constructor(JSContext *ctx, GCValueConst new_target, int argc, 
     return obj;
 }
 
-static GCValue js_video_load(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_video_load(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     
@@ -308,7 +308,7 @@ static GCValue js_video_load(JSContext *ctx, GCValueConst this_val, int argc, GC
     return JS_UNDEFINED;
 }
 
-static GCValue js_video_play(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_video_play(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     
@@ -328,14 +328,14 @@ static GCValue js_video_play(JSContext *ctx, GCValueConst this_val, int argc, GC
     return JS_UNDEFINED;
 }
 
-static GCValue js_video_pause(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_video_pause(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     vid->paused = 1;
     return JS_UNDEFINED;
 }
 
-static GCValue js_video_set_src(JSContext *ctx, GCValueConst this_val, GCValueConst val) {
+static GCValue js_video_set_src(JSContext *ctx, GCValue this_val, GCValue val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     
@@ -351,19 +351,19 @@ static GCValue js_video_set_src(JSContext *ctx, GCValueConst this_val, GCValueCo
     return JS_UNDEFINED;
 }
 
-static GCValue js_video_get_src(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_video_get_src(JSContext *ctx, GCValue this_val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     return JS_NewString(ctx, vid->src);
 }
 
-static GCValue js_video_get_id(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_video_get_id(JSContext *ctx, GCValue this_val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     return JS_NewString(ctx, vid->id);
 }
 
-static GCValue js_video_set_id(JSContext *ctx, GCValueConst this_val, GCValueConst val) {
+static GCValue js_video_set_id(JSContext *ctx, GCValue this_val, GCValue val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     const char *id = JS_ToCString(ctx, val);
@@ -375,38 +375,38 @@ static GCValue js_video_set_id(JSContext *ctx, GCValueConst this_val, GCValueCon
     return JS_UNDEFINED;
 }
 
-static GCValue js_video_get_current_time(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_video_get_current_time(JSContext *ctx, GCValue this_val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     return JS_NewFloat64(ctx, vid->current_time);
 }
 
-static GCValue js_video_set_current_time(JSContext *ctx, GCValueConst this_val, GCValueConst val) {
+static GCValue js_video_set_current_time(JSContext *ctx, GCValue this_val, GCValue val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     JS_ToFloat64(ctx, &vid->current_time, val);
     return JS_UNDEFINED;
 }
 
-static GCValue js_video_get_duration(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_video_get_duration(JSContext *ctx, GCValue this_val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     return JS_NewFloat64(ctx, vid->duration);
 }
 
-static GCValue js_video_get_paused(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_video_get_paused(JSContext *ctx, GCValue this_val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     return JS_NewBool(ctx, vid->paused);
 }
 
-static GCValue js_video_get_ready_state(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_video_get_ready_state(JSContext *ctx, GCValue this_val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     return JS_NewInt32(ctx, vid->ready_state);
 }
 
-static GCValue js_video_get_network_state(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_video_get_network_state(JSContext *ctx, GCValue this_val) {
     HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id);
     if (!vid) return JS_EXCEPTION;
     return JS_NewInt32(ctx, vid->network_state);
@@ -415,12 +415,12 @@ static GCValue js_video_get_network_state(JSContext *ctx, GCValueConst this_val)
 // Generic getter/setter for event callbacks
 // NOTE: With GCValue, we just copy the handle. The GC manages the actual object.
 #define DEFINE_VIDEO_EVENT_HANDLER(name, field) \
-    static GCValue js_video_get_##name(JSContext *ctx, GCValueConst this_val) { \
+    static GCValue js_video_get_##name(JSContext *ctx, GCValue this_val) { \
         HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
         if (!vid) return JS_EXCEPTION; \
         return vid->field; \
     } \
-    static GCValue js_video_set_##name(JSContext *ctx, GCValueConst this_val, GCValueConst val) { \
+    static GCValue js_video_set_##name(JSContext *ctx, GCValue this_val, GCValue val) { \
         HTMLVideoElement *vid = JS_GetOpaque2(ctx, this_val, js_video_class_id); \
         if (!vid) return JS_EXCEPTION; \
         vid->field = val; \
@@ -468,7 +468,7 @@ const JSCFunctionListEntry js_video_proto_funcs[] = {
 const size_t js_video_proto_funcs_count = sizeof(js_video_proto_funcs) / sizeof(js_video_proto_funcs[0]);
 
 // Global fetch implementation
-GCValue js_fetch(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+GCValue js_fetch(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     const char *url = JS_ToCString(ctx, argv[0]);
     if (url) {
         record_captured_url(url);
@@ -485,7 +485,7 @@ GCValue js_fetch(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *
 }
 
 // Document and Element stubs with createElement support
-GCValue js_document_create_element(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+GCValue js_document_create_element(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     const char *tag = JS_ToCString(ctx, argv[0]);
     GCValue elem = JS_NULL;
     
@@ -503,46 +503,46 @@ GCValue js_document_create_element(JSContext *ctx, GCValueConst this_val, int ar
     return elem;
 }
 
-static GCValue js_document_get_element_by_id(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_document_get_element_by_id(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Return null - YouTube will create its own elements
     return JS_NULL;
 }
 
-static GCValue js_document_query_selector(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_document_query_selector(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NULL;
 }
 
-static GCValue js_document_query_selector_all(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_document_query_selector_all(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NewArray(ctx);
 }
 
-static GCValue js_document_get_head(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_document_get_head(JSContext *ctx, GCValue this_val) {
     GCValue head = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, head, "appendChild", JS_NewCFunction(ctx, js_dummy_function, "appendChild", 1));
     return head;
 }
 
-static GCValue js_document_get_body(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_document_get_body(JSContext *ctx, GCValue this_val) {
     GCValue body = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, body, "appendChild", JS_NewCFunction(ctx, js_dummy_function, "appendChild", 1));
     return body;
 }
 
-static GCValue js_document_get_document_element(JSContext *ctx, GCValueConst this_val) {
+static GCValue js_document_get_document_element(JSContext *ctx, GCValue this_val) {
     GCValue html = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, html, "getAttribute", JS_NewCFunction(ctx, js_dummy_function, "getAttribute", 1));
     return html;
 }
 
-static GCValue js_element_set_attribute(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_set_attribute(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
-static GCValue js_element_get_attribute(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_get_attribute(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_NULL;
 }
 
-static GCValue js_element_add_event_listener(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_add_event_listener(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     // Store event handlers on the element for dispatch
     const char *event = JS_ToCString(ctx, argv[0]);
     if (event) {
@@ -554,17 +554,17 @@ static GCValue js_element_add_event_listener(JSContext *ctx, GCValueConst this_v
     return JS_UNDEFINED;
 }
 
-static GCValue js_element_remove_event_listener(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_element_remove_event_listener(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
-static GCValue js_dummy_function(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_dummy_function(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     return JS_UNDEFINED;
 }
 
 // Native logging function for JavaScript debugging
 // Logs to Android logcat so we can see JS-side decryption results
-static GCValue js_bgmdwnldr_log(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_bgmdwnldr_log(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     (void)ctx;
     (void)this_val;
     
@@ -578,7 +578,7 @@ static GCValue js_bgmdwnldr_log(JSContext *ctx, GCValueConst this_val, int argc,
     return JS_UNDEFINED;
 }
 
-static GCValue js_console_log(JSContext *ctx, GCValueConst this_val, int argc, GCValueConst *argv) {
+static GCValue js_console_log(JSContext *ctx, GCValue this_val, int argc, GCValue *argv) {
     for (int i = 0; i < argc; i++) {
         const char *str = JS_ToCString(ctx, argv[i]);
         if (str) {

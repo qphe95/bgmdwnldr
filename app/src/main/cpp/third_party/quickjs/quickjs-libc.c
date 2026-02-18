@@ -169,7 +169,7 @@ static BOOL my_isdigit(int c)
 
 /* XXX: use 'o' and 'O' for object using JS_PrintValue() ? */
 static GCValue js_printf_internal(JSContext *ctx,
-                                  int argc, GCValueConst *argv, FILE *fp)
+                                  int argc, GCValue *argv, FILE *fp)
 {
     char fmtbuf[32];
     uint8_t cbuf[UTF8_CHAR_LEN_MAX+1];
@@ -428,8 +428,8 @@ uint8_t *js_load_file(JSContext *ctx, size_t *pbuf_len, const char *filename)
 }
 
 /* load and evaluate a file */
-static GCValue js_loadScript(JSContext *ctx, GCValueConst this_val,
-                             int argc, GCValueConst *argv)
+static GCValue js_loadScript(JSContext *ctx, GCValue this_val,
+                             int argc, GCValue *argv)
 {
     uint8_t *buf;
     const char *filename;
@@ -453,8 +453,8 @@ static GCValue js_loadScript(JSContext *ctx, GCValueConst this_val,
 }
 
 /* load a file as a UTF-8 encoded string */
-static GCValue js_std_loadFile(JSContext *ctx, GCValueConst this_val,
-                               int argc, GCValueConst *argv)
+static GCValue js_std_loadFile(JSContext *ctx, GCValue this_val,
+                               int argc, GCValue *argv)
 {
     uint8_t *buf;
     const char *filename;
@@ -535,7 +535,7 @@ static JSModuleDef *js_module_loader_so(JSContext *ctx,
 }
 #endif /* !_WIN32 */
 
-int js_module_set_import_meta(JSContext *ctx, GCValueConst func_val,
+int js_module_set_import_meta(JSContext *ctx, GCValue func_val,
                               JS_BOOL use_realpath, JS_BOOL is_main)
 {
     JSModuleDef *m;
@@ -613,7 +613,7 @@ static JSModuleDef *create_json_module(JSContext *ctx, const char *module_name, 
 /* in order to conform with the specification, only the keys should be
    tested and not the associated values. */
 int js_module_check_attributes(JSContext *ctx, void *opaque,
-                               GCValueConst attributes)
+                               GCValue attributes)
 {
     JSPropertyEnum *tab;
     uint32_t i, len;
@@ -643,7 +643,7 @@ int js_module_check_attributes(JSContext *ctx, void *opaque,
 }
 
 /* return > 0 if the attributes indicate a JSON module */
-int js_module_test_json(JSContext *ctx, GCValueConst attributes)
+int js_module_test_json(JSContext *ctx, GCValue attributes)
 {
     GCValue str;
     const char *cstr;
@@ -673,7 +673,7 @@ int js_module_test_json(JSContext *ctx, GCValueConst attributes)
 
 JSModuleDef *js_module_loader(JSContext *ctx,
                               const char *module_name, void *opaque,
-                              GCValueConst attributes)
+                              GCValue attributes)
 {
     JSModuleDef *m;
     int res;
@@ -724,8 +724,8 @@ JSModuleDef *js_module_loader(JSContext *ctx,
     return m;
 }
 
-static GCValue js_std_exit(JSContext *ctx, GCValueConst this_val,
-                           int argc, GCValueConst *argv)
+static GCValue js_std_exit(JSContext *ctx, GCValue this_val,
+                           int argc, GCValue *argv)
 {
     int status;
     if (JS_ToInt32(ctx, &status, argv[0]))
@@ -734,8 +734,8 @@ static GCValue js_std_exit(JSContext *ctx, GCValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static GCValue js_std_getenv(JSContext *ctx, GCValueConst this_val,
-                           int argc, GCValueConst *argv)
+static GCValue js_std_getenv(JSContext *ctx, GCValue this_val,
+                           int argc, GCValue *argv)
 {
     const char *name, *str;
     name = JS_ToCString(ctx, argv[0]);
@@ -771,8 +771,8 @@ static void unsetenv(const char *name)
 }
 #endif /* _WIN32 */
 
-static GCValue js_std_setenv(JSContext *ctx, GCValueConst this_val,
-                           int argc, GCValueConst *argv)
+static GCValue js_std_setenv(JSContext *ctx, GCValue this_val,
+                           int argc, GCValue *argv)
 {
     const char *name, *value;
     name = JS_ToCString(ctx, argv[0]);
@@ -789,8 +789,8 @@ static GCValue js_std_setenv(JSContext *ctx, GCValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static GCValue js_std_unsetenv(JSContext *ctx, GCValueConst this_val,
-                               int argc, GCValueConst *argv)
+static GCValue js_std_unsetenv(JSContext *ctx, GCValue this_val,
+                               int argc, GCValue *argv)
 {
     const char *name;
     name = JS_ToCString(ctx, argv[0]);
@@ -803,8 +803,8 @@ static GCValue js_std_unsetenv(JSContext *ctx, GCValueConst this_val,
 
 /* return an object containing the list of the available environment
    variables. */
-static GCValue js_std_getenviron(JSContext *ctx, GCValueConst this_val,
-                                 int argc, GCValueConst *argv)
+static GCValue js_std_getenviron(JSContext *ctx, GCValue this_val,
+                                 int argc, GCValue *argv)
 {
     char **envp;
     const char *name, *p, *value;
@@ -840,8 +840,8 @@ static GCValue js_std_getenviron(JSContext *ctx, GCValueConst this_val,
     return JS_EXCEPTION;
 }
 
-static GCValue js_std_gc(JSContext *ctx, GCValueConst this_val,
-                         int argc, GCValueConst *argv)
+static GCValue js_std_gc(JSContext *ctx, GCValue this_val,
+                         int argc, GCValue *argv)
 {
     JS_RunGC(JS_GetRuntime(ctx));
     return JS_UNDEFINED;
@@ -853,7 +853,7 @@ static int interrupt_handler(JSRuntime *rt, void *opaque)
 }
 
 static int get_bool_option(JSContext *ctx, BOOL *pbool,
-                           GCValueConst obj,
+                           GCValue obj,
                            const char *option)
 {
     GCValue val;
@@ -867,15 +867,15 @@ static int get_bool_option(JSContext *ctx, BOOL *pbool,
     return 0;
 }
 
-static GCValue js_evalScript(JSContext *ctx, GCValueConst this_val,
-                             int argc, GCValueConst *argv)
+static GCValue js_evalScript(JSContext *ctx, GCValue this_val,
+                             int argc, GCValue *argv)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSThreadState *ts = JS_GetRuntimeOpaque(rt);
     const char *str;
     size_t len;
     GCValue ret;
-    GCValueConst options_obj;
+    GCValue options_obj;
     BOOL backtrace_barrier = FALSE;
     BOOL is_async = FALSE;
     int flags;
@@ -945,8 +945,8 @@ static ssize_t js_get_errno(ssize_t ret)
     return ret;
 }
 
-static GCValue js_std_strerror(JSContext *ctx, GCValueConst this_val,
-                                     int argc, GCValueConst *argv)
+static GCValue js_std_strerror(JSContext *ctx, GCValue this_val,
+                                     int argc, GCValue *argv)
 {
     int err;
     if (JS_ToInt32(ctx, &err, argv[0]))
@@ -954,8 +954,8 @@ static GCValue js_std_strerror(JSContext *ctx, GCValueConst this_val,
     return JS_NewString(ctx, strerror(err));
 }
 
-static GCValue js_std_parseExtJSON(JSContext *ctx, GCValueConst this_val,
-                                   int argc, GCValueConst *argv)
+static GCValue js_std_parseExtJSON(JSContext *ctx, GCValue this_val,
+                                   int argc, GCValue *argv)
 {
     GCValue obj;
     const char *str;
@@ -978,7 +978,7 @@ static GCValue js_new_std_file(JSContext *ctx, FILE *f,
     obj = JS_NewObjectClass(ctx, js_std_file_class_id);
     if (JS_IsException(obj))
         return obj;
-    s = gc_allocz(sizeof(*s), JS_GC_OBJ_TYPE_DATA);
+    s = gc_deref(gc_allocz(sizeof(*s), JS_GC_OBJ_TYPE_DATA));
     if (!s) {
 
         return JS_EXCEPTION;
@@ -997,8 +997,8 @@ static void js_set_error_object(JSContext *ctx, GCValue obj, int err)
     }
 }
 
-static GCValue js_std_open(JSContext *ctx, GCValueConst this_val,
-                           int argc, GCValueConst *argv)
+static GCValue js_std_open(JSContext *ctx, GCValue this_val,
+                           int argc, GCValue *argv)
 {
     const char *filename, *mode = NULL;
     FILE *f;
@@ -1033,8 +1033,8 @@ static GCValue js_std_open(JSContext *ctx, GCValueConst this_val,
     return JS_EXCEPTION;
 }
 
-static GCValue js_std_popen(JSContext *ctx, GCValueConst this_val,
-                            int argc, GCValueConst *argv)
+static GCValue js_std_popen(JSContext *ctx, GCValue this_val,
+                            int argc, GCValue *argv)
 {
     const char *filename, *mode = NULL;
     FILE *f;
@@ -1069,8 +1069,8 @@ static GCValue js_std_popen(JSContext *ctx, GCValueConst this_val,
     return JS_EXCEPTION;
 }
 
-static GCValue js_std_fdopen(JSContext *ctx, GCValueConst this_val,
-                             int argc, GCValueConst *argv)
+static GCValue js_std_fdopen(JSContext *ctx, GCValue this_val,
+                             int argc, GCValue *argv)
 {
     const char *mode;
     FILE *f;
@@ -1102,8 +1102,8 @@ static GCValue js_std_fdopen(JSContext *ctx, GCValueConst this_val,
     return JS_EXCEPTION;
 }
 
-static GCValue js_std_tmpfile(JSContext *ctx, GCValueConst this_val,
-                              int argc, GCValueConst *argv)
+static GCValue js_std_tmpfile(JSContext *ctx, GCValue this_val,
+                              int argc, GCValue *argv)
 {
     FILE *f;
     f = tmpfile();
@@ -1114,19 +1114,19 @@ static GCValue js_std_tmpfile(JSContext *ctx, GCValueConst this_val,
     return js_new_std_file(ctx, f, TRUE, FALSE);
 }
 
-static GCValue js_std_sprintf(JSContext *ctx, GCValueConst this_val,
-                          int argc, GCValueConst *argv)
+static GCValue js_std_sprintf(JSContext *ctx, GCValue this_val,
+                          int argc, GCValue *argv)
 {
     return js_printf_internal(ctx, argc, argv, NULL);
 }
 
-static GCValue js_std_printf(JSContext *ctx, GCValueConst this_val,
-                             int argc, GCValueConst *argv)
+static GCValue js_std_printf(JSContext *ctx, GCValue this_val,
+                             int argc, GCValue *argv)
 {
     return js_printf_internal(ctx, argc, argv, stdout);
 }
 
-static FILE *js_std_file_get(JSContext *ctx, GCValueConst obj)
+static FILE *js_std_file_get(JSContext *ctx, GCValue obj)
 {
     JSSTDFile *s = JS_GetOpaque2(ctx, obj, js_std_file_class_id);
     if (!s)
@@ -1138,8 +1138,8 @@ static FILE *js_std_file_get(JSContext *ctx, GCValueConst obj)
     return s->f;
 }
 
-static GCValue js_std_file_puts(JSContext *ctx, GCValueConst this_val,
-                                int argc, GCValueConst *argv, int magic)
+static GCValue js_std_file_puts(JSContext *ctx, GCValue this_val,
+                                int argc, GCValue *argv, int magic)
 {
     FILE *f;
     int i;
@@ -1164,8 +1164,8 @@ static GCValue js_std_file_puts(JSContext *ctx, GCValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static GCValue js_std_file_close(JSContext *ctx, GCValueConst this_val,
-                                 int argc, GCValueConst *argv)
+static GCValue js_std_file_close(JSContext *ctx, GCValue this_val,
+                                 int argc, GCValue *argv)
 {
     JSSTDFile *s = JS_GetOpaque2(ctx, this_val, js_std_file_class_id);
     int err;
@@ -1181,8 +1181,8 @@ static GCValue js_std_file_close(JSContext *ctx, GCValueConst this_val,
     return JS_NewInt32(ctx, err);
 }
 
-static GCValue js_std_file_printf(JSContext *ctx, GCValueConst this_val,
-                                  int argc, GCValueConst *argv)
+static GCValue js_std_file_printf(JSContext *ctx, GCValue this_val,
+                                  int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     if (!f)
@@ -1196,15 +1196,15 @@ static void js_print_value_write(void *opaque, const char *buf, size_t len)
     fwrite(buf, 1, len, fo);
 }
 
-static GCValue js_std_file_printObject(JSContext *ctx, GCValueConst this_val,
-                                       int argc, GCValueConst *argv)
+static GCValue js_std_file_printObject(JSContext *ctx, GCValue this_val,
+                                       int argc, GCValue *argv)
 {
     JS_PrintValue(ctx, js_print_value_write, stdout, argv[0], NULL);
     return JS_UNDEFINED;
 }
 
-static GCValue js_std_file_flush(JSContext *ctx, GCValueConst this_val,
-                                 int argc, GCValueConst *argv)
+static GCValue js_std_file_flush(JSContext *ctx, GCValue this_val,
+                                 int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     if (!f)
@@ -1213,8 +1213,8 @@ static GCValue js_std_file_flush(JSContext *ctx, GCValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static GCValue js_std_file_tell(JSContext *ctx, GCValueConst this_val,
-                                int argc, GCValueConst *argv, int is_bigint)
+static GCValue js_std_file_tell(JSContext *ctx, GCValue this_val,
+                                int argc, GCValue *argv, int is_bigint)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     int64_t pos;
@@ -1231,8 +1231,8 @@ static GCValue js_std_file_tell(JSContext *ctx, GCValueConst this_val,
         return JS_NewInt64(ctx, pos);
 }
 
-static GCValue js_std_file_seek(JSContext *ctx, GCValueConst this_val,
-                                int argc, GCValueConst *argv)
+static GCValue js_std_file_seek(JSContext *ctx, GCValue this_val,
+                                int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     int64_t pos;
@@ -1253,8 +1253,8 @@ static GCValue js_std_file_seek(JSContext *ctx, GCValueConst this_val,
     return JS_NewInt32(ctx, ret);
 }
 
-static GCValue js_std_file_eof(JSContext *ctx, GCValueConst this_val,
-                               int argc, GCValueConst *argv)
+static GCValue js_std_file_eof(JSContext *ctx, GCValue this_val,
+                               int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     if (!f)
@@ -1262,8 +1262,8 @@ static GCValue js_std_file_eof(JSContext *ctx, GCValueConst this_val,
     return JS_NewBool(ctx, feof(f));
 }
 
-static GCValue js_std_file_error(JSContext *ctx, GCValueConst this_val,
-                               int argc, GCValueConst *argv)
+static GCValue js_std_file_error(JSContext *ctx, GCValue this_val,
+                               int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     if (!f)
@@ -1271,8 +1271,8 @@ static GCValue js_std_file_error(JSContext *ctx, GCValueConst this_val,
     return JS_NewBool(ctx, ferror(f));
 }
 
-static GCValue js_std_file_clearerr(JSContext *ctx, GCValueConst this_val,
-                                    int argc, GCValueConst *argv)
+static GCValue js_std_file_clearerr(JSContext *ctx, GCValue this_val,
+                                    int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     if (!f)
@@ -1281,8 +1281,8 @@ static GCValue js_std_file_clearerr(JSContext *ctx, GCValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static GCValue js_std_file_fileno(JSContext *ctx, GCValueConst this_val,
-                                  int argc, GCValueConst *argv)
+static GCValue js_std_file_fileno(JSContext *ctx, GCValue this_val,
+                                  int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     if (!f)
@@ -1290,8 +1290,8 @@ static GCValue js_std_file_fileno(JSContext *ctx, GCValueConst this_val,
     return JS_NewInt32(ctx, fileno(f));
 }
 
-static GCValue js_std_file_read_write(JSContext *ctx, GCValueConst this_val,
-                                      int argc, GCValueConst *argv, int magic)
+static GCValue js_std_file_read_write(JSContext *ctx, GCValue this_val,
+                                      int argc, GCValue *argv, int magic)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     uint64_t pos, len;
@@ -1317,8 +1317,8 @@ static GCValue js_std_file_read_write(JSContext *ctx, GCValueConst this_val,
 }
 
 /* XXX: could use less memory and go faster */
-static GCValue js_std_file_getline(JSContext *ctx, GCValueConst this_val,
-                                   int argc, GCValueConst *argv)
+static GCValue js_std_file_getline(JSContext *ctx, GCValue this_val,
+                                   int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     int c;
@@ -1353,8 +1353,8 @@ static GCValue js_std_file_getline(JSContext *ctx, GCValueConst this_val,
 }
 
 /* XXX: could use less memory and go faster */
-static GCValue js_std_file_readAsString(JSContext *ctx, GCValueConst this_val,
-                                        int argc, GCValueConst *argv)
+static GCValue js_std_file_readAsString(JSContext *ctx, GCValue this_val,
+                                        int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     int c;
@@ -1362,7 +1362,7 @@ static GCValue js_std_file_readAsString(JSContext *ctx, GCValueConst this_val,
     GCValue obj;
     uint64_t max_size64;
     size_t max_size;
-    GCValueConst max_size_val;
+    GCValue max_size_val;
 
     if (!f)
         return JS_EXCEPTION;
@@ -1395,8 +1395,8 @@ static GCValue js_std_file_readAsString(JSContext *ctx, GCValueConst this_val,
     return obj;
 }
 
-static GCValue js_std_file_getByte(JSContext *ctx, GCValueConst this_val,
-                                   int argc, GCValueConst *argv)
+static GCValue js_std_file_getByte(JSContext *ctx, GCValue this_val,
+                                   int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     if (!f)
@@ -1404,8 +1404,8 @@ static GCValue js_std_file_getByte(JSContext *ctx, GCValueConst this_val,
     return JS_NewInt32(ctx, fgetc(f));
 }
 
-static GCValue js_std_file_putByte(JSContext *ctx, GCValueConst this_val,
-                                   int argc, GCValueConst *argv)
+static GCValue js_std_file_putByte(JSContext *ctx, GCValue this_val,
+                                   int argc, GCValue *argv)
 {
     FILE *f = js_std_file_get(ctx, this_val);
     int c;
@@ -1456,8 +1456,8 @@ static int http_get_status(const char *buf)
     return atoi(p);
 }
 
-static GCValue js_std_urlGet(JSContext *ctx, GCValueConst this_val,
-                             int argc, GCValueConst *argv)
+static GCValue js_std_urlGet(JSContext *ctx, GCValue this_val,
+                             int argc, GCValue *argv)
 {
     const char *url;
     DynBuf cmd_buf;
@@ -1467,7 +1467,7 @@ static GCValue js_std_urlGet(JSContext *ctx, GCValueConst this_val,
     size_t i, len;
     int status;
     GCValue response = JS_UNDEFINED, ret_obj;
-    GCValueConst options_obj;
+    GCValue options_obj;
     FILE *f;
     BOOL binary_flag, full_flag;
 
@@ -1722,8 +1722,8 @@ JSModuleDef *js_init_module_std(JSContext *ctx, const char *module_name)
 /**********************************************************/
 /* 'os' object */
 
-static GCValue js_os_open(JSContext *ctx, GCValueConst this_val,
-                          int argc, GCValueConst *argv)
+static GCValue js_os_open(JSContext *ctx, GCValue this_val,
+                          int argc, GCValue *argv)
 {
     const char *filename;
     int flags, mode, ret;
@@ -1752,8 +1752,8 @@ static GCValue js_os_open(JSContext *ctx, GCValueConst this_val,
     return JS_NewInt32(ctx, ret);
 }
 
-static GCValue js_os_close(JSContext *ctx, GCValueConst this_val,
-                           int argc, GCValueConst *argv)
+static GCValue js_os_close(JSContext *ctx, GCValue this_val,
+                           int argc, GCValue *argv)
 {
     int fd, ret;
     if (JS_ToInt32(ctx, &fd, argv[0]))
@@ -1762,8 +1762,8 @@ static GCValue js_os_close(JSContext *ctx, GCValueConst this_val,
     return JS_NewInt32(ctx, ret);
 }
 
-static GCValue js_os_seek(JSContext *ctx, GCValueConst this_val,
-                          int argc, GCValueConst *argv)
+static GCValue js_os_seek(JSContext *ctx, GCValue this_val,
+                          int argc, GCValue *argv)
 {
     int fd, whence;
     int64_t pos, ret;
@@ -1771,7 +1771,7 @@ static GCValue js_os_seek(JSContext *ctx, GCValueConst this_val,
 
     if (JS_ToInt32(ctx, &fd, argv[0]))
         return JS_EXCEPTION;
-    is_bigint = JS_IsBigInt(ctx, argv[1]);
+    is_bigint = JS_IsBigInt(argv[1]);
     if (JS_ToInt64Ext(ctx, &pos, argv[1]))
         return JS_EXCEPTION;
     if (JS_ToInt32(ctx, &whence, argv[2]))
@@ -1785,8 +1785,8 @@ static GCValue js_os_seek(JSContext *ctx, GCValueConst this_val,
         return JS_NewInt64(ctx, ret);
 }
 
-static GCValue js_os_read_write(JSContext *ctx, GCValueConst this_val,
-                                int argc, GCValueConst *argv, int magic)
+static GCValue js_os_read_write(JSContext *ctx, GCValue this_val,
+                                int argc, GCValue *argv, int magic)
 {
     int fd;
     uint64_t pos, len;
@@ -1812,8 +1812,8 @@ static GCValue js_os_read_write(JSContext *ctx, GCValueConst this_val,
     return JS_NewInt64(ctx, ret);
 }
 
-static GCValue js_os_isatty(JSContext *ctx, GCValueConst this_val,
-                            int argc, GCValueConst *argv)
+static GCValue js_os_isatty(JSContext *ctx, GCValue this_val,
+                            int argc, GCValue *argv)
 {
     int fd;
     if (JS_ToInt32(ctx, &fd, argv[0]))
@@ -1822,8 +1822,8 @@ static GCValue js_os_isatty(JSContext *ctx, GCValueConst this_val,
 }
 
 #if defined(_WIN32)
-static GCValue js_os_ttyGetWinSize(JSContext *ctx, GCValueConst this_val,
-                                   int argc, GCValueConst *argv)
+static GCValue js_os_ttyGetWinSize(JSContext *ctx, GCValue this_val,
+                                   int argc, GCValue *argv)
 {
     int fd;
     HANDLE handle;
@@ -1848,8 +1848,8 @@ static GCValue js_os_ttyGetWinSize(JSContext *ctx, GCValueConst this_val,
 #define __ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #define __ENABLE_VIRTUAL_TERMINAL_INPUT 0x0200
 
-static GCValue js_os_ttySetRaw(JSContext *ctx, GCValueConst this_val,
-                               int argc, GCValueConst *argv)
+static GCValue js_os_ttySetRaw(JSContext *ctx, GCValue this_val,
+                               int argc, GCValue *argv)
 {
     int fd;
     HANDLE handle;
@@ -1866,8 +1866,8 @@ static GCValue js_os_ttySetRaw(JSContext *ctx, GCValueConst this_val,
     return JS_UNDEFINED;
 }
 #else
-static GCValue js_os_ttyGetWinSize(JSContext *ctx, GCValueConst this_val,
-                                   int argc, GCValueConst *argv)
+static GCValue js_os_ttyGetWinSize(JSContext *ctx, GCValue this_val,
+                                   int argc, GCValue *argv)
 {
     int fd;
     struct winsize ws;
@@ -1896,8 +1896,8 @@ static void term_exit(void)
 }
 
 /* XXX: should add a way to go back to normal mode */
-static GCValue js_os_ttySetRaw(JSContext *ctx, GCValueConst this_val,
-                               int argc, GCValueConst *argv)
+static GCValue js_os_ttySetRaw(JSContext *ctx, GCValue this_val,
+                               int argc, GCValue *argv)
 {
     struct termios tty;
     int fd;
@@ -1926,8 +1926,8 @@ static GCValue js_os_ttySetRaw(JSContext *ctx, GCValueConst this_val,
 
 #endif /* !_WIN32 */
 
-static GCValue js_os_remove(JSContext *ctx, GCValueConst this_val,
-                            int argc, GCValueConst *argv)
+static GCValue js_os_remove(JSContext *ctx, GCValue this_val,
+                            int argc, GCValue *argv)
 {
     const char *filename;
     int ret;
@@ -1952,8 +1952,8 @@ static GCValue js_os_remove(JSContext *ctx, GCValueConst this_val,
     return JS_NewInt32(ctx, ret);
 }
 
-static GCValue js_os_rename(JSContext *ctx, GCValueConst this_val,
-                            int argc, GCValueConst *argv)
+static GCValue js_os_rename(JSContext *ctx, GCValue this_val,
+                            int argc, GCValue *argv)
 {
     const char *oldpath, *newpath;
     int ret;
@@ -2001,14 +2001,14 @@ static void free_rw_handler(JSRuntime *rt, JSOSRWHandler *rh)
     /* GC frees: js_free_rt(rt, rh); */
 }
 
-static GCValue js_os_setReadHandler(JSContext *ctx, GCValueConst this_val,
-                                    int argc, GCValueConst *argv, int magic)
+static GCValue js_os_setReadHandler(JSContext *ctx, GCValue this_val,
+                                    int argc, GCValue *argv, int magic)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSThreadState *ts = JS_GetRuntimeOpaque(rt);
     JSOSRWHandler *rh;
     int fd;
-    GCValueConst func;
+    GCValue func;
 
     if (JS_ToInt32(ctx, &fd, argv[0]))
         return JS_EXCEPTION;
@@ -2071,14 +2071,14 @@ static void os_signal_handler(int sig_num)
 typedef void (*sighandler_t)(int sig_num);
 #endif
 
-static GCValue js_os_signal(JSContext *ctx, GCValueConst this_val,
-                            int argc, GCValueConst *argv)
+static GCValue js_os_signal(JSContext *ctx, GCValue this_val,
+                            int argc, GCValue *argv)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSThreadState *ts = JS_GetRuntimeOpaque(rt);
     JSOSSignalHandler *sh;
     uint32_t sig_num;
-    GCValueConst func;
+    GCValue func;
     sighandler_t handler;
 
     if (!is_main_thread(rt))
@@ -2162,13 +2162,13 @@ static void free_timer(JSRuntime *rt, JSOSTimer *th)
     /* GC frees: js_free_rt(rt, th); */
 }
 
-static GCValue js_os_setTimeout(JSContext *ctx, GCValueConst this_val,
-                                int argc, GCValueConst *argv)
+static GCValue js_os_setTimeout(JSContext *ctx, GCValue this_val,
+                                int argc, GCValue *argv)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSThreadState *ts = JS_GetRuntimeOpaque(rt);
     int64_t delay;
-    GCValueConst func;
+    GCValue func;
     JSOSTimer *th;
 
     func = argv[0];
@@ -2203,8 +2203,8 @@ static JSOSTimer *find_timer_by_id(JSThreadState *ts, int timer_id)
     return NULL;
 }
 
-static GCValue js_os_clearTimeout(JSContext *ctx, GCValueConst this_val,
-                                  int argc, GCValueConst *argv)
+static GCValue js_os_clearTimeout(JSContext *ctx, GCValue this_val,
+                                  int argc, GCValue *argv)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSThreadState *ts = JS_GetRuntimeOpaque(rt);
@@ -2221,8 +2221,8 @@ static GCValue js_os_clearTimeout(JSContext *ctx, GCValueConst this_val,
 }
 
 /* return a promise */
-static GCValue js_os_sleepAsync(JSContext *ctx, GCValueConst this_val,
-                                int argc, GCValueConst *argv)
+static GCValue js_os_sleepAsync(JSContext *ctx, GCValue this_val,
+                                int argc, GCValue *argv)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSThreadState *ts = JS_GetRuntimeOpaque(rt);
@@ -2252,7 +2252,7 @@ static GCValue js_os_sleepAsync(JSContext *ctx, GCValueConst this_val,
     return promise;
 }
 
-static void call_handler(JSContext *ctx, GCValueConst func)
+static void call_handler(JSContext *ctx, GCValue func)
 {
     GCValue ret, func1;
     /* 'func' might be destroyed when calling itself (if it frees the
@@ -2383,7 +2383,7 @@ static int handle_posted_message(JSRuntime *rt, JSContext *ctx,
         /* 'func' might be destroyed when calling itself (if it frees the
            handler), so must take extra care */
         func = port->on_message_func;
-        retval = JS_Call(ctx, func, JS_UNDEFINED, 1, (GCValueConst *)&obj);
+        retval = JS_Call(ctx, func, JS_UNDEFINED, 1, (GCValue *)&obj);
 
 
         if (JS_IsException(retval)) {
@@ -2642,8 +2642,8 @@ static GCValue make_string_error(JSContext *ctx,
 }
 
 /* return [cwd, errorcode] */
-static GCValue js_os_getcwd(JSContext *ctx, GCValueConst this_val,
-                            int argc, GCValueConst *argv)
+static GCValue js_os_getcwd(JSContext *ctx, GCValue this_val,
+                            int argc, GCValue *argv)
 {
     char buf[PATH_MAX];
     int err;
@@ -2657,8 +2657,8 @@ static GCValue js_os_getcwd(JSContext *ctx, GCValueConst this_val,
     return make_string_error(ctx, buf, err);
 }
 
-static GCValue js_os_chdir(JSContext *ctx, GCValueConst this_val,
-                           int argc, GCValueConst *argv)
+static GCValue js_os_chdir(JSContext *ctx, GCValue this_val,
+                           int argc, GCValue *argv)
 {
     const char *target;
     int err;
@@ -2671,8 +2671,8 @@ static GCValue js_os_chdir(JSContext *ctx, GCValueConst this_val,
     return JS_NewInt32(ctx, err);
 }
 
-static GCValue js_os_mkdir(JSContext *ctx, GCValueConst this_val,
-                           int argc, GCValueConst *argv)
+static GCValue js_os_mkdir(JSContext *ctx, GCValue this_val,
+                           int argc, GCValue *argv)
 {
     int mode, ret;
     const char *path;
@@ -2697,8 +2697,8 @@ static GCValue js_os_mkdir(JSContext *ctx, GCValueConst this_val,
 }
 
 /* return [array, errorcode] */
-static GCValue js_os_readdir(JSContext *ctx, GCValueConst this_val,
-                             int argc, GCValueConst *argv)
+static GCValue js_os_readdir(JSContext *ctx, GCValue this_val,
+                             int argc, GCValue *argv)
 {
     const char *path;
     DIR *f;
@@ -2748,8 +2748,8 @@ static int64_t timespec_to_ms(const struct timespec *tv)
 #endif
 
 /* return [obj, errcode] */
-static GCValue js_os_stat(JSContext *ctx, GCValueConst this_val,
-                          int argc, GCValueConst *argv, int is_lstat)
+static GCValue js_os_stat(JSContext *ctx, GCValue this_val,
+                          int argc, GCValue *argv, int is_lstat)
 {
     const char *path;
     int err, res;
@@ -2850,8 +2850,8 @@ static void ms_to_timeval(struct timeval *tv, uint64_t v)
 }
 #endif
 
-static GCValue js_os_utimes(JSContext *ctx, GCValueConst this_val,
-                            int argc, GCValueConst *argv)
+static GCValue js_os_utimes(JSContext *ctx, GCValue this_val,
+                            int argc, GCValue *argv)
 {
     const char *path;
     int64_t atime, mtime;
@@ -2884,8 +2884,8 @@ static GCValue js_os_utimes(JSContext *ctx, GCValueConst this_val,
 }
 
 /* sleep(delay_ms) */
-static GCValue js_os_sleep(JSContext *ctx, GCValueConst this_val,
-                           int argc, GCValueConst *argv)
+static GCValue js_os_sleep(JSContext *ctx, GCValue this_val,
+                           int argc, GCValue *argv)
 {
     int64_t delay;
     int ret;
@@ -2926,8 +2926,8 @@ static char *realpath(const char *path, char *buf)
 #endif
 
 /* return [path, errorcode] */
-static GCValue js_os_realpath(JSContext *ctx, GCValueConst this_val,
-                              int argc, GCValueConst *argv)
+static GCValue js_os_realpath(JSContext *ctx, GCValue this_val,
+                              int argc, GCValue *argv)
 {
     const char *path;
     char buf[PATH_MAX], *res;
@@ -2948,8 +2948,8 @@ static GCValue js_os_realpath(JSContext *ctx, GCValueConst this_val,
 }
 
 #if !defined(_WIN32)
-static GCValue js_os_symlink(JSContext *ctx, GCValueConst this_val,
-                             int argc, GCValueConst *argv)
+static GCValue js_os_symlink(JSContext *ctx, GCValue this_val,
+                             int argc, GCValue *argv)
 {
     const char *target, *linkpath;
     int err;
@@ -2969,8 +2969,8 @@ static GCValue js_os_symlink(JSContext *ctx, GCValueConst this_val,
 }
 
 /* return [path, errorcode] */
-static GCValue js_os_readlink(JSContext *ctx, GCValueConst this_val,
-                              int argc, GCValueConst *argv)
+static GCValue js_os_readlink(JSContext *ctx, GCValue this_val,
+                              int argc, GCValue *argv)
 {
     const char *path;
     char buf[PATH_MAX];
@@ -2992,7 +2992,7 @@ static GCValue js_os_readlink(JSContext *ctx, GCValueConst this_val,
     return make_string_error(ctx, buf, err);
 }
 
-static char **build_envp(JSContext *ctx, GCValueConst obj)
+static char **build_envp(JSContext *ctx, GCValue obj)
 {
     uint32_t len, i;
     JSPropertyEnum *tab;
@@ -3106,10 +3106,10 @@ static int my_execvpe(const char *filename, char **argv, char **envp)
 }
 
 /* exec(args[, options]) -> exitcode */
-static GCValue js_os_exec(JSContext *ctx, GCValueConst this_val,
-                          int argc, GCValueConst *argv)
+static GCValue js_os_exec(JSContext *ctx, GCValue this_val,
+                          int argc, GCValue *argv)
 {
-    GCValueConst options, args = argv[0];
+    GCValue options, args = argv[0];
     GCValue val, ret_val;
     const char **exec_argv, *file = NULL, *str, *cwd = NULL;
     char **envp = environ;
@@ -3322,15 +3322,15 @@ static GCValue js_os_exec(JSContext *ctx, GCValueConst this_val,
 }
 
 /* getpid() -> pid */
-static GCValue js_os_getpid(JSContext *ctx, GCValueConst this_val,
-                            int argc, GCValueConst *argv)
+static GCValue js_os_getpid(JSContext *ctx, GCValue this_val,
+                            int argc, GCValue *argv)
 {
     return JS_NewInt32(ctx, getpid());
 }
 
 /* waitpid(pid, block) -> [pid, status] */
-static GCValue js_os_waitpid(JSContext *ctx, GCValueConst this_val,
-                             int argc, GCValueConst *argv)
+static GCValue js_os_waitpid(JSContext *ctx, GCValue this_val,
+                             int argc, GCValue *argv)
 {
     int pid, status, options, ret;
     GCValue obj;
@@ -3357,8 +3357,8 @@ static GCValue js_os_waitpid(JSContext *ctx, GCValueConst this_val,
 }
 
 /* pipe() -> [read_fd, write_fd] or null if error */
-static GCValue js_os_pipe(JSContext *ctx, GCValueConst this_val,
-                          int argc, GCValueConst *argv)
+static GCValue js_os_pipe(JSContext *ctx, GCValue this_val,
+                          int argc, GCValue *argv)
 {
     int pipe_fds[2], ret;
     GCValue obj;
@@ -3377,8 +3377,8 @@ static GCValue js_os_pipe(JSContext *ctx, GCValueConst this_val,
 }
 
 /* kill(pid, sig) */
-static GCValue js_os_kill(JSContext *ctx, GCValueConst this_val,
-                          int argc, GCValueConst *argv)
+static GCValue js_os_kill(JSContext *ctx, GCValue this_val,
+                          int argc, GCValue *argv)
 {
     int pid, sig, ret;
 
@@ -3391,8 +3391,8 @@ static GCValue js_os_kill(JSContext *ctx, GCValueConst this_val,
 }
 
 /* dup(fd) */
-static GCValue js_os_dup(JSContext *ctx, GCValueConst this_val,
-                         int argc, GCValueConst *argv)
+static GCValue js_os_dup(JSContext *ctx, GCValue this_val,
+                         int argc, GCValue *argv)
 {
     int fd, ret;
 
@@ -3403,8 +3403,8 @@ static GCValue js_os_dup(JSContext *ctx, GCValueConst this_val,
 }
 
 /* dup2(fd) */
-static GCValue js_os_dup2(JSContext *ctx, GCValueConst this_val,
-                         int argc, GCValueConst *argv)
+static GCValue js_os_dup2(JSContext *ctx, GCValue this_val,
+                         int argc, GCValue *argv)
 {
     int fd, fd2, ret;
 
@@ -3557,7 +3557,7 @@ static void js_worker_finalizer(JSRuntime *rt, GCValue val)
     }
 }
 
-static void js_worker_mark(JSRuntime *rt, GCValueConst val,
+static void js_worker_mark(JSRuntime *rt, GCValue val,
                            JS_MarkFunc *mark_func)
 {
     JSWorkerData *worker = JS_GetOpaque(val, js_worker_class_id);
@@ -3625,7 +3625,7 @@ static void *worker_func(void *opaque)
     return NULL;
 }
 
-static GCValue js_worker_ctor_internal(JSContext *ctx, GCValueConst new_target,
+static GCValue js_worker_ctor_internal(JSContext *ctx, GCValue new_target,
                                        JSWorkerMessagePipe *recv_pipe,
                                        JSWorkerMessagePipe *send_pipe)
 {
@@ -3644,7 +3644,7 @@ static GCValue js_worker_ctor_internal(JSContext *ctx, GCValueConst new_target,
 
     if (JS_IsException(obj))
         goto fail;
-    s = gc_allocz(sizeof(*s), JS_GC_OBJ_TYPE_DATA);
+    s = gc_deref(gc_allocz(sizeof(*s), JS_GC_OBJ_TYPE_DATA));
     if (!s)
         goto fail;
     s->recv_pipe = js_dup_message_pipe(recv_pipe);
@@ -3657,8 +3657,8 @@ static GCValue js_worker_ctor_internal(JSContext *ctx, GCValueConst new_target,
     return JS_EXCEPTION;
 }
 
-static GCValue js_worker_ctor(JSContext *ctx, GCValueConst new_target,
-                              int argc, GCValueConst *argv)
+static GCValue js_worker_ctor(JSContext *ctx, GCValue new_target,
+                              int argc, GCValue *argv)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     WorkerFuncArgs *args = NULL;
@@ -3740,8 +3740,8 @@ static GCValue js_worker_ctor(JSContext *ctx, GCValueConst new_target,
     return JS_EXCEPTION;
 }
 
-static GCValue js_worker_postMessage(JSContext *ctx, GCValueConst this_val,
-                                     int argc, GCValueConst *argv)
+static GCValue js_worker_postMessage(JSContext *ctx, GCValue this_val,
+                                     int argc, GCValue *argv)
 {
     JSWorkerData *worker = JS_GetOpaque2(ctx, this_val, js_worker_class_id);
     JSWorkerMessagePipe *ps;
@@ -3808,8 +3808,8 @@ static GCValue js_worker_postMessage(JSContext *ctx, GCValueConst this_val,
 
 }
 
-static GCValue js_worker_set_onmessage(JSContext *ctx, GCValueConst this_val,
-                                   GCValueConst func)
+static GCValue js_worker_set_onmessage(JSContext *ctx, GCValue this_val,
+                                   GCValue func)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSThreadState *ts = JS_GetRuntimeOpaque(rt);
@@ -3843,7 +3843,7 @@ static GCValue js_worker_set_onmessage(JSContext *ctx, GCValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static GCValue js_worker_get_onmessage(JSContext *ctx, GCValueConst this_val)
+static GCValue js_worker_get_onmessage(JSContext *ctx, GCValue this_val)
 {
     JSWorkerData *worker = JS_GetOpaque2(ctx, this_val, js_worker_class_id);
     JSWorkerMessageHandler *port;
@@ -4019,11 +4019,11 @@ JSModuleDef *js_init_module_os(JSContext *ctx, const char *module_name)
 
 /**********************************************************/
 
-static GCValue js_print(JSContext *ctx, GCValueConst this_val,
-                        int argc, GCValueConst *argv)
+static GCValue js_print(JSContext *ctx, GCValue this_val,
+                        int argc, GCValue *argv)
 {
     int i;
-    GCValueConst v;
+    GCValue v;
     
     for(i = 0; i < argc; i++) {
         if (i != 0)
@@ -4045,8 +4045,8 @@ static GCValue js_print(JSContext *ctx, GCValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static GCValue js_console_log(JSContext *ctx, GCValueConst this_val,
-                              int argc, GCValueConst *argv)
+static GCValue js_console_log(JSContext *ctx, GCValue this_val,
+                              int argc, GCValue *argv)
 {
     GCValue ret;
     ret = js_print(ctx, this_val, argc, argv);
@@ -4163,7 +4163,7 @@ void js_std_free_handlers(JSRuntime *rt)
     JS_SetRuntimeOpaque(rt, NULL); /* fail safe */
 }
 
-static void js_std_dump_error1(JSContext *ctx, GCValueConst exception_val)
+static void js_std_dump_error1(JSContext *ctx, GCValue exception_val)
 {
     JS_PrintValue(ctx, js_print_value_write, stderr, exception_val, NULL);
     fputc('\n', stderr);
@@ -4179,7 +4179,7 @@ void js_std_dump_error(JSContext *ctx)
 }
 
 static JSRejectedPromiseEntry *find_rejected_promise(JSContext *ctx, JSThreadState *ts,
-                                                     GCValueConst promise)
+                                                     GCValue promise)
 {
     struct list_head *el;
 
@@ -4191,8 +4191,8 @@ static JSRejectedPromiseEntry *find_rejected_promise(JSContext *ctx, JSThreadSta
     return NULL;
 }
 
-void js_std_promise_rejection_tracker(JSContext *ctx, GCValueConst promise,
-                                      GCValueConst reason,
+void js_std_promise_rejection_tracker(JSContext *ctx, GCValue promise,
+                                      GCValue reason,
                                       BOOL is_handled, void *opaque)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
