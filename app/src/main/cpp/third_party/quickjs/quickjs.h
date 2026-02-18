@@ -367,20 +367,6 @@ typedef const GCValue GCValueConst;
     } \
 } while(0)
 
-/*
- * GC_HANDLE_TO_VALUE - Create a GCValue from a GCHandle and tag.
- * This is the handle-based replacement for JS_MKPTR.
- * Usage: GCValue val = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, obj_handle);
- */
-#define GC_HANDLE_TO_VALUE(tag, handle) GC_MKHANDLE(tag, handle)
-
-/*
- * GC_VALUE_TO_HANDLE - Extract the GCHandle from a GCValue.
- * This is the handle-based replacement for JS_VALUE_GET_OBJ (when used for handles).
- * Usage: GCHandle obj_handle = GC_VALUE_TO_HANDLE(val);
- */
-#define GC_VALUE_TO_HANDLE(v) GC_VALUE_GET_HANDLE(v)
-
 /* ============================================================================
  * GC-safe field access macros for JSObject and related structures
  * ============================================================================
@@ -731,23 +717,18 @@ typedef const GCValue GCValueConst;
 /* ============================================================================
  * JSObject-specific Access Macros
  * ============================================================================
+ * Use GC_FIELD_GET/GC_FIELD_SET directly for field access:
+ *   GC_FIELD_GET(obj_handle, JSObject, prop_handle)
+ *   GC_FIELD_SET(obj_handle, JSObject, prop_handle, val)
+ *   GC_HANDLE_GET_UINT16(obj_handle, JSObject, class_id)
  */
-#define GC_OBJ_GET_PROP_HANDLE(obj_handle) GC_FIELD_GET(obj_handle, JSObject, prop_handle)
-#define GC_OBJ_SET_PROP_HANDLE(obj_handle, val) GC_FIELD_SET(obj_handle, JSObject, prop_handle, val)
-#define GC_OBJ_GET_CLASS_ID(obj_handle) GC_HANDLE_GET_UINT16(obj_handle, JSObject, class_id)
 
 /* ============================================================================
  * Convenience Aliases for Common Object/Shape Field Access
  * ============================================================================
  */
 
-/* JSObject handle field accessors */
-#define GC_OBJ_GET_SHAPE_HANDLE(obj_handle) GC_FIELD_GET(obj_handle, JSObject, shape_handle)
-#define GC_OBJ_SET_SHAPE_HANDLE(obj_handle, val) GC_FIELD_SET(obj_handle, JSObject, shape_handle, val)
-#define GC_OBJ_GET_PROP_HANDLE(obj_handle) GC_FIELD_GET(obj_handle, JSObject, prop_handle)
-#define GC_OBJ_SET_PROP_HANDLE(obj_handle, val) GC_FIELD_SET(obj_handle, JSObject, prop_handle, val)
-
-/* JSObject boolean/scalar field accessors */
+/* JSObject boolean/scalar field accessors - use GC_HANDLE_GET_UINT8 directly */
 #define GC_OBJ_IS_EXOTIC(obj_handle) ({ \
     uint8_t _val = GC_HANDLE_GET_UINT8(obj_handle, JSObject, is_exotic); \
     _val; \
@@ -971,49 +952,9 @@ static inline GCValue __JS_NewShortBigInt(JSContext *ctx, int64_t val)
  */
 
 /*
- * GC_PROP_GET_STR - Get string property from a GCValue object.
- * 
- * This macro:
- * 1. Checks if the value is a reference type (tag < 0)
- * 2. Dereferences the handle to get the current pointer
- * 3. Immediately calls the property getter
- * 4. Does not store the pointer anywhere
- * 
- * Usage:
- *   GCValue obj = ...;
- *   GCValue prop = GC_PROP_GET_STR(ctx, obj, "propertyName");
- * 
- * IMPORTANT: The pointer obtained from gc_deref is used immediately within
- * the macro and never stored. This ensures GC safety.
+ * GC_PROP_GET_STR and GC_PROP_SET_STR are defined in gc_value_helpers.h
+ * as static inline functions for type safety.
  */
-#define GC_PROP_GET_STR(ctx, obj, prop) ({ \
-    GCValue _gc_result = GC_UNDEFINED; \
-    int _gc_tag = GC_VALUE_GET_TAG(obj); \
-    if (_gc_tag < 0) { \
-        void *_gc_ptr = gc_deref((obj).u.handle); \
-        if (_gc_ptr != NULL) { \
-            GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
-            _gc_result = JS_GetPropertyStr((ctx), _gc_obj, (prop)); \
-        } \
-    } \
-    _gc_result; \
-})
-
-/*
- * GC_PROP_SET_STR - Set string property on a GCValue object.
- */
-#define GC_PROP_SET_STR(ctx, obj, prop, val) ({ \
-    int _gc_result = -1; \
-    int _gc_tag = GC_VALUE_GET_TAG(obj); \
-    if (_gc_tag < 0) { \
-        void *_gc_ptr = gc_deref((obj).u.handle); \
-        if (_gc_ptr != NULL) { \
-            GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
-            _gc_result = JS_SetPropertyStr((ctx), _gc_obj, (prop), (val)); \
-        } \
-    } \
-    _gc_result; \
-})
 
 /*
  * GC_PROP_GET_UINT32 - Get property by numeric index.

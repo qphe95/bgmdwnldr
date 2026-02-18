@@ -5282,7 +5282,7 @@ int find_own_property_handle(GCHandle obj_handle, JSAtom atom,
     intptr_t h;
     
     /* Get shape handle from object */
-    GCHandle shape_handle = GC_OBJ_GET_SHAPE_HANDLE(obj_handle);
+    GCHandle shape_handle = GC_FIELD_GET(obj_handle, JSObject, shape_handle);
     if (shape_handle == GC_HANDLE_NULL) {
         *pprs = NULL;
         return -1;
@@ -5321,7 +5321,7 @@ JSProperty *get_property_by_index(GCHandle obj_handle, int prop_idx)
 {
     if (prop_idx < 0) return NULL;
     
-    GCHandle prop_handle = GC_OBJ_GET_PROP_HANDLE(obj_handle);
+    GCHandle prop_handle = GC_FIELD_GET(obj_handle, JSObject, prop_handle);
     JSProperty *props = (JSProperty *)gc_deref(prop_handle);
     if (!props) return NULL;
     
@@ -5331,14 +5331,14 @@ JSProperty *get_property_by_index(GCHandle obj_handle, int prop_idx)
 /* Check if object has a prototype */
 int gc_obj_has_prototype(GCHandle obj_handle)
 {
-    GCHandle shape_h = GC_OBJ_GET_SHAPE_HANDLE(obj_handle);
+    GCHandle shape_h = GC_FIELD_GET(obj_handle, JSObject, shape_handle);
     return GC_SHAPE_GET_PROTO_HANDLE(shape_h) != GC_HANDLE_NULL;
 }
 
 /* Get prototype handle of an object */
 GCHandle gc_obj_get_prototype_handle(GCHandle obj_handle)
 {
-    GCHandle shape_h = GC_OBJ_GET_SHAPE_HANDLE(obj_handle);
+    GCHandle shape_h = GC_FIELD_GET(obj_handle, JSObject, shape_handle);
     return GC_SHAPE_GET_PROTO_HANDLE(shape_h);
 }
 
@@ -5556,7 +5556,7 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     sh->is_hashed = FALSE;
     sh->shape_hash_next_handle = GC_HANDLE_NULL;  /* CRITICAL: cloned shape is not in hash table */
     if (sh->proto_handle != GC_HANDLE_NULL) {
-        GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, sh->proto_handle);
+        GC_MKHANDLE(JS_TAG_OBJECT, sh->proto_handle);
     }
     for(i = 0, pr = get_shape_prop(sh); i < sh->prop_count; i++, pr++) {
         JS_DupAtom(ctx, pr->atom);
@@ -6275,7 +6275,7 @@ static void js_method_set_home_object(JSContext *ctx, GCValue func_obj,
     b = p->u.func.function_bytecode;
     if (b->need_home_object) {
         if (JS_VALUE_GET_TAG(home_obj) == JS_TAG_OBJECT)
-            home_object_handle = GC_VALUE_TO_HANDLE(home_obj);
+            home_object_handle = GC_VALUE_GET_HANDLE(home_obj);
         else
             home_object_handle = GC_HANDLE_NULL;
         p->u.func.home_object_handle = home_object_handle;
@@ -6670,7 +6670,7 @@ static void js_bytecode_function_mark(JSRuntime *rt, GCValue val,
     int i;
 
     if (p->u.func.home_object_handle != GC_HANDLE_NULL) {
-        GCValue home_obj = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, p->u.func.home_object_handle);
+        GCValue home_obj = GC_MKHANDLE(JS_TAG_OBJECT, p->u.func.home_object_handle);
         JS_MarkValue(rt, home_obj, mark_func);
     }
     if (b) {
@@ -7178,7 +7178,7 @@ static void mark_children(JSRuntime *rt, void *user_ptr,
             int i;
             QJS_LOGI("mark_children: SHAPE sh=%p, proto_handle=%u, prop_count=%d", (void*)sh, sh->proto_handle, sh->prop_count);
             if (sh->proto_handle != GC_HANDLE_NULL) {
-                GCValue proto_val = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, sh->proto_handle);
+                GCValue proto_val = GC_MKHANDLE(JS_TAG_OBJECT, sh->proto_handle);
                 JS_MarkValue(rt, proto_val, mark_func);
             }
             /* Mark atoms referenced by this shape's properties.
@@ -8807,7 +8807,7 @@ GCValue JS_GetPrototype(JSContext *ctx, GCValue obj)
         if (GC_SHAPE_DEREF(p->shape_handle)->proto_handle == GC_HANDLE_NULL)
             val = JS_NULL;
         else
-            val = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, GC_SHAPE_DEREF(p->shape_handle)->proto_handle);
+            val = GC_MKHANDLE(JS_TAG_OBJECT, GC_SHAPE_DEREF(p->shape_handle)->proto_handle);
     } else {
         val = JS_GetPrototypePrimitive(ctx, obj);
     }
@@ -9034,11 +9034,11 @@ GCValue JS_GetPropertyInternal(JSContext *ctx, GCValue obj,
         GCValue proto_val = JS_GetPrototypePrimitive(ctx, obj);
         if (JS_IsUndefined(proto_val))
             return JS_UNDEFINED;
-        obj_handle = GC_VALUE_TO_HANDLE(proto_val);
+        obj_handle = GC_VALUE_GET_HANDLE(proto_val);
         if (obj_handle == GC_HANDLE_NULL)
             return JS_UNDEFINED;
     } else {
-        obj_handle = GC_VALUE_TO_HANDLE(obj);
+        obj_handle = GC_VALUE_GET_HANDLE(obj);
     }
     
     /* Defensive check for null handle */
@@ -9074,7 +9074,7 @@ GCValue JS_GetPropertyInternal(JSContext *ctx, GCValue obj,
                         return JS_UNDEFINED;
                     } else {
                         /* Create GCValue from handle - SAFE across GC */
-                        GCValue func = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, 
+                        GCValue func = GC_MKHANDLE(JS_TAG_OBJECT, 
                                                           pr->u.getset.getter_handle);
                         /* Note: JS_Call may trigger GC, but func is a GCValue (stable) */
                         return JS_CallFree(ctx, func, this_obj, 0, NULL);
@@ -9113,7 +9113,7 @@ GCValue JS_GetPropertyInternal(JSContext *ctx, GCValue obj,
                     JSObject *p_fast = gc_deref(current_handle);
                     if (p_fast && idx < p_fast->u.array.count) {
                         /* we avoid duplicating the code */
-                        GCValue obj_val = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, current_handle);
+                        GCValue obj_val = GC_MKHANDLE(JS_TAG_OBJECT, current_handle);
                         return JS_GetPropertyUint32(ctx, obj_val, idx);
                     } else if (class_id >= JS_CLASS_UINT8C_ARRAY &&
                                class_id <= JS_CLASS_FLOAT64_ARRAY) {
@@ -9132,7 +9132,7 @@ GCValue JS_GetPropertyInternal(JSContext *ctx, GCValue obj,
             } else {
                 const JSClassExoticMethods *em = ctx_rt_class_array[class_id].exotic;
                 if (em) {
-                    GCValue obj_val = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, current_handle);
+                    GCValue obj_val = GC_MKHANDLE(JS_TAG_OBJECT, current_handle);
                     
                     if (em->get_property) {
                         GCValue retval;
@@ -9165,7 +9165,7 @@ GCValue JS_GetPropertyInternal(JSContext *ctx, GCValue obj,
         }
         
         /* Move to next prototype using handles only */
-        GCHandle shape_handle = GC_OBJ_GET_SHAPE_HANDLE(current_handle);
+        GCHandle shape_handle = GC_FIELD_GET(current_handle, JSObject, shape_handle);
         current_handle = GC_SHAPE_GET_PROTO_HANDLE(shape_handle);
         depth++;
     }
@@ -9648,9 +9648,9 @@ retry:
                 if ((prs->flags & JS_PROP_TMASK) == JS_PROP_GETSET) {
                     desc->flags |= JS_PROP_GETSET;
                     if (pr->u.getset.getter_handle != GC_HANDLE_NULL)
-                        desc->getter = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, pr->u.getset.getter_handle);
+                        desc->getter = GC_MKHANDLE(JS_TAG_OBJECT, pr->u.getset.getter_handle);
                     if (pr->u.getset.setter_handle != GC_HANDLE_NULL)
-                        desc->setter = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, pr->u.getset.setter_handle);
+                        desc->setter = GC_MKHANDLE(JS_TAG_OBJECT, pr->u.getset.setter_handle);
                 } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
                     GCValue val = *pr->u.var_ref->pvalue;
                     if (unlikely(JS_IsUninitialized(val))) {
@@ -11114,11 +11114,11 @@ static int JS_CreateProperty(JSContext *ctx, JSObject *p,
     if (flags & (JS_PROP_HAS_GET | JS_PROP_HAS_SET)) {
         pr->u.getset.getter_handle = GC_HANDLE_NULL;
         if ((flags & JS_PROP_HAS_GET) && JS_IsFunction(ctx, getter)) {
-            pr->u.getset.getter_handle = GC_VALUE_TO_HANDLE(getter);
+            pr->u.getset.getter_handle = GC_VALUE_GET_HANDLE(getter);
         }
         pr->u.getset.setter_handle = GC_HANDLE_NULL;
         if ((flags & JS_PROP_HAS_SET) && JS_IsFunction(ctx, setter)) {
-            pr->u.getset.setter_handle = GC_VALUE_TO_HANDLE(setter);
+            pr->u.getset.setter_handle = GC_VALUE_GET_HANDLE(setter);
         }
     } else if (p->class_id == JS_CLASS_GLOBAL_OBJECT) {
         if (delete_obj)
@@ -11280,12 +11280,12 @@ int JS_DefineProperty(JSContext *ctx, GCValue this_obj,
                 GCHandle new_getter_handle, new_setter_handle;
 
                 if (JS_IsFunction(ctx, getter)) {
-                    new_getter_handle = GC_VALUE_TO_HANDLE(getter);
+                    new_getter_handle = GC_VALUE_GET_HANDLE(getter);
                 } else {
                     new_getter_handle = GC_HANDLE_NULL;
                 }
                 if (JS_IsFunction(ctx, setter)) {
-                    new_setter_handle = GC_VALUE_TO_HANDLE(setter);
+                    new_setter_handle = GC_VALUE_GET_HANDLE(setter);
                 } else {
                     new_setter_handle = GC_HANDLE_NULL;
                 }
@@ -15140,7 +15140,7 @@ static void js_print_object(JSPrintValueState *s, JSObject *p)
         if (p->u.func.home_object_handle != GC_HANDLE_NULL) {
             js_print_comma(s, &comma_state);
             js_printf(s, "[[HomeObject]]: ");
-            js_print_value(s, GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, p->u.func.home_object_handle));
+            js_print_value(s, GC_MKHANDLE(JS_TAG_OBJECT, p->u.func.home_object_handle));
         }
     }
 
@@ -17064,8 +17064,8 @@ static GCValue js_build_arguments(JSContext *ctx, int argc, GCValue *argv)
 
     props[0].u.value = JS_NewInt32(ctx, argc); /* length */
     props[1].u.value = ctx->array_proto_values; /* Symbol.iterator */
-    props[2].u.getset.getter_handle = GC_VALUE_TO_HANDLE(ctx->throw_type_error); /* callee */
-    props[2].u.getset.setter_handle = GC_VALUE_TO_HANDLE(ctx->throw_type_error); /* callee */
+    props[2].u.getset.getter_handle = GC_VALUE_GET_HANDLE(ctx->throw_type_error); /* callee */
+    props[2].u.getset.setter_handle = GC_VALUE_GET_HANDLE(ctx->throw_type_error); /* callee */
     
     val = JS_NewObjectFromShape(ctx, js_dup_shape(GC_SHAPE_DEREF(ctx->arguments_shape_handle)),
                                 JS_CLASS_ARGUMENTS, props);
@@ -18905,7 +18905,7 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
                         if (unlikely(p->u.func.home_object_handle == GC_HANDLE_NULL))
                             *sp++ = JS_UNDEFINED;
                         else
-                            *sp++ = GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, p->u.func.home_object_handle);
+                            *sp++ = GC_MKHANDLE(JS_TAG_OBJECT, p->u.func.home_object_handle);
                     }
                     break;
                 case OP_SPECIAL_OBJECT_VAR_OBJECT:
@@ -38960,7 +38960,7 @@ static int JS_WriteTypedArray(BCWriterState *s, GCValue obj)
     bc_put_u8(s, p->class_id - JS_CLASS_UINT8C_ARRAY);
     bc_put_leb128(s, p->u.array.count);
     bc_put_leb128(s, ta->offset);
-    if (JS_WriteObjectRec(s, GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, ta->buffer_handle)))
+    if (JS_WriteObjectRec(s, GC_MKHANDLE(JS_TAG_OBJECT, ta->buffer_handle)))
         return -1;
     return 0;
 }
@@ -49679,7 +49679,7 @@ static BOOL check_regexp_getter(JSContext *ctx,
         return FALSE;
     if (pr->u.getset.getter_handle == GC_HANDLE_NULL)
         return FALSE;
-    return JS_IsCFunction(ctx, GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, pr->u.getset.getter_handle),
+    return JS_IsCFunction(ctx, GC_MKHANDLE(JS_TAG_OBJECT, pr->u.getset.getter_handle),
                           func, magic);
 }
 
@@ -58026,7 +58026,7 @@ static GCValue js_typed_array_get_buffer(JSContext *ctx,
     if (!p)
         return JS_EXCEPTION;
     ta = p->u.typed_array;
-    return GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, ta->buffer_handle);
+    return GC_MKHANDLE(JS_TAG_OBJECT, ta->buffer_handle);
 }
 
 static GCValue js_typed_array_get_byteLength(JSContext *ctx,
@@ -58095,7 +58095,7 @@ GCValue JS_GetTypedArrayBuffer(JSContext *ctx, GCValue obj,
     if (pbytes_per_element) {
         *pbytes_per_element = 1 << typed_array_size_log2(p->class_id);
     }
-    return GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, ta->buffer_handle);
+    return GC_MKHANDLE(JS_TAG_OBJECT, ta->buffer_handle);
 }
 
 static GCValue js_typed_array_get_toStringTag(JSContext *ctx,
@@ -59622,7 +59622,7 @@ static int typed_array_init(JSContext *ctx, GCValue obj,
     pbuffer = JS_VALUE_GET_OBJ(buffer);
     abuf = pbuffer->u.array_buffer;
     ta->obj_handle = GC_PTR_TO_HANDLE(p);
-    ta->buffer_handle = GC_VALUE_TO_HANDLE(buffer);
+    ta->buffer_handle = GC_VALUE_GET_HANDLE(buffer);
     ta->offset = offset;
     ta->length = len << size_log2;
     ta->track_rab = track_rab;
@@ -59878,7 +59878,7 @@ static void js_typed_array_mark(JSRuntime *rt, GCValue val,
     JSObject *p = JS_VALUE_GET_OBJ(val);
     JSTypedArray *ta = p->u.typed_array;
     if (ta && ta->buffer_handle != GC_HANDLE_NULL) {
-        JS_MarkValue(rt, GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, ta->buffer_handle), mark_func);
+        JS_MarkValue(rt, GC_MKHANDLE(JS_TAG_OBJECT, ta->buffer_handle), mark_func);
     }
 }
 
@@ -59948,7 +59948,7 @@ static GCValue js_dataview_constructor(JSContext *ctx,
     }
     p = JS_VALUE_GET_OBJ(obj);
     ta->obj_handle = GC_PTR_TO_HANDLE(p);
-    ta->buffer_handle = GC_VALUE_TO_HANDLE(buffer);
+    ta->buffer_handle = GC_VALUE_GET_HANDLE(buffer);
     ta->offset = offset;
     ta->length = len;
     ta->track_rab = track_rab;
@@ -59997,7 +59997,7 @@ static GCValue js_dataview_get_buffer(JSContext *ctx, GCValue this_val)
     if (!p)
         return JS_EXCEPTION;
     ta = p->u.typed_array;
-    return GC_HANDLE_TO_VALUE(JS_TAG_OBJECT, ta->buffer_handle);
+    return GC_MKHANDLE(JS_TAG_OBJECT, ta->buffer_handle);
 }
 
 static GCValue js_dataview_get_byteLength(JSContext *ctx, GCValue this_val)

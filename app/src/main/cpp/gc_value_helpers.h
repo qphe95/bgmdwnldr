@@ -25,6 +25,47 @@ static inline int gc_is_valid_reference(GCValue v) {
     return GC_IS_REFERENCE(v) && v.u.handle != GC_HANDLE_NULL;
 }
 
+/*
+ * GC_PROP_GET_STR - Get string property from a GCValue object.
+ * 
+ * This function:
+ * 1. Checks if the value is a reference type (tag < 0)
+ * 2. Dereferences the handle to get the current pointer
+ * 3. Immediately calls the property getter
+ * 4. Does not store the pointer anywhere
+ * 
+ * IMPORTANT: The pointer obtained from gc_deref is used immediately and
+ * never stored. This ensures GC safety.
+ */
+static inline GCValue GC_PROP_GET_STR(JSContext *ctx, GCValue obj, const char *prop) {
+    GCValue result = GC_UNDEFINED;
+    int tag = GC_VALUE_GET_TAG(obj);
+    if (tag < 0) {
+        void *ptr = gc_deref(obj.u.handle);
+        if (ptr != NULL) {
+            GCValue wrapped = GC_WRAP_PTR(tag, ptr);
+            result = JS_GetPropertyStr(ctx, wrapped, prop);
+        }
+    }
+    return result;
+}
+
+/*
+ * GC_PROP_SET_STR - Set string property on a GCValue object.
+ */
+static inline int GC_PROP_SET_STR(JSContext *ctx, GCValue obj, const char *prop, GCValue val) {
+    int result = -1;
+    int tag = GC_VALUE_GET_TAG(obj);
+    if (tag < 0) {
+        void *ptr = gc_deref(obj.u.handle);
+        if (ptr != NULL) {
+            GCValue wrapped = GC_WRAP_PTR(tag, ptr);
+            result = JS_SetPropertyStr(ctx, wrapped, prop, val);
+        }
+    }
+    return result;
+}
+
 /* Safe property getter with null check */
 static inline GCValue gc_get_prop_str_safe(JSContext *ctx, GCValue obj, const char *prop) {
     if (!gc_is_valid_reference(obj)) {
