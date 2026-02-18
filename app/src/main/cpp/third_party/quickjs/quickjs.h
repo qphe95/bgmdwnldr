@@ -130,7 +130,7 @@ static inline void *gc_value_get_ptr_check(GCValue v) {
                 "GC_VALUE_GET_PTR: handle=0 for v=%p tag=%u", (void*)v, tag);
             return NULL;
         }
-        void *ptr = gc_deref_internal(handle);
+        void *ptr = gc_deref(handle);
         if (!ptr) {
             extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
             __android_log_print(6 /* ANDROID_LOG_ERROR */, "quickjs",
@@ -203,7 +203,7 @@ static inline void *gc_value_get_ptr_nan(GCValue v) {
     int tag = (int)(v >> 32);
     GCHandle handle = (GCHandle)(v & 0xFFFFFFFF);
     if (tag < 0) {
-        void *ptr = gc_deref_internal(handle);
+        void *ptr = gc_deref(handle);
         if (!ptr) {
             extern void __android_log_print(int prio, const char *tag, const char *fmt, ...);
             __android_log_print(ANDROID_LOG_ERROR, "quickjs", "gc_value_get_ptr_nan: handle=%u returned NULL (v=0x%llx)", 
@@ -300,10 +300,10 @@ static inline GCValue GC_NewShortBigIntNan(int32_t d)
  * 
  * GCValue stores a GCHandle (an index into the handle table) for reference
  * types. The handle remains stable across GC compaction. The actual pointer
- * is only obtained when needed through gc_deref_internal(), used immediately, and
+ * is only obtained when needed through gc_deref(), used immediately, and
  * never stored.
  * 
- * CRITICAL RULE: Never call gc_deref_internal() and store the result in a variable.
+ * CRITICAL RULE: Never call gc_deref() and store the result in a variable.
  * Always use the GC_PROP_* macros which dereference and use in one operation.
  */
 
@@ -352,7 +352,7 @@ typedef const GCValue GCValueConst;
  * Usage: GCHandle proto_handle = GC_OBJ_HANDLE(obj_handle, JSObject, shape_handle);
  */
 #define GC_OBJ_HANDLE(handle, type, field) ({ \
-    void *_gc_ptr = gc_deref_internal(handle); \
+    void *_gc_ptr = gc_deref(handle); \
     (_gc_ptr != NULL) ? ((type *)_gc_ptr)->field : GC_HANDLE_NULL; \
 })
 
@@ -361,7 +361,7 @@ typedef const GCValue GCValueConst;
  * Usage: GC_OBJ_HANDLE_SET(obj_handle, JSObject, shape_handle, new_shape_handle);
  */
 #define GC_OBJ_HANDLE_SET(handle, type, field, value) do { \
-    void *_gc_ptr = gc_deref_internal(handle); \
+    void *_gc_ptr = gc_deref(handle); \
     if (_gc_ptr != NULL) { \
         ((type *)_gc_ptr)->field = (value); \
     } \
@@ -394,7 +394,7 @@ typedef const GCValue GCValueConst;
     GCHandle _gc_handle = GC_HANDLE_NULL; \
     int _gc_tag = GC_VALUE_GET_TAG(obj); \
     if (_gc_tag < 0) { \
-        void *_gc_ptr = gc_deref_internal((obj).u.handle); \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
         if (_gc_ptr != NULL) { \
             field_type *_obj = (field_type *)_gc_ptr; \
             _gc_handle = _obj->field_name; \
@@ -412,14 +412,14 @@ typedef const GCValue GCValueConst;
 
 /*
  * ============================================================================
- * GC-Safe Field Access Macros - NEVER store the result of gc_deref_internal()
+ * GC-Safe Field Access Macros - NEVER store the result of gc_deref()
  * ============================================================================
  * 
  * These macros access fields of GC-managed objects through handles.
  * They ensure that pointers are never stored across potential GC points.
  * 
  * CRITICAL RULE: Never do this:
- *   JSObject *p = gc_deref_internal(handle);  // WRONG - storing pointer!
+ *   JSObject *p = gc_deref(handle);  // WRONG - storing pointer!
  *   p->field = value;                // p may be invalid here!
  * 
  * Instead, use these macros which access fields through handles:
@@ -433,7 +433,7 @@ typedef const GCValue GCValueConst;
  */
 #define GC_FIELD_GET(handle, type, field) ({ \
     GCHandle _field_handle = GC_HANDLE_NULL; \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         _field_handle = ((type *)_ptr)->field; \
     } \
@@ -445,7 +445,7 @@ typedef const GCValue GCValueConst;
  * Usage: GC_FIELD_SET(obj_handle, JSObject, proto_handle, new_proto_handle);
  */
 #define GC_FIELD_SET(handle, type, field, value) do { \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         ((type *)_ptr)->field = (value); \
     } \
@@ -458,7 +458,7 @@ typedef const GCValue GCValueConst;
  */
 #define GC_FIELD_GET_PTR(handle, type, field, ptr_type) ({ \
     ptr_type *_field_ptr = NULL; \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         _field_ptr = ((type *)_ptr)->field; \
     } \
@@ -471,7 +471,7 @@ typedef const GCValue GCValueConst;
  * Usage: GC_OBJ_DEREF(obj_handle, JSObject, js_object_method, ctx, arg1, arg2);
  */
 #define GC_OBJ_DEREF(handle, type, func, ...) ({ \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     int _result = -1; \
     if (_ptr != NULL) { \
         _result = func(__VA_ARGS__, (type *)_ptr); \
@@ -484,7 +484,7 @@ typedef const GCValue GCValueConst;
  * WARNING: The pointer is only valid until the next GC point.
  * NEVER store this pointer. Only use it for immediate field access.
  */
-#define GC_SHAPE_DEREF(handle) ((JSShape *)gc_deref_internal(handle))
+#define GC_SHAPE_DEREF(handle) ((JSShape *)gc_deref(handle))
 
 /*
  * GC_OBJ_GET_SHAPE - Get the shape handle from an object.
@@ -496,8 +496,8 @@ typedef const GCValue GCValueConst;
  * ============================================================================
  * ENHANCED GC-Safe Property Access Macros
  * ============================================================================
- * These macros provide direct field access without exposing gc_deref_internal().
- * Use these instead of calling gc_deref_internal() directly.
+ * These macros provide direct field access without exposing gc_deref().
+ * Use these instead of calling gc_deref() directly.
  */
 
 /* ============================================================================
@@ -508,7 +508,7 @@ typedef const GCValue GCValueConst;
 /* Get scalar field value (non-handle types) */
 #define GC_HANDLE_GET_UINT32(handle, type, field) ({ \
     uint32_t _val = 0; \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         _val = ((type *)_ptr)->field; \
     } \
@@ -517,7 +517,7 @@ typedef const GCValue GCValueConst;
 
 #define GC_HANDLE_GET_INT(handle, type, field) ({ \
     int _val = 0; \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         _val = ((type *)_ptr)->field; \
     } \
@@ -526,7 +526,7 @@ typedef const GCValue GCValueConst;
 
 #define GC_HANDLE_GET_UINT16(handle, type, field) ({ \
     uint16_t _val = 0; \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         _val = ((type *)_ptr)->field; \
     } \
@@ -535,7 +535,7 @@ typedef const GCValue GCValueConst;
 
 #define GC_HANDLE_GET_UINT8(handle, type, field) ({ \
     uint8_t _val = 0; \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         _val = ((type *)_ptr)->field; \
     } \
@@ -544,21 +544,21 @@ typedef const GCValue GCValueConst;
 
 /* Set scalar field value */
 #define GC_HANDLE_SET_UINT32(handle, type, field, value) do { \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         ((type *)_ptr)->field = (uint32_t)(value); \
     } \
 } while(0)
 
 #define GC_HANDLE_SET_INT(handle, type, field, value) do { \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         ((type *)_ptr)->field = (int)(value); \
     } \
 } while(0)
 
 #define GC_HANDLE_SET_UINT8(handle, type, field, value) do { \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         ((type *)_ptr)->field = (uint8_t)(value); \
     } \
@@ -570,7 +570,7 @@ typedef const GCValue GCValueConst;
  */
 #define GC_FIELD_GET_RAW_PTR(handle, type, field, ptr_type) ({ \
     ptr_type *_field_ptr = NULL; \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         _field_ptr = (ptr_type)((type *)_ptr)->field; \
     } \
@@ -578,7 +578,7 @@ typedef const GCValue GCValueConst;
 })
 
 #define GC_FIELD_SET_RAW_PTR(handle, type, field, value) do { \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         ((type *)_ptr)->field = (value); \
     } \
@@ -590,7 +590,7 @@ typedef const GCValue GCValueConst;
  */
 #define GC_FIELD_GET_GCVALUE(handle, type, field) ({ \
     GCValue _val = GC_UNDEFINED; \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         _val = ((type *)_ptr)->field; \
     } \
@@ -598,7 +598,7 @@ typedef const GCValue GCValueConst;
 })
 
 #define GC_FIELD_SET_GCVALUE(handle, type, field, value) do { \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (_ptr != NULL) { \
         ((type *)_ptr)->field = (value); \
     } \
@@ -612,7 +612,7 @@ typedef const GCValue GCValueConst;
 /* Get JSProperty array element handle field */
 #define GC_PROP_GET_HANDLE_AT(prop_handle, index, field) ({ \
     GCHandle _h = GC_HANDLE_NULL; \
-    void *_ptr = gc_deref_internal(prop_handle); \
+    void *_ptr = gc_deref(prop_handle); \
     if (_ptr != NULL) { \
         JSProperty *_props = (JSProperty *)_ptr; \
         _h = _props[index].field; \
@@ -622,7 +622,7 @@ typedef const GCValue GCValueConst;
 
 /* Set JSProperty array element handle field */
 #define GC_PROP_SET_HANDLE_AT(prop_handle, index, field, value) do { \
-    void *_ptr = gc_deref_internal(prop_handle); \
+    void *_ptr = gc_deref(prop_handle); \
     if (_ptr != NULL) { \
         JSProperty *_props = (JSProperty *)_ptr; \
         _props[index].field = (value); \
@@ -632,7 +632,7 @@ typedef const GCValue GCValueConst;
 /* Get JSProperty array element GCValue */
 #define GC_PROP_GET_GCVALUE_AT(prop_handle, index) ({ \
     GCValue _val = GC_UNDEFINED; \
-    void *_ptr = gc_deref_internal(prop_handle); \
+    void *_ptr = gc_deref(prop_handle); \
     if (_ptr != NULL) { \
         JSProperty *_props = (JSProperty *)_ptr; \
         _val = _props[index].u.value; \
@@ -642,7 +642,7 @@ typedef const GCValue GCValueConst;
 
 /* Set JSProperty array element GCValue */
 #define GC_PROP_SET_GCVALUE_AT(prop_handle, index, value) do { \
-    void *_ptr = gc_deref_internal(prop_handle); \
+    void *_ptr = gc_deref(prop_handle); \
     if (_ptr != NULL) { \
         JSProperty *_props = (JSProperty *)_ptr; \
         _props[index].u.value = (value); \
@@ -652,7 +652,7 @@ typedef const GCValue GCValueConst;
 /* Get getter handle from property at index */
 #define GC_PROP_GET_GETTER_AT(prop_handle, index) ({ \
     GCHandle _h = GC_HANDLE_NULL; \
-    void *_ptr = gc_deref_internal(prop_handle); \
+    void *_ptr = gc_deref(prop_handle); \
     if (_ptr != NULL) { \
         JSProperty *_props = (JSProperty *)_ptr; \
         _h = _props[index].u.getset.getter_handle; \
@@ -662,7 +662,7 @@ typedef const GCValue GCValueConst;
 
 /* Set getter handle in property at index */
 #define GC_PROP_SET_GETTER_AT(prop_handle, index, h) do { \
-    void *_ptr = gc_deref_internal(prop_handle); \
+    void *_ptr = gc_deref(prop_handle); \
     if (_ptr != NULL) { \
         JSProperty *_props = (JSProperty *)_ptr; \
         _props[index].u.getset.getter_handle = (h); \
@@ -672,7 +672,7 @@ typedef const GCValue GCValueConst;
 /* Get setter handle from property at index */
 #define GC_PROP_GET_SETTER_AT(prop_handle, index) ({ \
     GCHandle _h = GC_HANDLE_NULL; \
-    void *_ptr = gc_deref_internal(prop_handle); \
+    void *_ptr = gc_deref(prop_handle); \
     if (_ptr != NULL) { \
         JSProperty *_props = (JSProperty *)_ptr; \
         _h = _props[index].u.getset.setter_handle; \
@@ -682,7 +682,7 @@ typedef const GCValue GCValueConst;
 
 /* Set setter handle in property at index */
 #define GC_PROP_SET_SETTER_AT(prop_handle, index, h) do { \
-    void *_ptr = gc_deref_internal(prop_handle); \
+    void *_ptr = gc_deref(prop_handle); \
     if (_ptr != NULL) { \
         JSProperty *_props = (JSProperty *)_ptr; \
         _props[index].u.getset.setter_handle = (h); \
@@ -697,7 +697,7 @@ typedef const GCValue GCValueConst;
 /* Get JSShapeProperty field at index */
 #define GC_SHAPE_PROP_GET_ATOM_AT(shape_handle, index) ({ \
     JSAtom _atom = JS_ATOM_NULL; \
-    void *_ptr = gc_deref_internal(shape_handle); \
+    void *_ptr = gc_deref(shape_handle); \
     if (_ptr != NULL) { \
         JSShape *_sh = (JSShape *)_ptr; \
         JSShapeProperty *_props = (JSShapeProperty *)((uint8_t *)_sh + sizeof(JSShape)); \
@@ -708,7 +708,7 @@ typedef const GCValue GCValueConst;
 
 #define GC_SHAPE_PROP_GET_FLAGS_AT(shape_handle, index) ({ \
     uint32_t _flags = 0; \
-    void *_ptr = gc_deref_internal(shape_handle); \
+    void *_ptr = gc_deref(shape_handle); \
     if (_ptr != NULL) { \
         JSShape *_sh = (JSShape *)_ptr; \
         JSShapeProperty *_props = (JSShapeProperty *)((uint8_t *)_sh + sizeof(JSShape)); \
@@ -719,7 +719,7 @@ typedef const GCValue GCValueConst;
 
 #define GC_SHAPE_PROP_GET_HASH_NEXT_AT(shape_handle, index) ({ \
     uint32_t _next = 0; \
-    void *_ptr = gc_deref_internal(shape_handle); \
+    void *_ptr = gc_deref(shape_handle); \
     if (_ptr != NULL) { \
         JSShape *_sh = (JSShape *)_ptr; \
         JSShapeProperty *_props = (JSShapeProperty *)((uint8_t *)_sh + sizeof(JSShape)); \
@@ -788,14 +788,12 @@ typedef const GCValue GCValueConst;
 #define GC_SHAPE_SET_HASH_NEXT_HANDLE(shape_handle, val) GC_FIELD_SET(shape_handle, JSShape, shape_hash_next_handle, val)
 
 /* ============================================================================
- * Internal gc_deref_internal() - NOT FOR DIRECT USE
+ * GC Dereference Function
  * ============================================================================
- * The gc_deref_internal() function should NOT be called directly in new code.
- * Use the macros above instead. The function declaration remains for
- * internal use by the macros and legacy code during migration.
+ * The gc_deref() function converts a GCHandle to a pointer.
+ * Use the macros above instead of calling this directly.
  */
-void *gc_deref_internal(GCHandle handle);
-#define gc_deref(handle) gc_deref_internal(handle)
+void *gc_deref(GCHandle handle);
 
 /* Type predicate macros */
 #define GC_IS_OBJECT(v)       (GC_VALUE_GET_TAG(v) == JS_TAG_OBJECT)
@@ -952,7 +950,7 @@ static inline GCValue __JS_NewShortBigInt(JSContext *ctx, int64_t val)
 #define GC_VALUE_GET_PTR(v) ({ \
     void *_ptr = NULL; \
     if (GC_VALUE_GET_TAG(v) < 0) { \
-        _ptr = gc_deref_internal(GC_VALUE_GET_HANDLE(v)); \
+        _ptr = gc_deref(GC_VALUE_GET_HANDLE(v)); \
     } else { \
         _ptr = (void *)((intptr_t)(v).u.int32 & ~0xf); \
     } \
@@ -992,7 +990,7 @@ static inline GCValue __JS_NewShortBigInt(JSContext *ctx, int64_t val)
     GCValue _gc_result = GC_UNDEFINED; \
     int _gc_tag = GC_VALUE_GET_TAG(obj); \
     if (_gc_tag < 0) { \
-        void *_gc_ptr = gc_deref_internal((obj).u.handle); \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
         if (_gc_ptr != NULL) { \
             GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
             _gc_result = JS_GetPropertyStr((ctx), _gc_obj, (prop)); \
@@ -1008,7 +1006,7 @@ static inline GCValue __JS_NewShortBigInt(JSContext *ctx, int64_t val)
     int _gc_result = -1; \
     int _gc_tag = GC_VALUE_GET_TAG(obj); \
     if (_gc_tag < 0) { \
-        void *_gc_ptr = gc_deref_internal((obj).u.handle); \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
         if (_gc_ptr != NULL) { \
             GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
             _gc_result = JS_SetPropertyStr((ctx), _gc_obj, (prop), (val)); \
@@ -1024,7 +1022,7 @@ static inline GCValue __JS_NewShortBigInt(JSContext *ctx, int64_t val)
     GCValue _gc_result = GC_UNDEFINED; \
     int _gc_tag = GC_VALUE_GET_TAG(obj); \
     if (_gc_tag < 0) { \
-        void *_gc_ptr = gc_deref_internal((obj).u.handle); \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
         if (_gc_ptr != NULL) { \
             GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
             _gc_result = JS_GetPropertyUint32((ctx), _gc_obj, (idx)); \
@@ -1040,7 +1038,7 @@ static inline GCValue __JS_NewShortBigInt(JSContext *ctx, int64_t val)
     int _gc_result = -1; \
     int _gc_tag = GC_VALUE_GET_TAG(obj); \
     if (_gc_tag < 0) { \
-        void *_gc_ptr = gc_deref_internal((obj).u.handle); \
+        void *_gc_ptr = gc_deref((obj).u.handle); \
         if (_gc_ptr != NULL) { \
             GCValue _gc_obj = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
             _gc_result = JS_SetPropertyUint32((ctx), _gc_obj, (idx), (val)); \

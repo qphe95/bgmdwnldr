@@ -156,7 +156,7 @@ extern "C" {
  */
 #define GC_PROP_ARRAY_GET_PTR(prop_handle, index) ({ \
     JSProperty *_pr = NULL; \
-    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
     if (_props != NULL) { \
         _pr = &_props[index]; \
     } \
@@ -166,7 +166,7 @@ extern "C" {
 /* Get property value by index (handles all property types) */
 #define GC_PROP_ARRAY_GET_VALUE(prop_handle, index) ({ \
     GCValue _val = GC_UNDEFINED; \
-    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
     if (_props != NULL) { \
         _val = _props[index].u.value; \
     } \
@@ -175,7 +175,7 @@ extern "C" {
 
 /* Set property value by index */
 #define GC_PROP_ARRAY_SET_VALUE(prop_handle, index, val) do { \
-    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
     if (_props != NULL) { \
         _props[index].u.value = (val); \
     } \
@@ -184,7 +184,7 @@ extern "C" {
 /* Get getter handle from property */
 #define GC_PROP_ARRAY_GET_GETTER(prop_handle, index) ({ \
     GCHandle _h = GC_HANDLE_NULL; \
-    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
     if (_props != NULL) { \
         _h = _props[index].u.getset.getter_handle; \
     } \
@@ -193,7 +193,7 @@ extern "C" {
 
 /* Set getter handle in property */
 #define GC_PROP_ARRAY_SET_GETTER(prop_handle, index, h) do { \
-    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
     if (_props != NULL) { \
         _props[index].u.getset.getter_handle = (h); \
     } \
@@ -202,7 +202,7 @@ extern "C" {
 /* Get setter handle from property */
 #define GC_PROP_ARRAY_GET_SETTER(prop_handle, index) ({ \
     GCHandle _h = GC_HANDLE_NULL; \
-    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
     if (_props != NULL) { \
         _h = _props[index].u.getset.setter_handle; \
     } \
@@ -211,7 +211,7 @@ extern "C" {
 
 /* Set setter handle in property */
 #define GC_PROP_ARRAY_SET_SETTER(prop_handle, index, h) do { \
-    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
     if (_props != NULL) { \
         _props[index].u.getset.setter_handle = (h); \
     } \
@@ -220,7 +220,7 @@ extern "C" {
 /* Get var_ref from property */
 #define GC_PROP_ARRAY_GET_VAR_REF(prop_handle, index) ({ \
     JSVarRef *_ref = NULL; \
-    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
     if (_props != NULL) { \
         _ref = _props[index].u.var_ref; \
     } \
@@ -235,7 +235,7 @@ extern "C" {
 /* Get shape property atom */
 #define GC_SHAPE_PROP_GET_ATOM(shape_handle, index) ({ \
     JSAtom _atom = JS_ATOM_NULL; \
-    JSShape *_sh = (JSShape *)gc_deref_internal(shape_handle); \
+    JSShape *_sh = (JSShape *)gc_deref(shape_handle); \
     if (_sh != NULL) { \
         JSShapeProperty *_props = get_shape_prop(_sh); \
         _atom = _props[index].atom; \
@@ -246,7 +246,7 @@ extern "C" {
 /* Get shape property flags */
 #define GC_SHAPE_PROP_GET_FLAGS(shape_handle, index) ({ \
     uint32_t _flags = 0; \
-    JSShape *_sh = (JSShape *)gc_deref_internal(shape_handle); \
+    JSShape *_sh = (JSShape *)gc_deref(shape_handle); \
     if (_sh != NULL) { \
         JSShapeProperty *_props = get_shape_prop(_sh); \
         _flags = _props[index].flags; \
@@ -257,7 +257,7 @@ extern "C" {
 /* Get shape property hash_next */
 #define GC_SHAPE_PROP_GET_HASH_NEXT(shape_handle, index) ({ \
     uint32_t _next = 0; \
-    JSShape *_sh = (JSShape *)gc_deref_internal(shape_handle); \
+    JSShape *_sh = (JSShape *)gc_deref(shape_handle); \
     if (_sh != NULL) { \
         JSShapeProperty *_props = get_shape_prop(_sh); \
         _next = _props[index].hash_next; \
@@ -273,7 +273,7 @@ extern "C" {
 #ifdef DEBUG_HANDLE_ACCESS
 #include <android/log.h>
 #define GC_HANDLE_CHECK(handle, expected_type) ({ \
-    void *_ptr = gc_deref_internal(handle); \
+    void *_ptr = gc_deref(handle); \
     if (!_ptr) { \
         __android_log_print(ANDROID_LOG_ERROR, "GC_HANDLE", \
             "NULL dereference of handle %u at %s:%d", \
@@ -305,7 +305,7 @@ extern "C" {
 /* Get array count (u.array.count) via handle */
 #define GC_OBJ_GET_ARRAY_COUNT(obj_handle) ({ \
     uint32_t _count = 0; \
-    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
     if (_obj != NULL) { \
         _count = _obj->u.array.count; \
     } \
@@ -314,7 +314,7 @@ extern "C" {
 
 /* Set array count via handle */
 #define GC_OBJ_SET_ARRAY_COUNT(obj_handle, val) do { \
-    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
     if (_obj != NULL) { \
         _obj->u.array.count = (val); \
     } \
@@ -323,7 +323,7 @@ extern "C" {
 /* Get array values pointer (temporary - don't store across GC!) */
 #define GC_OBJ_GET_ARRAY_VALUES(obj_handle) ({ \
     GCValue *_values = NULL; \
-    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
     if (_obj != NULL) { \
         _values = _obj->u.array.values; \
     } \
@@ -333,7 +333,7 @@ extern "C" {
 /* Get array element at index via handle */
 #define GC_OBJ_GET_ARRAY_ELEMENT(obj_handle, idx) ({ \
     GCValue _val = GC_UNDEFINED; \
-    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
     if (_obj != NULL && _obj->u.array.values != NULL) { \
         _val = _obj->u.array.values[idx]; \
     } \
@@ -342,7 +342,7 @@ extern "C" {
 
 /* Set array element at index via handle */
 #define GC_OBJ_SET_ARRAY_ELEMENT(obj_handle, idx, val) do { \
-    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
     if (_obj != NULL && _obj->u.array.values != NULL) { \
         _obj->u.array.values[idx] = (val); \
     } \
@@ -356,7 +356,7 @@ extern "C" {
 /* Get typed array buffer pointer (temporary - don't store across GC!) */
 #define GC_OBJ_GET_TYPED_ARRAY_PTR(obj_handle, field, ptr_type) ({ \
     ptr_type _ptr = NULL; \
-    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
     if (_obj != NULL) { \
         _ptr = _obj->u.field; \
     } \
