@@ -17,13 +17,6 @@
 
 #include "fuzz/fuzz_common.h"
 
-// handle timeouts from infinite loops
-static int interrupt_handler(JSRuntime *rt, void *opaque)
-{
-    nbinterrupts++;
-    return (nbinterrupts > 100);
-}
-
 void reset_nbinterrupts() {
     nbinterrupts = 0;
 }
@@ -35,7 +28,6 @@ void test_one_input_init(JSRuntime *rt, JSContext *ctx) {
     JS_SetMaxStackSize(rt, 0x10000);
 
     JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
-    JS_SetInterruptHandler(JS_GetRuntime(ctx), interrupt_handler, NULL);
     js_std_add_helpers(ctx, 0, NULL);
 
     // Load os and std

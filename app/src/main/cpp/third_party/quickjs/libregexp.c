@@ -58,10 +58,6 @@ typedef enum {
 
 #define CAPTURE_COUNT_MAX 255
 #define REGISTER_COUNT_MAX 255
-/* must be large enough to have a negligible runtime cost and small
-   enough to call the interrupt callback often. */
-#define INTERRUPT_COUNTER_INIT 10000
-
 /* unicode code points */
 #define CP_LS   0x2028
 #define CP_PS   0x2029
@@ -2729,7 +2725,6 @@ typedef struct {
     int cbuf_type;
     int capture_count;
     BOOL is_unicode;
-    int interrupt_counter;
     void *opaque; /* used for stack overflow check */
 
     StackElem *stack_buf;
@@ -2739,11 +2734,8 @@ typedef struct {
 
 static int lre_poll_timeout(REExecContext *s)
 {
-    if (unlikely(--s->interrupt_counter <= 0)) {
-        s->interrupt_counter = INTERRUPT_COUNTER_INIT;
-        if (lre_check_timeout(s->opaque))
-            return LRE_RET_TIMEOUT;
-    }
+    (void)s;
+    /* Interrupt mechanism removed - always return 0 (no timeout) */
     return 0;
 }
 
@@ -3339,7 +3331,6 @@ int lre_exec(uint8_t **capture,
     s->cbuf_type = cbuf_type;
     if (s->cbuf_type == 1 && s->is_unicode)
         s->cbuf_type = 2;
-    s->interrupt_counter = INTERRUPT_COUNTER_INIT;
     s->opaque = opaque;
 
     s->stack_buf = s->static_stack_buf;

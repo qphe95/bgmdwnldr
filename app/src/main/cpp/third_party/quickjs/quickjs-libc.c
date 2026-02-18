@@ -847,11 +847,6 @@ static GCValue js_std_gc(JSContext *ctx, GCValue this_val,
     return JS_UNDEFINED;
 }
 
-static int interrupt_handler(JSRuntime *rt, void *opaque)
-{
-    return (os_pending_signals >> SIGINT) & 1;
-}
-
 static int get_bool_option(JSContext *ctx, BOOL *pbool,
                            GCValue obj,
                            const char *option)
@@ -893,10 +888,7 @@ static GCValue js_evalScript(JSContext *ctx, GCValue this_val,
     str = JS_ToCStringLen(ctx, &len, argv[0]);
     if (!str)
         return JS_EXCEPTION;
-    if (!ts->recv_pipe && ++ts->eval_script_recurse == 1) {
-        /* install the interrupt handler */
-        JS_SetInterruptHandler(JS_GetRuntime(ctx), interrupt_handler, NULL);
-    }
+    (void)rt;
     flags = JS_EVAL_TYPE_GLOBAL;
     if (backtrace_barrier)
         flags |= JS_EVAL_FLAG_BACKTRACE_BARRIER;
@@ -904,15 +896,7 @@ static GCValue js_evalScript(JSContext *ctx, GCValue this_val,
         flags |= JS_EVAL_FLAG_ASYNC;
     ret = JS_Eval(ctx, str, len, "<evalScript>", flags);
     JS_FreeCString(ctx, str);
-    if (!ts->recv_pipe && --ts->eval_script_recurse == 0) {
-        /* remove the interrupt handler */
-        JS_SetInterruptHandler(JS_GetRuntime(ctx), NULL, NULL);
-        os_pending_signals &= ~((uint64_t)1 << SIGINT);
-        /* convert the uncatchable "interrupted" error into a normal error
-           so that it can be caught by the REPL */
-        if (JS_IsException(ret))
-            JS_SetUncatchableException(ctx, FALSE);
-    }
+    (void)rt;
     return ret;
 }
 

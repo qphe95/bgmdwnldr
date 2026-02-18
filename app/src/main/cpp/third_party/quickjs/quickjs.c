@@ -347,8 +347,7 @@ struct JSRuntime {
 
     struct JSStackFrame *current_stack_frame;
 
-    JSInterruptHandler *interrupt_handler;
-    void *interrupt_opaque;
+    /* Interrupt mechanism removed */
 
     JSHostPromiseRejectionTracker *host_promise_rejection_tracker;
     void *host_promise_rejection_tracker_opaque;
@@ -504,7 +503,7 @@ typedef enum {
 
 /* must be large enough to have a negligible runtime cost and small
    enough to call the interrupt callback often. */
-#define JS_INTERRUPT_COUNTER_INIT 10000
+/* Interrupt mechanism removed */
 
 struct JSContext {
     JSRuntime *rt;
@@ -537,8 +536,7 @@ struct JSContext {
 
     uint64_t random_state;
 
-    /* when the counter reaches zero, JSRutime.interrupt_handler is called */
-    int interrupt_counter;
+    /* Interrupt mechanism removed */
 
     struct list_head loaded_modules; /* list of JSModuleDef.link */
 
@@ -1744,12 +1742,6 @@ void JS_SetGCThreshold(JSRuntime *rt, size_t gc_threshold)
 #define malloc(s) malloc_is_forbidden(s)
 #define free(p) free_is_forbidden(p)
 #define realloc(p,s) realloc_is_forbidden(p,s)
-
-void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque)
-{
-    rt->interrupt_handler = cb;
-    rt->interrupt_opaque = opaque;
-}
 
 void JS_SetCanBlock(JSRuntime *rt, BOOL can_block)
 {
@@ -8670,27 +8662,7 @@ static void JS_ThrowInterrupted(JSContext *ctx)
     JS_SetUncatchableException(ctx, TRUE);
 }
 
-static no_inline __exception int __js_poll_interrupts(JSContext *ctx)
-{
-    JSRuntime *rt = ctx->rt;
-    ctx->interrupt_counter = JS_INTERRUPT_COUNTER_INIT;
-    if (rt->interrupt_handler) {
-        if (rt->interrupt_handler(rt, rt->interrupt_opaque)) {
-            JS_ThrowInterrupted(ctx);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-static inline __exception int js_poll_interrupts(JSContext *ctx)
-{
-    if (unlikely(--ctx->interrupt_counter <= 0)) {
-        return __js_poll_interrupts(ctx);
-    } else {
-        return 0;
-    }
-}
+/* Interrupt mechanism removed */
 
 static void JS_SetImmutablePrototype(JSContext *ctx, GCValue obj)
 {
@@ -8916,12 +8888,6 @@ static int JS_OrdinaryIsInstanceOf(JSContext *ctx, GCValue val,
                     if (proto == JS_VALUE_GET_OBJ(obj1)) {
                         
                         ret = TRUE;
-                        break;
-                    }
-                    /* must check for timeout to avoid infinite loop */
-                    if (js_poll_interrupts(ctx)) {
-                        
-                        ret = -1;
                         break;
                     }
                 }
@@ -17320,11 +17286,6 @@ static __exception int js_for_in_prepare_prototype_chain_enum(JSContext *ctx,
             
             goto slow_path;
         }
-        /* must check for timeout to avoid infinite loop */
-        if (js_poll_interrupts(ctx)) {
-            
-            goto fail;
-        }
     }
     
     return 1;
@@ -17389,10 +17350,6 @@ static __exception int js_for_in_next(JSContext *ctx, GCValue *sp)
                 return -1;
             if (JS_IsNull(it->obj))
                 goto done; /* no more prototype */
-
-            /* must check for timeout to avoid infinite loop */
-            if (js_poll_interrupts(ctx))
-                return -1;
 
             if (JS_GetOwnPropertyNamesInternal(ctx, &tab_atom, &tab_atom_count,
                                                JS_VALUE_GET_OBJ(it->obj),
@@ -18743,8 +18700,6 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
 #define BREAK           SWITCH(pc)
 #endif
 
-    if (js_poll_interrupts(caller_ctx))
-        return JS_EXCEPTION;
     if (unlikely(JS_VALUE_GET_TAG(func_obj) != JS_TAG_OBJECT)) {
         if (flags & JS_CALL_FLAG_GENERATOR) {
             JSAsyncFunctionState *s = JS_VALUE_GET_PTR(func_obj);
@@ -19791,19 +19746,13 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
 
         CASE(OP_goto):
             pc += (int32_t)get_u32(pc);
-            if (unlikely(js_poll_interrupts(ctx)))
-                goto exception;
             BREAK;
 #if SHORT_OPCODES
         CASE(OP_goto16):
             pc += (int16_t)get_u16(pc);
-            if (unlikely(js_poll_interrupts(ctx)))
-                goto exception;
             BREAK;
         CASE(OP_goto8):
             pc += (int8_t)pc[0];
-            if (unlikely(js_poll_interrupts(ctx)))
-                goto exception;
             BREAK;
 #endif
         CASE(OP_if_true):
@@ -19822,8 +19771,6 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
                 if (res) {
                     pc += (int32_t)get_u32(pc - 4) - 4;
                 }
-                if (unlikely(js_poll_interrupts(ctx)))
-                    goto exception;
             }
             BREAK;
         CASE(OP_if_false):
@@ -19843,8 +19790,6 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
                 if (!res) {
                     pc += (int32_t)get_u32(pc - 4) - 4;
                 }
-                if (unlikely(js_poll_interrupts(ctx)))
-                    goto exception;
             }
             BREAK;
 #if SHORT_OPCODES
@@ -19864,8 +19809,6 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
                 if (res) {
                     pc += (int8_t)pc[-1] - 1;
                 }
-                if (unlikely(js_poll_interrupts(ctx)))
-                    goto exception;
             }
             BREAK;
         CASE(OP_if_false8):
@@ -19884,8 +19827,6 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
                 if (!res) {
                     pc += (int8_t)pc[-1] - 1;
                 }
-                if (unlikely(js_poll_interrupts(ctx)))
-                    goto exception;
             }
             BREAK;
 #endif
@@ -21594,8 +21535,6 @@ static GCValue JS_CallConstructorInternal(JSContext *ctx,
     JSObject *p;
     JSFunctionBytecode *b;
 
-    if (js_poll_interrupts(ctx))
-        return JS_EXCEPTION;
     flags |= JS_CALL_FLAG_CONSTRUCTOR;
     if (unlikely(JS_VALUE_GET_TAG(func_obj) != JS_TAG_OBJECT))
         goto not_a_function;
@@ -41968,17 +41907,11 @@ static GCValue js_object_isPrototypeOf(JSContext *ctx, GCValue this_val,
             res = TRUE;
             break;
         }
-        /* avoid infinite loop (possible with proxies) */
-        if (js_poll_interrupts(ctx))
-            goto exception;
     }
-    
     
     return JS_NewBool(ctx, res);
 
 exception:
-    
-    
     return JS_EXCEPTION;
 }
 
@@ -42047,14 +41980,10 @@ static GCValue js_object___lookupGetter__(JSContext *ctx, GCValue this_val,
             res = JS_UNDEFINED;
             break;
         }
-        /* avoid infinite loop (possible with proxies) */
-        if (js_poll_interrupts(ctx))
-            goto exception;
     }
 
 exception:
     JS_FreeAtom(ctx, prop);
-    
     return res;
 }
 
@@ -48965,13 +48894,7 @@ int lre_check_stack_overflow(void *opaque, size_t alloca_size)
     return js_check_stack_overflow(ctx->rt, alloca_size);
 }
 
-int lre_check_timeout(void *opaque)
-{
-    JSContext *ctx = opaque;
-    JSRuntime *rt = ctx->rt;
-    return (rt->interrupt_handler && 
-            rt->interrupt_handler(rt, rt->interrupt_opaque));
-}
+
 
 void *lre_realloc(void *opaque, void *ptr, size_t size)
 {
