@@ -5332,14 +5332,14 @@ JSProperty *get_property_by_index(GCHandle obj_handle, int prop_idx)
 int gc_obj_has_prototype(GCHandle obj_handle)
 {
     GCHandle shape_h = GC_FIELD_GET(obj_handle, JSObject, shape_handle);
-    return GC_SHAPE_GET_PROTO_HANDLE(shape_h) != GC_HANDLE_NULL;
+    return gc_shape_get_proto_handle(shape_h) != GC_HANDLE_NULL;
 }
 
 /* Get prototype handle of an object */
 GCHandle gc_obj_get_prototype_handle(GCHandle obj_handle)
 {
     GCHandle shape_h = GC_FIELD_GET(obj_handle, JSObject, shape_handle);
-    return GC_SHAPE_GET_PROTO_HANDLE(shape_h);
+    return gc_shape_get_proto_handle(shape_h);
 }
 
 static int init_shape_hash(JSRuntime *rt)
@@ -9101,11 +9101,11 @@ GCValue JS_GetPropertyInternal(JSContext *ctx, GCValue obj,
         }
         
         /* Check exotic behaviors using handle-based access */
-        if (GC_OBJ_IS_EXOTIC(current_handle)) {
+        if (gc_obj_is_exotic(current_handle)) {
             uint16_t class_id = GC_OBJ_GET_CLASS_ID(current_handle);
             
             /* exotic behaviors */
-            if (GC_OBJ_IS_FAST_ARRAY(current_handle)) {
+            if (gc_obj_is_fast_array(current_handle)) {
                 if (__JS_AtomIsTaggedInt(prop)) {
                     uint32_t idx = __JS_AtomToUInt32(prop);
                     /* For fast array, we need to access u.array.count */
@@ -9166,7 +9166,7 @@ GCValue JS_GetPropertyInternal(JSContext *ctx, GCValue obj,
         
         /* Move to next prototype using handles only */
         GCHandle shape_handle = GC_FIELD_GET(current_handle, JSObject, shape_handle);
-        current_handle = GC_SHAPE_GET_PROTO_HANDLE(shape_handle);
+        current_handle = gc_shape_get_proto_handle(shape_handle);
         depth++;
     }
     
