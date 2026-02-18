@@ -2732,13 +2732,6 @@ typedef struct {
     StackElem static_stack_buf[32]; /* static stack to avoid allocation in most cases */
 } REExecContext;
 
-static int lre_poll_timeout(REExecContext *s)
-{
-    (void)s;
-    /* Interrupt mechanism removed - always return 0 (no timeout) */
-    return 0;
-}
-
 static no_inline int stack_realloc(REExecContext *s, size_t n)
 {
     StackElem *new_stack;
@@ -2860,8 +2853,6 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
                 if (type != RE_EXEC_STATE_LOOKAHEAD)
                     break;
             }
-            if (lre_poll_timeout(s))
-                return LRE_RET_TIMEOUT;
             break;
         case REOP_lookahead_match:
             /* pop all the saved states until reaching the start of
@@ -2971,8 +2962,6 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
         case REOP_goto:
             val = get_u32(pc);
             pc += 4 + (int)val;
-            if (lre_poll_timeout(s))
-                return LRE_RET_TIMEOUT;
             break;
         case REOP_line_start:
         case REOP_line_start_m:
@@ -3061,8 +3050,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
                 SAVE_CAPTURE_CHECK(idx, (void *)(uintptr_t)val2);
                 if (val2 != 0) {
                     pc += (int)val;
-                    if (lre_poll_timeout(s))
-                        return LRE_RET_TIMEOUT;
+    
                 }
             }
             break;
@@ -3085,8 +3073,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
                 if (val2 > limit) {
                     /* normal loop if counter > limit */
                     pc += (int)val;
-                    if (lre_poll_timeout(s))
-                        return LRE_RET_TIMEOUT;
+    
                 } else {
                     /* check advance */
                     if ((opcode == REOP_loop_check_adv_split_goto_first ||

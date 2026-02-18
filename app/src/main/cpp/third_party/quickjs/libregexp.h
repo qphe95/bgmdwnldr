@@ -38,7 +38,6 @@
 #define LRE_FLAG_UNICODE_SETS (1 << 8)
 
 #define LRE_RET_MEMORY_ERROR (-1)
-#define LRE_RET_TIMEOUT      (-2)
 
 /* trailer length after the group name including the trailing '\0' */
 #define LRE_GROUP_NAME_TRAILER_LEN 2 
@@ -58,8 +57,6 @@ int lre_parse_escape(const uint8_t **pp, int allow_utf16);
 
 /* must be provided by the user, return non zero if overflow */
 int lre_check_stack_overflow(void *opaque, size_t alloca_size);
-/* must be provided by the user, return non zero if time out */
-int lre_check_timeout(void *opaque);
 void *lre_realloc(void *opaque, void *ptr, size_t size);
 
 #endif /* LIBREGEXP_H */

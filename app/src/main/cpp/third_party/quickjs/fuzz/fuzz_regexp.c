@@ -25,13 +25,6 @@ void *lre_realloc(void *opaque, void *ptr, size_t size)
     return realloc(ptr, size);
 }
 
-int lre_check_timeout(void *opaque)
-{
-    (void)opaque;
-    /* Interrupt mechanism removed - always return 0 (no timeout) */
-    return 0;
-}
-
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     int len, ret, i;
     uint8_t *bc;

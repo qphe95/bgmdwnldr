@@ -347,8 +347,6 @@ struct JSRuntime {
 
     struct JSStackFrame *current_stack_frame;
 
-    /* Interrupt mechanism removed */
-
     JSHostPromiseRejectionTracker *host_promise_rejection_tracker;
     void *host_promise_rejection_tracker_opaque;
 
@@ -501,10 +499,6 @@ typedef enum {
     JS_AUTOINIT_ID_PROP,
 } JSAutoInitIDEnum;
 
-/* must be large enough to have a negligible runtime cost and small
-   enough to call the interrupt callback often. */
-/* Interrupt mechanism removed */
-
 struct JSContext {
     JSRuntime *rt;
     struct list_head link;
@@ -535,8 +529,6 @@ struct JSContext {
     GCValue global_var_obj; /* contains the global let/const definitions */
 
     uint64_t random_state;
-
-    /* Interrupt mechanism removed */
 
     struct list_head loaded_modules; /* list of JSModuleDef.link */
 
@@ -8655,14 +8647,6 @@ static GCValue JS_ThrowTypeErrorInvalidClass(JSContext *ctx, int class_id)
     name = rt_class_array[class_id].class_name;
     return JS_ThrowTypeErrorAtom(ctx, "%s object expected", name);
 }
-
-static void JS_ThrowInterrupted(JSContext *ctx)
-{
-    JS_ThrowInternalError(ctx, "interrupted");
-    JS_SetUncatchableException(ctx, TRUE);
-}
-
-/* Interrupt mechanism removed */
 
 static void JS_SetImmutablePrototype(JSContext *ctx, GCValue obj)
 {
@@ -49050,11 +49034,7 @@ static GCValue js_regexp_exec(JSContext *ctx, GCValue this_val,
                     goto fail;
             }
         } else {
-            if (rc == LRE_RET_TIMEOUT) {
-                JS_ThrowInterrupted(ctx);
-            } else {
-                JS_ThrowInternalError(ctx, "out of memory in regexp execution");
-            }
+            JS_ThrowInternalError(ctx, "out of memory in regexp execution");
             goto fail;
         }
     } else {
@@ -49276,11 +49256,7 @@ static GCValue js_regexp_replace(JSContext *ctx, GCValue this_val, GCValue arg,
                         goto fail;
                 }
             } else {
-                if (ret == LRE_RET_TIMEOUT) {
-                    JS_ThrowInterrupted(ctx);
-                } else {
-                    JS_ThrowInternalError(ctx, "out of memory in regexp execution");
-                }
+                JS_ThrowInternalError(ctx, "out of memory in regexp execution");
                 goto fail;
             }
             break;
