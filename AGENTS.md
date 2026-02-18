@@ -101,28 +101,18 @@ adb logcat -d --pid=$APP_PID | grep -E "js_quickjs:|HtmlExtract:|Executed|Captur
 To use LLDB with the emulator, you need to:
 
 1. **Run ADB as root** (required for attaching to processes):
-   ```bash
-   adb root
-   ```
+```bash
+adb root
+```
 
 2. **Push and start lldb-server**:
-   ```bash
-   NDK=$ANDROID_SDK_ROOT/ndk/26.2.11394342
-   adb push "$NDK/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/17.0.2/lib/linux/aarch64/lldb-server" /data/local/tmp/
-   adb shell chmod +x /data/local/tmp/lldb-server
-   adb shell "/data/local/tmp/lldb-server platform --listen '*:5039' --server" &
-   adb forward tcp:5039 tcp:5039
-   ```
-
-3. **Attach with LLDB**:
-   ```bash
-   APP_PID=$(adb shell pidof com.bgmdwldr.vulkan)
-   lldb -b \
-     -O "platform select remote-android" \
-     -O "platform connect connect://localhost:5039" \
-     -O "process attach -p $APP_PID" \
-     -O "bt"
-   ```
+```bash
+NDK=$ANDROID_SDK_ROOT/ndk/26.2.11394342
+adb push "$NDK/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/17.0.2/lib/linux/aarch64/lldb-server" /data/local/tmp/
+adb shell chmod +x /data/local/tmp/lldb-server
+adb shell "/data/local/tmp/lldb-server platform --listen '*:5039' --server" &
+adb forward tcp:5039 tcp:5039
+```
 
 ### Quick Debug Session
 

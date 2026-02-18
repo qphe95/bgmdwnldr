@@ -308,7 +308,7 @@ struct JSRuntime {
     int atom_size;
     int atom_count_resize; /* resize hash table at this count */
     GCHandle atom_hash_handle;  /* Handle to uint32_t array */
-    uint32_t *atom_array;  /* Stores handles (indices into atom_handles) instead of pointers */
+    GCHandle atom_array_handle; /* Handle to GCHandle array - use gc_deref to access */
     int atom_free_index; /* 0 = none */
 
     int class_count;    /* size of class_array */
@@ -380,6 +380,7 @@ struct JSRuntime {
 
 /* Accessor macros for handle-based fields - deref immediately before use */
 #define rt_atom_hash ((uint32_t*)gc_deref(rt->atom_hash_handle))
+#define rt_atom_array ((GCHandle*)gc_deref(rt->atom_array_handle))
 #define rt_class_array ((JSClass*)gc_deref(rt->class_array_handle))
 #define rt_atom_gc_marks ((uint32_t*)gc_deref(rt->atom_gc_marks_handle))
 #define rt_shape_hash ((GCHandle*)gc_deref(rt->shape_hash_handle))
@@ -1964,8 +1965,8 @@ static inline JSAtomStruct *js_atom_array_get(JSRuntime *rt, uint32_t atom_index
         QJS_LOGE("js_atom_array_get: atom_index %u >= atom_size %u", atom_index, rt->atom_size);
         return GC_HANDLE_NULL;
     }
-    /* rt->atom_array stores unified GC handles directly */
-    GCHandle handle = (GCHandle)rt->atom_array[atom_index];
+    /* rt_atom_array stores unified GC handles directly */
+    GCHandle handle = rt_atom_array[atom_index];
     if (handle == GC_HANDLE_NULL) {  /* 0 = empty slot */
         QJS_LOGE("js_atom_array_get: atom %u has handle=0 (empty slot)", atom_index);
         return GC_HANDLE_NULL;
@@ -2332,7 +2333,7 @@ JSContext *JS_NewContext(JSRuntime *rt)
 {
     JSContext *ctx;
     
-    QJS_LOGE("JS_NewContext: rt=%p atom_array=%p", rt, rt->atom_array);
+    QJS_LOGE("JS_NewContext: rt=%p atom_array_handle=%u", rt, rt->atom_array_handle);
     ctx = JS_NewContextRaw(rt);
     QJS_LOGE("JS_NewContextRaw returned ctx=%p", ctx);
     if (!ctx)
@@ -3076,7 +3077,7 @@ static int JS_InitAtoms(JSRuntime *rt)
     rt->atom_count = 0;
     rt->atom_size = 0;
     rt->atom_free_index = 0;
-    rt->atom_array = NULL;
+    rt->atom_array_handle = GC_HANDLE_NULL;
     
     QJS_LOGI("JS_InitAtoms: Resizing atom hash...");
     if (JS_ResizeAtomHash(rt, 512)) {     /* there are at least 504 predefined atoms */
@@ -3088,9 +3089,10 @@ static int JS_InitAtoms(JSRuntime *rt)
        when find_atom() is called during context creation */
     init_size = 711;  /* Enough for predefined atoms (at least 504) */
     QJS_LOGI("JS_InitAtoms: Allocating atom_array (size=%u)...", init_size);
-    rt->atom_array = (uint32_t *)gc_deref(gc_allocz(sizeof(uint32_t) * init_size, JS_GC_OBJ_TYPE_DATA));
-    QJS_LOGI("JS_InitAtoms: atom_array=%p", rt->atom_array);
-    if (!rt->atom_array) {
+    /* Store GCHandle in atom_array_handle - use gc_deref to access, survives GC compaction */
+    rt->atom_array_handle = gc_allocz(sizeof(GCHandle) * init_size, JS_GC_OBJ_TYPE_DATA);
+    QJS_LOGI("JS_InitAtoms: atom_array_handle=%u", rt->atom_array_handle);
+    if (rt->atom_array_handle == GC_HANDLE_NULL) {
         QJS_LOGE("JS_InitAtoms: atom_array allocation failed");
         return -1;
     }
@@ -3102,7 +3104,7 @@ static int JS_InitAtoms(JSRuntime *rt)
     if (!atom_null) {
         QJS_LOGE("JS_InitAtoms: atom_null allocation failed");
         /* GC frees: js_free_rt(rt, rt->atom_array_handle); */
-        rt->atom_array = NULL;
+        rt->atom_array_handle = GC_HANDLE_NULL;
         return -1;
     }
     atom_null->atom_type = JS_ATOM_TYPE_SYMBOL;
@@ -3116,10 +3118,10 @@ static int JS_InitAtoms(JSRuntime *rt)
         QJS_LOGE("JS_InitAtoms: js_handle_array_add_with_index failed");
         /* GC frees automatically */;
         /* GC frees: js_free_rt(rt, rt->atom_array_handle); */
-        rt->atom_array = NULL;
+        rt->atom_array_handle = GC_HANDLE_NULL;
         return -1;
     }
-    rt->atom_array[0] = handle0;
+    rt_atom_array[0] = handle0;
     rt->atom_count = 1;
 
     /* Initialize free list: indices 1 to init_size-1 are free */
@@ -3127,7 +3129,7 @@ static int JS_InitAtoms(JSRuntime *rt)
     rt->atom_free_index = 1;  /* Next free slot for sequential allocation */
     /* Initialize slots to 0 (empty) - handles are 1-based, 0 means invalid */
     for(i = 1; i < init_size; i++) {
-        rt->atom_array[i] = 0;
+        rt_atom_array[i] = 0;
     }
 
     QJS_LOGI("JS_InitAtoms: Creating %d predefined atoms...", JS_ATOM_END - 1);
@@ -3312,10 +3314,11 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         if (new_size > JS_ATOM_MAX)
             goto fail;
         /* XXX: should use realloc2 to use slack space */
-        GCHandle array_handle = rt->atom_array ? gc_header(rt->atom_array)->handle : 0;
-        GCHandle new_array_handle = gc_realloc(array_handle, sizeof(uint32_t) * new_size);
+        /* Use atom_array_handle directly since it stores GCHandle array */
+        GCHandle new_array_handle = gc_realloc(rt->atom_array_handle, sizeof(GCHandle) * new_size);
         if (new_array_handle == GC_HANDLE_NULL)
             goto fail;
+        rt->atom_array_handle = new_array_handle;
         new_array = gc_deref(new_array_handle);
         /* Note: the atom 0 is not used */
         start = rt->atom_size;
@@ -3343,11 +3346,11 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             start = 1;
         }
         rt->atom_size = new_size;
-        rt->atom_array = new_array;
+        /* atom_array accessed via rt_atom_array macro */
         rt->atom_free_index = start;
         /* Initialize new slots to 0 (empty) */
         for(i = start; i < new_size; i++) {
-            rt->atom_array[i] = 0;
+            rt_atom_array[i] = 0;
         }
     }
 
@@ -3391,7 +3394,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
             if (handle == 0)
                 goto fail;
-            rt->atom_array[i] = handle;
+            rt_atom_array[i] = handle;
         } else {
             /* Duplicate string as new atom.
              * Atoms are permanent roots - allocate with gc_alloc to avoid GC interference */
@@ -3423,7 +3426,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
             uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
             if (handle == 0)
                 goto fail;
-            rt->atom_array[i] = handle;
+            rt_atom_array[i] = handle;
         }
     } else {
         /* Create empty atom.
@@ -3453,7 +3456,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
         uint32_t handle = js_handle_array_add_with_index(rt, &rt->atom_handles, p);
         if (handle == 0)
             return JS_ATOM_NULL;
-        rt->atom_array[i] = handle;
+        rt_atom_array[i] = handle;
     }
 
     p->hash = h;
@@ -3626,7 +3629,7 @@ static void __JS_FreeAtom(JSRuntime *rt, uint32_t i)
     if (p) {
         JS_FreeAtomStruct(rt, i, p);
         /* Mark slot as empty */
-        rt->atom_array[i] = 0;
+        rt_atom_array[i] = 0;
     }
 }
 
@@ -3663,7 +3666,7 @@ JSAtom JS_NewAtomLen(JSContext *ctx, const char *str, size_t len)
     JSRuntime *rt = ctx->rt;
 
     /* Validate atom_array before use */
-    if (!rt->atom_array) {
+    if (rt->atom_array_handle == GC_HANDLE_NULL) {
         QJS_LOGE("JS_NewAtomLen: atom_array is NULL!");
         return JS_ATOM_NULL;
     }
@@ -8108,9 +8111,9 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
     }
 
     /* atoms */
-    s->memory_used_count += 2; /* rt->atom_array, rt_atom_hash */
+    s->memory_used_count += 2; /* rt_atom_array, rt_atom_hash */
     s->atom_count = rt->atom_count;
-    s->atom_size = sizeof(rt->atom_array[0]) * rt->atom_size +
+    s->atom_size = sizeof(GCHandle) * rt->atom_size +
         sizeof(rt_atom_hash[0]) * rt->atom_hash_size;
     for(i = 0; i < rt->atom_size; i++) {
         JSAtomStruct *p = js_atom_array_get(rt, i);
@@ -40526,7 +40529,7 @@ static JSAtom find_atom(JSContext *ctx, const char *name)
         /* We assume 8 bit non null strings, which is the case for these
            symbols */
         /* Defensive: atom_array may not be initialized yet */
-        if (unlikely(!ctx->rt->atom_array)) {
+        if (unlikely(ctx->rt->atom_array_handle == GC_HANDLE_NULL)) {
             QJS_LOGE("find_atom: atom_array is NULL!");
             return JS_ATOM_NULL;
         }
@@ -40538,7 +40541,7 @@ static JSAtom find_atom(JSContext *ctx, const char *name)
                 continue;  /* Skip null atoms */
             }
             if ((uintptr_t)p < 0x10000) {
-                QJS_LOGE("find_atom: CORRUPT atom %d, p=%p (atom_array=%p)", atom, p, ctx->rt->atom_array);
+                QJS_LOGE("find_atom: CORRUPT atom %d, p=%p (atom_array_handle=%u)", atom, p, ctx->rt->atom_array_handle);
                 return JS_ATOM_NULL;
             }
             JSString *str = p;
