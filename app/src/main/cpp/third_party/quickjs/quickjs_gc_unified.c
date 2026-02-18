@@ -203,7 +203,7 @@ GCHandle gc_realloc(GCHandle handle, size_t new_size) {
     
     if (new_size == 0) return GC_HANDLE_NULL;
     
-    void *old_ptr = gc_deref(handle);
+    void *old_ptr = gc_deref_internal(handle);
     if (!old_ptr) return gc_alloc(new_size, JS_GC_OBJ_TYPE_DATA);
     
     GCHeader *old_hdr = gc_header(old_ptr);
@@ -212,7 +212,7 @@ GCHandle gc_realloc(GCHandle handle, size_t new_size) {
     GCHandle new_handle = gc_alloc(new_size, old_type);
     if (new_handle == GC_HANDLE_NULL) return GC_HANDLE_NULL;
     
-    void *new_ptr = gc_deref(new_handle);
+    void *new_ptr = gc_deref_internal(new_handle);
     size_t old_user_size = old_hdr->size - sizeof(GCHeader);
     size_t copy_size = old_user_size < new_size ? old_user_size : new_size;
     memcpy(new_ptr, old_ptr, copy_size);
@@ -232,7 +232,7 @@ GCHandle gc_realloc2(GCHandle handle, size_t new_size, size_t *pslack) {
     return new_handle;
 }
 
-void *gc_deref(GCHandle handle) {
+void *gc_deref_internal(GCHandle handle) {
     if (handle == GC_HANDLE_NULL || handle >= g_gc.handles.count) {
         return NULL;
     }
@@ -250,7 +250,7 @@ bool gc_handle_is_valid(GCHandle handle) {
 }
 
 JSGCObjectTypeEnum gc_handle_get_type(GCHandle handle) {
-    void *ptr = gc_deref(handle);
+    void *ptr = gc_deref_internal(handle);
     if (!ptr) return JS_GC_OBJ_TYPE_COUNT;
     GCHeader *hdr = gc_header(ptr);
     if (hdr->size == 0) return JS_GC_OBJ_TYPE_COUNT;

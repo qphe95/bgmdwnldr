@@ -25,140 +25,23 @@ extern "C" {
  * These macros provide safe access to JSShape fields through GCHandles.
  */
 
-/* Get shape field as value - single dereference */
-#define GC_SHAPE_GET_FIELD(shape_handle, field, type) ({ \
-    type _value = (type)0; \
-    JSShape *_sh = (JSShape *)gc_deref(shape_handle); \
-    if (_sh != NULL) { \
-        _value = (type)_sh->field; \
-    } \
-    _value; \
-})
-
-/* Set shape field - single dereference */
-#define GC_SHAPE_SET_FIELD(shape_handle, field, value) do { \
-    JSShape *_sh = (JSShape *)gc_deref(shape_handle); \
-    if (_sh != NULL) { \
-        _sh->field = (value); \
-    } \
-} while(0)
-
-/* Get proto handle from shape */
-#define GC_SHAPE_GET_PROTO_HANDLE(shape_handle) \
-    GC_SHAPE_GET_FIELD(shape_handle, proto_handle, GCHandle)
-
-/* Set proto handle in shape */
-#define GC_SHAPE_SET_PROTO_HANDLE(shape_handle, proto_h) \
-    GC_SHAPE_SET_FIELD(shape_handle, proto_handle, proto_h)
-
-/* Get shape hash next handle */
-#define GC_SHAPE_GET_HASH_NEXT_HANDLE(shape_handle) \
-    GC_SHAPE_GET_FIELD(shape_handle, shape_hash_next_handle, GCHandle)
-
-/* Set shape hash next handle */
-#define GC_SHAPE_SET_HASH_NEXT_HANDLE(shape_handle, next_h) \
-    GC_SHAPE_SET_FIELD(shape_handle, shape_hash_next_handle, next_h)
-
-/* Get prop_hash_mask from shape */
-#define GC_SHAPE_GET_HASH_MASK(shape_handle) \
-    GC_SHAPE_GET_FIELD(shape_handle, prop_hash_mask, uint32_t)
-
-/* Get prop_size from shape */
-#define GC_SHAPE_GET_PROP_SIZE(shape_handle) \
-    GC_SHAPE_GET_FIELD(shape_handle, prop_size, int)
-
-/* Get prop_count from shape */
-#define GC_SHAPE_GET_PROP_COUNT(shape_handle) \
-    GC_SHAPE_GET_FIELD(shape_handle, prop_count, int)
-
-/* Get deleted_prop_count from shape */
-#define GC_SHAPE_GET_DELETED_COUNT(shape_handle) \
-    GC_SHAPE_GET_FIELD(shape_handle, deleted_prop_count, int)
-
-/* Get shape hash value */
-#define GC_SHAPE_GET_HASH(shape_handle) \
-    GC_SHAPE_GET_FIELD(shape_handle, hash, uint32_t)
-
-/* Check if shape is hashed */
-#define GC_SHAPE_IS_HASHED(shape_handle) \
-    GC_SHAPE_GET_FIELD(shape_handle, is_hashed, uint8_t)
-
-/* Set shape hashed flag */
-#define GC_SHAPE_SET_HASHED(shape_handle, val) \
-    GC_SHAPE_SET_FIELD(shape_handle, is_hashed, val)
+/* Note: GC_SHAPE_GET_FIELD, GC_SHAPE_SET_FIELD, and related macros are now defined in quickjs.h
+ * They use the generic GC_FIELD_GET and GC_FIELD_SET macros:
+ *   GC_SHAPE_GET_FIELD(shape_handle, field) -> GC_FIELD_GET(shape_handle, JSShape, field)
+ *   GC_SHAPE_SET_FIELD(shape_handle, field, value) -> GC_FIELD_SET(shape_handle, JSShape, field, value)
+ */
 
 /* ============================================================================
  * Handle-Based Object Access Macros
  * ============================================================================
  */
 
-/* Get object field as value */
-#define GC_OBJ_GET_FIELD(obj_handle, field, type) ({ \
-    type _value = (type)0; \
-    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
-    if (_obj != NULL) { \
-        _value = (type)_obj->field; \
-    } \
-    _value; \
-})
-
-/* Set object field */
-#define GC_OBJ_SET_FIELD(obj_handle, field, value) do { \
-    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
-    if (_obj != NULL) { \
-        _obj->field = (value); \
-    } \
-} while(0)
-
-/* Get shape handle from object */
-#define GC_OBJ_GET_SHAPE_HANDLE(obj_handle) \
-    GC_OBJ_GET_FIELD(obj_handle, shape_handle, GCHandle)
-
-/* Set shape handle in object */
-#define GC_OBJ_SET_SHAPE_HANDLE(obj_handle, sh_handle) \
-    GC_OBJ_SET_FIELD(obj_handle, shape_handle, sh_handle)
-
-/* Get prop handle from object */
-#define GC_OBJ_GET_PROP_HANDLE(obj_handle) \
-    GC_OBJ_GET_FIELD(obj_handle, prop_handle, GCHandle)
-
-/* Set prop handle in object */
-#define GC_OBJ_SET_PROP_HANDLE(obj_handle, prop_h) \
-    GC_OBJ_SET_FIELD(obj_handle, prop_handle, prop_h)
-
-/* Get class_id from object */
-#define GC_OBJ_GET_CLASS_ID(obj_handle) \
-    GC_OBJ_GET_FIELD(obj_handle, class_id, uint16_t)
-
-/* Check object flags */
-#define GC_OBJ_IS_EXOTIC(obj_handle) \
-    GC_OBJ_GET_FIELD(obj_handle, is_exotic, uint8_t)
-
-#define GC_OBJ_IS_FAST_ARRAY(obj_handle) \
-    GC_OBJ_GET_FIELD(obj_handle, fast_array, uint8_t)
-
-#define GC_OBJ_IS_EXTENSIBLE(obj_handle) \
-    GC_OBJ_GET_FIELD(obj_handle, extensible, uint8_t)
-
-#define GC_OBJ_IS_CONSTRUCTOR(obj_handle) \
-    GC_OBJ_GET_FIELD(obj_handle, is_constructor, uint8_t)
-
-#define GC_OBJ_HAS_IMMUTABLE_PROTOTYPE(obj_handle) \
-    GC_OBJ_GET_FIELD(obj_handle, has_immutable_prototype, uint8_t)
-
-/* Set object flags */
-#define GC_OBJ_SET_EXTENSIBLE(obj_handle, val) \
-    GC_OBJ_SET_FIELD(obj_handle, extensible, val)
-
-#define GC_OBJ_SET_EXOTIC(obj_handle, val) \
-    GC_OBJ_SET_FIELD(obj_handle, is_exotic, val)
-
-#define GC_OBJ_SET_FAST_ARRAY(obj_handle, val) \
-    GC_OBJ_SET_FIELD(obj_handle, fast_array, val)
-
-/* Get weakref_count from object */
-#define GC_OBJ_GET_WEAKREF_COUNT(obj_handle) \
-    GC_OBJ_GET_FIELD(obj_handle, weakref_count, uint32_t)
+/* Note: GC_OBJ_GET_FIELD, GC_OBJ_SET_FIELD, and related macros are now defined in quickjs.h
+ * They use the generic GC_FIELD_GET and GC_FIELD_SET macros:
+ *   GC_OBJ_GET_SHAPE_HANDLE(obj_handle) -> GC_FIELD_GET(obj_handle, JSObject, shape_handle)
+ *   GC_OBJ_SET_SHAPE_HANDLE(obj_handle, val) -> GC_FIELD_SET(obj_handle, JSObject, shape_handle, val)
+ *   etc.
+ */
 
 /* ============================================================================
  * Proto-Chain Walking Macros (Critical for Migration)
@@ -273,7 +156,7 @@ extern "C" {
  */
 #define GC_PROP_ARRAY_GET_PTR(prop_handle, index) ({ \
     JSProperty *_pr = NULL; \
-    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
     if (_props != NULL) { \
         _pr = &_props[index]; \
     } \
@@ -283,7 +166,7 @@ extern "C" {
 /* Get property value by index (handles all property types) */
 #define GC_PROP_ARRAY_GET_VALUE(prop_handle, index) ({ \
     GCValue _val = GC_UNDEFINED; \
-    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
     if (_props != NULL) { \
         _val = _props[index].u.value; \
     } \
@@ -292,7 +175,7 @@ extern "C" {
 
 /* Set property value by index */
 #define GC_PROP_ARRAY_SET_VALUE(prop_handle, index, val) do { \
-    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
     if (_props != NULL) { \
         _props[index].u.value = (val); \
     } \
@@ -301,7 +184,7 @@ extern "C" {
 /* Get getter handle from property */
 #define GC_PROP_ARRAY_GET_GETTER(prop_handle, index) ({ \
     GCHandle _h = GC_HANDLE_NULL; \
-    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
     if (_props != NULL) { \
         _h = _props[index].u.getset.getter_handle; \
     } \
@@ -310,7 +193,7 @@ extern "C" {
 
 /* Set getter handle in property */
 #define GC_PROP_ARRAY_SET_GETTER(prop_handle, index, h) do { \
-    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
     if (_props != NULL) { \
         _props[index].u.getset.getter_handle = (h); \
     } \
@@ -319,7 +202,7 @@ extern "C" {
 /* Get setter handle from property */
 #define GC_PROP_ARRAY_GET_SETTER(prop_handle, index) ({ \
     GCHandle _h = GC_HANDLE_NULL; \
-    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
     if (_props != NULL) { \
         _h = _props[index].u.getset.setter_handle; \
     } \
@@ -328,7 +211,7 @@ extern "C" {
 
 /* Set setter handle in property */
 #define GC_PROP_ARRAY_SET_SETTER(prop_handle, index, h) do { \
-    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
     if (_props != NULL) { \
         _props[index].u.getset.setter_handle = (h); \
     } \
@@ -337,7 +220,7 @@ extern "C" {
 /* Get var_ref from property */
 #define GC_PROP_ARRAY_GET_VAR_REF(prop_handle, index) ({ \
     JSVarRef *_ref = NULL; \
-    JSProperty *_props = (JSProperty *)gc_deref(prop_handle); \
+    JSProperty *_props = (JSProperty *)gc_deref_internal(prop_handle); \
     if (_props != NULL) { \
         _ref = _props[index].u.var_ref; \
     } \
@@ -352,7 +235,7 @@ extern "C" {
 /* Get shape property atom */
 #define GC_SHAPE_PROP_GET_ATOM(shape_handle, index) ({ \
     JSAtom _atom = JS_ATOM_NULL; \
-    JSShape *_sh = (JSShape *)gc_deref(shape_handle); \
+    JSShape *_sh = (JSShape *)gc_deref_internal(shape_handle); \
     if (_sh != NULL) { \
         JSShapeProperty *_props = get_shape_prop(_sh); \
         _atom = _props[index].atom; \
@@ -363,7 +246,7 @@ extern "C" {
 /* Get shape property flags */
 #define GC_SHAPE_PROP_GET_FLAGS(shape_handle, index) ({ \
     uint32_t _flags = 0; \
-    JSShape *_sh = (JSShape *)gc_deref(shape_handle); \
+    JSShape *_sh = (JSShape *)gc_deref_internal(shape_handle); \
     if (_sh != NULL) { \
         JSShapeProperty *_props = get_shape_prop(_sh); \
         _flags = _props[index].flags; \
@@ -374,7 +257,7 @@ extern "C" {
 /* Get shape property hash_next */
 #define GC_SHAPE_PROP_GET_HASH_NEXT(shape_handle, index) ({ \
     uint32_t _next = 0; \
-    JSShape *_sh = (JSShape *)gc_deref(shape_handle); \
+    JSShape *_sh = (JSShape *)gc_deref_internal(shape_handle); \
     if (_sh != NULL) { \
         JSShapeProperty *_props = get_shape_prop(_sh); \
         _next = _props[index].hash_next; \
@@ -390,7 +273,7 @@ extern "C" {
 #ifdef DEBUG_HANDLE_ACCESS
 #include <android/log.h>
 #define GC_HANDLE_CHECK(handle, expected_type) ({ \
-    void *_ptr = gc_deref(handle); \
+    void *_ptr = gc_deref_internal(handle); \
     if (!_ptr) { \
         __android_log_print(ANDROID_LOG_ERROR, "GC_HANDLE", \
             "NULL dereference of handle %u at %s:%d", \
@@ -422,7 +305,7 @@ extern "C" {
 /* Get array count (u.array.count) via handle */
 #define GC_OBJ_GET_ARRAY_COUNT(obj_handle) ({ \
     uint32_t _count = 0; \
-    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
     if (_obj != NULL) { \
         _count = _obj->u.array.count; \
     } \
@@ -431,7 +314,7 @@ extern "C" {
 
 /* Set array count via handle */
 #define GC_OBJ_SET_ARRAY_COUNT(obj_handle, val) do { \
-    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
     if (_obj != NULL) { \
         _obj->u.array.count = (val); \
     } \
@@ -440,7 +323,7 @@ extern "C" {
 /* Get array values pointer (temporary - don't store across GC!) */
 #define GC_OBJ_GET_ARRAY_VALUES(obj_handle) ({ \
     GCValue *_values = NULL; \
-    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
     if (_obj != NULL) { \
         _values = _obj->u.array.values; \
     } \
@@ -450,7 +333,7 @@ extern "C" {
 /* Get array element at index via handle */
 #define GC_OBJ_GET_ARRAY_ELEMENT(obj_handle, idx) ({ \
     GCValue _val = GC_UNDEFINED; \
-    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
     if (_obj != NULL && _obj->u.array.values != NULL) { \
         _val = _obj->u.array.values[idx]; \
     } \
@@ -459,7 +342,7 @@ extern "C" {
 
 /* Set array element at index via handle */
 #define GC_OBJ_SET_ARRAY_ELEMENT(obj_handle, idx, val) do { \
-    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
     if (_obj != NULL && _obj->u.array.values != NULL) { \
         _obj->u.array.values[idx] = (val); \
     } \
@@ -473,7 +356,7 @@ extern "C" {
 /* Get typed array buffer pointer (temporary - don't store across GC!) */
 #define GC_OBJ_GET_TYPED_ARRAY_PTR(obj_handle, field, ptr_type) ({ \
     ptr_type _ptr = NULL; \
-    JSObject *_obj = (JSObject *)gc_deref(obj_handle); \
+    JSObject *_obj = (JSObject *)gc_deref_internal(obj_handle); \
     if (_obj != NULL) { \
         _ptr = _obj->u.field; \
     } \

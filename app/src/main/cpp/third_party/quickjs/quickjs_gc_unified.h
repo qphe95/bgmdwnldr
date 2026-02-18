@@ -122,7 +122,8 @@ GCHandle gc_alloc_handle_for_ptr(void *ptr);
 GCHandle gc_realloc2(GCHandle handle, size_t new_size, size_t *pslack);
 
 /* Forward declaration needed by inline functions below */
-void *gc_deref(GCHandle handle);
+void *gc_deref_internal(GCHandle handle);
+#define gc_deref(handle) gc_deref_internal(handle)
 static inline GCHeader *gc_header(void *user_ptr) {
     if (!user_ptr) return NULL;
     return (GCHeader*)((uint8_t*)user_ptr - sizeof(GCHeader));
@@ -143,7 +144,7 @@ static inline GCHandle gc_strdup(const char *str) {
     size_t len = str ? strlen(str) : 0;
     GCHandle handle = gc_alloc(len + 1, JS_GC_OBJ_TYPE_DATA);
     if (handle != GC_HANDLE_NULL && str) {
-        char *ptr = (char *)gc_deref(handle);
+        char *ptr = (char *)gc_deref_internal(handle);
         if (ptr) memcpy(ptr, str, len + 1);
     }
     return handle;
@@ -154,7 +155,7 @@ static inline GCHandle gc_strndup(const char *s, size_t n) {
     size_t len = s ? strnlen(s, n) : 0;
     GCHandle handle = gc_alloc(len + 1, JS_GC_OBJ_TYPE_DATA);
     if (handle != GC_HANDLE_NULL) {
-        char *ptr = (char *)gc_deref(handle);
+        char *ptr = (char *)gc_deref_internal(handle);
         if (ptr) {
             if (s) memcpy(ptr, s, len);
             ptr[len] = '\0';
@@ -165,7 +166,7 @@ static inline GCHandle gc_strndup(const char *s, size_t n) {
 
 /* Get usable size of an allocation */
 static inline size_t gc_usable_size(GCHandle handle) {
-    void *ptr = gc_deref(handle);
+    void *ptr = gc_deref_internal(handle);
     if (!ptr) return 0;
     GCHeader *hdr = gc_header(ptr);
     return hdr->size > sizeof(GCHeader) ? hdr->size - sizeof(GCHeader) : 0;
@@ -176,14 +177,14 @@ bool gc_ptr_is_valid(void *ptr);
 static inline void *gc_alloc_js_object(size_t size, JSGCObjectTypeEnum gc_obj_type) {
     GCHandle handle = gc_alloc(size, gc_obj_type);
     if (handle == 0) return NULL;
-    return gc_deref(handle);
+    return gc_deref_internal(handle);
 }
 
 static inline void *gc_alloc_js_object_ex(size_t size, JSGCObjectTypeEnum gc_obj_type, 
                                            GCHandleArrayType array_type) {
     GCHandle handle = gc_alloc_ex(size, gc_obj_type, array_type);
     if (handle == 0) return NULL;
-    return gc_deref(handle);
+    return gc_deref_internal(handle);
 }
 bool gc_handle_is_valid(GCHandle handle);
 JSGCObjectTypeEnum gc_handle_get_type(GCHandle handle);

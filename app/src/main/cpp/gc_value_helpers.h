@@ -156,7 +156,7 @@ static inline GCValue gc_get_global_object(JSContext *ctx) {
     if (!GC_IS_UNDEFINED(_gc_method)) { \
         int _gc_tag = GC_VALUE_GET_TAG(obj); \
         if (_gc_tag < 0) { \
-            void *_gc_ptr = gc_deref((obj).u.handle); \
+            void *_gc_ptr = gc_deref_internal((obj).u.handle); \
             if (_gc_ptr != NULL) { \
                 GCValue _gc_this = GC_WRAP_PTR(_gc_tag, _gc_ptr); \
                 _gc_result = JS_Call((ctx), _gc_method, _gc_this, (argc), (argv)); \

@@ -379,18 +379,18 @@ struct JSRuntime {
 };
 
 /* Accessor macros for handle-based fields - deref immediately before use */
-#define rt_atom_hash ((uint32_t*)gc_deref(rt->atom_hash_handle))
-#define rt_class_array ((JSClass*)gc_deref(rt->class_array_handle))
-#define rt_atom_gc_marks ((uint32_t*)gc_deref(rt->atom_gc_marks_handle))
-#define rt_shape_hash ((GCHandle*)gc_deref(rt->shape_hash_handle))
+#define rt_atom_hash ((uint32_t*)gc_deref_internal(rt->atom_hash_handle))
+#define rt_class_array ((JSClass*)gc_deref_internal(rt->class_array_handle))
+#define rt_atom_gc_marks ((uint32_t*)gc_deref_internal(rt->atom_gc_marks_handle))
+#define rt_shape_hash ((GCHandle*)gc_deref_internal(rt->shape_hash_handle))
 
 /* Context accessors - use ctx->rt to get runtime */
-#define ctx_class_proto ((GCValue*)gc_deref(ctx->class_proto_handle))
-#define realm_class_proto ((GCValue*)gc_deref(realm->class_proto_handle))
-#define ctx_rt_class_array ((JSClass*)gc_deref(ctx->rt->class_array_handle))
+#define ctx_class_proto ((GCValue*)gc_deref_internal(ctx->class_proto_handle))
+#define realm_class_proto ((GCValue*)gc_deref_internal(realm->class_proto_handle))
+#define ctx_rt_class_array ((JSClass*)gc_deref_internal(ctx->rt->class_array_handle))
 
 /* Object accessors */
-#define p_prop ((JSProperty*)gc_deref(p->prop_handle))
+#define p_prop ((JSProperty*)gc_deref_internal(p->prop_handle))
 
 struct JSClass {
     uint32_t class_id; /* 0 means free entry */
@@ -1434,7 +1434,7 @@ static JSClassID js_class_id_alloc = JS_CLASS_INIT_COUNT;
 /* Forward declaration for unified GC functions */
 extern bool gc_should_run(void);
 extern void gc_set_threshold(size_t threshold);
-extern void *gc_deref(GCHandle handle);
+/* gc_deref is defined as a macro in quickjs.h pointing to gc_deref_internal */
 
 static void js_trigger_gc(JSRuntime *rt, size_t size)
 {
