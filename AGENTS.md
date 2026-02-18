@@ -3,8 +3,45 @@
 ## Testing Procedures
 
 ### Prerequisites
-- Android device connected via ADB
+- Android device connected via ADB (or emulator running)
 - App installed (via `./rebuild.sh`)
+
+## Emulator Management
+
+### Starting the Emulator
+
+Use the provided script to start the emulator with UI:
+
+```bash
+# Start the default bgmdwldr_avd emulator
+./scripts/start-emulator.sh
+
+# Or specify a different AVD
+./scripts/start-emulator.sh Pixel_3a_API_34_extension_level_7_arm64-v8a
+```
+
+This script will:
+1. Auto-detect Android SDK location
+2. Kill any existing emulator processes (to prevent multiple emulators)
+3. Start the emulator with UI
+4. Wait for boot completion
+
+### Stopping the Emulator
+
+```bash
+./scripts/stop-emulator.sh
+```
+
+This will gracefully shut down the emulator and clean up processes.
+
+### Why Manage Emulators?
+
+**IMPORTANT:** Running multiple emulators simultaneously causes:
+- Port conflicts (ADB, console, etc.)
+- High CPU/memory usage
+- Confusion about which device to target
+
+Always ensure only ONE emulator is running at a time.
 
 ### Proper App Launch Sequence
 
