@@ -4,6 +4,8 @@
 #include <jni.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
+#include "third_party/quickjs/quickjs_gc_unified.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,8 +13,8 @@ extern "C" {
 
 typedef struct MediaStoreHandle {
     int fd;
-    jobject uri;
-    jobject pfd;
+    GCHandle uri_handle;   /* Handle to JNI global ref for Uri object */
+    GCHandle pfd_handle;   /* Handle to JNI global ref for ParcelFileDescriptor */
 } MediaStoreHandle;
 
 bool media_store_create_audio(JavaVM *vm, jobject activity,

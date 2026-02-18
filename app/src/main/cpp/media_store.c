@@ -39,8 +39,8 @@ bool media_store_create_audio(JavaVM *vm, jobject activity,
         return false;
     }
     outHandle->fd = -1;
-    outHandle->uri = NULL;
-    outHandle->pfd = NULL;
+    outHandle->uri_handle = GC_HANDLE_NULL;
+    outHandle->pfd_handle = GC_HANDLE_NULL;
 
     JNIEnv *env = NULL;
     bool attached = false;
@@ -110,8 +110,11 @@ bool media_store_create_audio(JavaVM *vm, jobject activity,
     int fd = (*env)->CallIntMethod(env, pfd, getFd);
 
     outHandle->fd = fd;
-    outHandle->uri = (*env)->NewGlobalRef(env, uri);
-    outHandle->pfd = (*env)->NewGlobalRef(env, pfd);
+    /* Store JNI global refs as opaque pointers in handles */
+    jobject uri_ref = (*env)->NewGlobalRef(env, uri);
+    jobject pfd_ref = (*env)->NewGlobalRef(env, pfd);
+    outHandle->uri_handle = gc_alloc_handle_for_ptr((void*)uri_ref);
+    outHandle->pfd_handle = gc_alloc_handle_for_ptr((void*)pfd_ref);
     detach_if_needed(vm, attached);
     return true;
 }
@@ -119,7 +122,7 @@ bool media_store_create_audio(JavaVM *vm, jobject activity,
 bool media_store_finalize(JavaVM *vm, jobject activity,
                           MediaStoreHandle *handle,
                           char *err, size_t errLen) {
-    if (!vm || !activity || !handle || !handle->uri) {
+    if (!vm || !activity || !handle || handle->uri_handle == GC_HANDLE_NULL) {
         set_err(err, errLen, "MediaStore finalize invalid params");
         return false;
     }
@@ -150,7 +153,7 @@ bool media_store_finalize(JavaVM *vm, jobject activity,
     jmethodID updateMethod = (*env)->GetMethodID(env, resolverCls, "update",
                                                  "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I");
     (*env)->CallIntMethod(env, resolver, updateMethod,
-                          handle->uri, values, NULL, NULL);
+                          (jobject)gc_deref(handle->uri_handle), values, NULL, NULL);
 
     detach_if_needed(vm, attached);
     return true;
@@ -165,16 +168,22 @@ void media_store_close(JavaVM *vm, MediaStoreHandle *handle) {
     if (!get_env(vm, &env, &attached)) {
         return;
     }
-    if (handle->pfd) {
-        jclass pfdCls = (*env)->GetObjectClass(env, handle->pfd);
-        jmethodID closeMethod = (*env)->GetMethodID(env, pfdCls, "close", "()V");
-        (*env)->CallVoidMethod(env, handle->pfd, closeMethod);
-        (*env)->DeleteGlobalRef(env, handle->pfd);
-        handle->pfd = NULL;
+    if (handle->pfd_handle != GC_HANDLE_NULL) {
+        jobject pfd_ref = (jobject)gc_deref(handle->pfd_handle);
+        if (pfd_ref) {
+            jclass pfdCls = (*env)->GetObjectClass(env, pfd_ref);
+            jmethodID closeMethod = (*env)->GetMethodID(env, pfdCls, "close", "()V");
+            (*env)->CallVoidMethod(env, pfd_ref, closeMethod);
+            (*env)->DeleteGlobalRef(env, pfd_ref);
+        }
+        handle->pfd_handle = GC_HANDLE_NULL;
     }
-    if (handle->uri) {
-        (*env)->DeleteGlobalRef(env, handle->uri);
-        handle->uri = NULL;
+    if (handle->uri_handle != GC_HANDLE_NULL) {
+        jobject uri_ref = (jobject)gc_deref(handle->uri_handle);
+        if (uri_ref) {
+            (*env)->DeleteGlobalRef(env, uri_ref);
+        }
+        handle->uri_handle = GC_HANDLE_NULL;
     }
     detach_if_needed(vm, attached);
     handle->fd = -1;
