@@ -373,6 +373,9 @@ struct JSRuntime {
     int shape_hash_count; /* number of hashed shapes */
     GCHandle shape_hash_handle;  /* Handle to JSShape* array */
     void *user_opaque;
+    
+    /* Instruction counter for GC triggering */
+    uint32_t instruction_counter;
 };
 
 /* Accessor macros for handle-based fields - deref immediately before use */
@@ -18662,8 +18665,16 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
     JSVarRef **var_refs;
     size_t alloca_size;
 
+#define GC_INSTRUCTION_THRESHOLD 100
+
 #if !DIRECT_DISPATCH
-#define SWITCH(pc)      switch (opcode = *pc++)
+#define SWITCH(pc)      do { \
+        if (++rt->instruction_counter >= GC_INSTRUCTION_THRESHOLD) { \
+            rt->instruction_counter = 0; \
+            gc_run(); \
+        } \
+    } while(0); \
+    switch (opcode = *pc++)
 #define CASE(op)        case op
 #define DEFAULT         default
 #define BREAK           break
@@ -18678,7 +18689,13 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
 #include "quickjs-opcode.h"
         [ OP_COUNT ... 255 ] = &&case_default
     };
-#define SWITCH(pc)      goto *dispatch_table[opcode = *pc++];
+#define SWITCH(pc)      do { \
+        if (++rt->instruction_counter >= GC_INSTRUCTION_THRESHOLD) { \
+            rt->instruction_counter = 0; \
+            gc_run(); \
+        } \
+    } while(0); \
+    goto *dispatch_table[opcode = *pc++]
 #define CASE(op)        case_ ## op
 #define DEFAULT         case_default
 #define BREAK           SWITCH(pc)

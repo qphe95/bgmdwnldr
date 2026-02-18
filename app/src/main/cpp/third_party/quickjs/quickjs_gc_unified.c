@@ -173,7 +173,6 @@ GCHandle gc_alloc_ex(size_t size, JSGCObjectTypeEnum gc_obj_type,
     (void)array_type;
     
     if (!g_gc.initialized) return GC_HANDLE_NULL;
-    gc_maybe_run();
     
     void *ptr = bump_alloc(size);
     if (!ptr) {
