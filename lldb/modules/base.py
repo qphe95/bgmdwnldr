@@ -82,9 +82,9 @@ class DebugSession:
         
         # Initialize managers if we have a target
         if self.target:
-            from ..lib.debug.breakpoints import BreakpointManager
-            from ..lib.debug.watchpoints import WatchpointManager
-            from ..lib.core.memory import MemoryReader
+            from lib.debug.breakpoints import BreakpointManager
+            from lib.debug.watchpoints import WatchpointManager
+            from lib.core.memory import MemoryReader
             
             self.breakpoint_manager = BreakpointManager(self.target)
             self.watchpoint_manager = WatchpointManager(self.target)

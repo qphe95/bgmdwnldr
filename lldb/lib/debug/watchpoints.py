@@ -65,7 +65,7 @@ class WatchpointManager:
     def add_on_object_shape(self, obj_addr: int,
                            on_hit: Callable = None) -> Optional[lldb.SBWatchpoint]:
         """Add watchpoint on an object's shape field."""
-        from ..quickjs.constants import JSObjectOffset
+        from lib.quickjs.constants import JSObjectOffset
         
         shape_field_addr = obj_addr + JSObjectOffset.SHAPE
         

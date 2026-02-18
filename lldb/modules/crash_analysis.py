@@ -2,9 +2,9 @@
 Analyze crash state when process stops unexpectedly.
 """
 
-from .base import DebugModule, ModuleConfig
-from ..lib.quickjs.types import JSObject
-from ..lib.quickjs.inspector import ObjectInspector
+from modules.base import DebugModule, ModuleConfig
+from lib.quickjs.types import JSObject
+from lib.quickjs.inspector import ObjectInspector
 
 
 class CrashAnalysisModule(DebugModule):

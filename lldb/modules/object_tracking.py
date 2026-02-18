@@ -5,9 +5,9 @@ Track JSObject lifecycle and shape changes.
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 import time
-from .base import DebugModule, ModuleConfig
-from ..lib.quickjs.types import JSObject
-from ..lib.debug.breakpoints import BreakpointConfig
+from modules.base import DebugModule, ModuleConfig
+from lib.quickjs.types import JSObject
+from lib.debug.breakpoints import BreakpointConfig
 
 
 @dataclass

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 from enum import IntEnum
 
-from .constants import (
+from lib.quickjs.constants import (
     JSObjectOffset,
     JSShapeOffset,
     JSValueTag,
@@ -18,7 +18,7 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from ..core.memory import MemoryReader
+    from lib.core.memory import MemoryReader
 
 
 @dataclass

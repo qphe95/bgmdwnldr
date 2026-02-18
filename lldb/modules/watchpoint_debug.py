@@ -3,9 +3,9 @@ Use hardware watchpoints to catch corruption.
 """
 
 from typing import Dict
-from .base import DebugModule, ModuleConfig
-from ..lib.quickjs.types import JSObject
-from ..lib.debug.breakpoints import BreakpointConfig
+from modules.base import DebugModule, ModuleConfig
+from lib.quickjs.types import JSObject
+from lib.debug.breakpoints import BreakpointConfig
 
 
 class WatchpointDebugModule(DebugModule):
@@ -82,7 +82,7 @@ class WatchpointDebugModule(DebugModule):
             print(f"[WatchDebug] #{obj_id}: No watchpoint slots available")
             return False
         
-        from ..lib.quickjs.constants import JSObjectOffset
+        from lib.quickjs.constants import JSObjectOffset
         shape_field_addr = obj_addr + JSObjectOffset.SHAPE
         
         wp = self.session.watchpoint_manager.add_on_object_shape(

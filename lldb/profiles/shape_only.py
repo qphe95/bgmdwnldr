@@ -2,8 +2,8 @@
 Shape tracking focused profile.
 """
 
-from .base import DebugProfile
-from ..modules import (
+from profiles.base import DebugProfile
+from modules import (
     ShapeTrackingModule,
     ObjectTrackingModule,
     MemoryCorruptionModule,

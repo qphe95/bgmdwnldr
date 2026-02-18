@@ -3,9 +3,9 @@ Track register values, especially x28 for 0xc0000000 pattern.
 """
 
 from typing import Dict, List
-from .base import DebugModule, ModuleConfig
-from ..lib.core.registers import RegisterMonitor, get_register
-from ..lib.debug.breakpoints import BreakpointConfig
+from modules.base import DebugModule, ModuleConfig
+from lib.core.registers import RegisterMonitor, get_register
+from lib.debug.breakpoints import BreakpointConfig
 
 
 class RegisterTrackingModule(DebugModule):

@@ -5,9 +5,9 @@ QuickJS Debug System - Core Library
 __version__ = "1.0.0"
 __author__ = "QuickJS Debug Team"
 
-from . import core
-from . import quickjs
-from . import debug
+from lib import core
+from lib import quickjs
+from lib import debug
 
 __all__ = [
     'core',

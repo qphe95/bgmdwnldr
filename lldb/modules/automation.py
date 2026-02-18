@@ -2,9 +2,9 @@
 Expect-based automation for non-interactive debugging.
 """
 
-from .base import DebugModule, ModuleConfig
-from ..lib.core.automation import ExpectScriptBuilder
-from ..lib.debug.breakpoints import BreakpointConfig
+from modules.base import DebugModule, ModuleConfig
+from lib.core.automation import ExpectScriptBuilder
+from lib.debug.breakpoints import BreakpointConfig
 
 
 class ExpectAutomationModule(DebugModule):

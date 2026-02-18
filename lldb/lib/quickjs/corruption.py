@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Set
 from enum import Enum
 
-from .types import JSObject
-from .constants import (
+from lib.quickjs.types import JSObject
+from lib.quickjs.constants import (
     MIN_VALID_PTR,
     MAX_VALID_PTR,
     SUSPICIOUS_PATTERNS,

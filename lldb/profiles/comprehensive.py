@@ -2,8 +2,8 @@
 Comprehensive debug profile - all modules enabled.
 """
 
-from .base import DebugProfile
-from ..modules import (
+from profiles.base import DebugProfile
+from modules import (
     ShapeTrackingModule,
     ObjectTrackingModule,
     MemoryCorruptionModule,

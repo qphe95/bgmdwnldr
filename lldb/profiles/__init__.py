@@ -2,12 +2,12 @@
 Pre-configured debug profiles.
 """
 
-from .base import DebugProfile
-from .comprehensive import ComprehensiveProfile
-from .minimal import MinimalProfile
-from .shape_only import ShapeOnlyProfile
-from .register_focus import RegisterFocusProfile
-from .stripped_binary import StrippedBinaryProfile
+from profiles.base import DebugProfile
+from profiles.comprehensive import ComprehensiveProfile
+from profiles.minimal import MinimalProfile
+from profiles.shape_only import ShapeOnlyProfile
+from profiles.register_focus import RegisterFocusProfile
+from profiles.stripped_binary import StrippedBinaryProfile
 
 AVAILABLE_PROFILES = {
     'comprehensive': ComprehensiveProfile,

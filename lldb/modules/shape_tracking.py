@@ -5,9 +5,9 @@ Track shape allocation, freeing, and usage.
 from typing import Dict, List
 from dataclasses import dataclass, field
 from datetime import datetime
-from .base import DebugModule, ModuleConfig
-from ..lib.quickjs.types import JSShape
-from ..lib.debug.breakpoints import BreakpointConfig
+from modules.base import DebugModule, ModuleConfig
+from lib.quickjs.types import JSShape
+from lib.debug.breakpoints import BreakpointConfig
 
 
 @dataclass

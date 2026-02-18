@@ -2,10 +2,10 @@
 Detect memory corruption patterns.
 """
 
-from .base import DebugModule, ModuleConfig
-from ..lib.quickjs.corruption import CorruptionDetector, CorruptionType
-from ..lib.quickjs.types import JSObject
-from ..lib.debug.breakpoints import BreakpointConfig
+from modules.base import DebugModule, ModuleConfig
+from lib.quickjs.corruption import CorruptionDetector, CorruptionType
+from lib.quickjs.types import JSObject
+from lib.debug.breakpoints import BreakpointConfig
 
 
 class MemoryCorruptionModule(DebugModule):

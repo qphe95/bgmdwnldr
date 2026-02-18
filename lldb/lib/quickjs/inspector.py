@@ -4,9 +4,9 @@ High-level object inspection utilities.
 
 from typing import List, Dict, Optional, Iterator, Tuple
 from dataclasses import dataclass, field
-from .types import JSObject, JSShape
-from .corruption import CorruptionDetector, CorruptionReport
-from .constants import JSObjectOffset, MIN_VALID_PTR, MAX_VALID_PTR, is_valid_pointer
+from lib.quickjs.types import JSObject, JSShape
+from lib.quickjs.corruption import CorruptionDetector, CorruptionReport
+from lib.quickjs.constants import JSObjectOffset, MIN_VALID_PTR, MAX_VALID_PTR, is_valid_pointer
 
 
 @dataclass
@@ -48,7 +48,7 @@ class ObjectInspector:
     """Inspect QuickJS objects in memory."""
     
     def __init__(self, reader):
-        from ..core.memory import MemoryReader
+        from lib.core.memory import MemoryReader
         self.reader: MemoryReader = reader
         self.corruption = CorruptionDetector()
     
@@ -96,7 +96,7 @@ class ObjectInspector:
                                  max_count: int = 100) -> List[int]:
         """Find all objects pointing to a given shape."""
         # This is expensive - scan memory for pointer values
-        from ..core.memory import MemoryScanner
+        from lib.core.memory import MemoryScanner
         scanner = MemoryScanner(self.reader)
         
         # Search in heap regions

@@ -2,13 +2,13 @@
 Profile for debugging stripped binaries.
 """
 
-from .base import DebugProfile
-from ..modules import (
+from profiles.base import DebugProfile
+from modules import (
     ShapeTrackingModule,
     ObjectTrackingModule,
     MemoryCorruptionModule,
 )
-from ..lib.debug.symbols import StrippedBinaryHelper
+from lib.debug.symbols import StrippedBinaryHelper
 
 
 class StrippedBinaryProfile(DebugProfile):

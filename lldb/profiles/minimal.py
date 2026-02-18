@@ -2,8 +2,8 @@
 Minimal debug profile - essential detection only.
 """
 
-from .base import DebugProfile
-from ..modules import MemoryCorruptionModule
+from profiles.base import DebugProfile
+from modules import MemoryCorruptionModule
 
 
 class MinimalProfile(DebugProfile):

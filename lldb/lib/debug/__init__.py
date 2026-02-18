@@ -2,11 +2,11 @@
 Debugging framework components.
 """
 
-from .breakpoints import BreakpointConfig, BreakpointManager
-from .watchpoints import WatchpointConfig, WatchpointManager
-from .commands import CommandSpec, CommandRegistry, command
-from .session import DebugSession, ModuleConfig
-from .symbols import StrippedBinaryHelper, FunctionAddress
+from lib.debug.breakpoints import BreakpointConfig, BreakpointManager
+from lib.debug.watchpoints import WatchpointConfig, WatchpointManager
+from lib.debug.commands import CommandSpec, CommandRegistry, command
+from lib.debug.session import DebugSession, ModuleConfig
+from lib.debug.symbols import StrippedBinaryHelper, FunctionAddress
 
 __all__ = [
     'BreakpointConfig',
