@@ -83,19 +83,40 @@ fi
 
 log "App PID: $APP_PID"
 
+# Run adb root for better debugging access (optional, may fail on some devices)
+adb root 2>/dev/null || true
+sleep 1
+
 # Create init script
-cat > /tmp/qjs_quickstart.txt << EOF
+cat > /tmp/qjs_quickstart.txt << 'EOF'
 platform select remote-android
 platform connect connect://localhost:5039
-process attach -p $APP_PID
+EOF
+
+# Add attach command with error handling
+echo "process attach -p $APP_PID" >> /tmp/qjs_quickstart.txt
+
+# Add the rest of the init commands
+cat >> /tmp/qjs_quickstart.txt << EOF
 command script import $SCRIPT_DIR/main.py
 qjs-debug $PROFILE
-script print("\\n" + "="*60)
+script print("\n" + "="*60)
 script print("QUICKJS DEBUGGER READY")
 script print("="*60)
 script print("To trigger crash, run in another terminal:")
 script print("  ./lldb/scripts/trigger-crash.sh")
-script print("="*60 + "\\n")
+script print("="*60 + "\n")
+# Configure crash signals to stop and notify
+process handle SIGSEGV --stop=true --notify=true --pass=false
+process handle SIGBUS --stop=true --notify=true --pass=false
+process handle SIGILL --stop=true --notify=true --pass=false
+process handle SIGABRT --stop=true --notify=true --pass=false
+
+# Add stop-hook for enhanced crash detection
+target stop-hook add -o "script import sys; sys.path.insert(0, '$SCRIPT_DIR'); from main import qjs_handle_stop_event; qjs_handle_stop_event(frame, None, {})"
+
+# Continue execution
+continue
 EOF
 
 log "Starting LLDB..."

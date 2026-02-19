@@ -39,6 +39,10 @@ fi
 
 qjs_log "App PID: $PID"
 
+# Run adb root for better debugging access
+adb root 2>/dev/null || true
+sleep 1
+
 # Create LLDB init script with proper remote debugging
 cat > /tmp/qjs_lldb_init.txt << EOF
 # Connect to remote Android device
@@ -48,11 +52,20 @@ platform connect connect://localhost:5039
 # Attach to process
 process attach -p $PID
 
+# Configure signal handling for crash detection
+process handle SIGSEGV --stop=true --notify=true --pass=false
+process handle SIGBUS --stop=true --notify=true --pass=false
+process handle SIGILL --stop=true --notify=true --pass=false
+process handle SIGABRT --stop=true --notify=true --pass=false
+
 # Load QuickJS debugging module
 command script import ${SCRIPT_DIR}/../main.py
 
 # Set up debugging profile
 qjs-debug $PROFILE
+
+# Add stop-hook for enhanced crash detection
+target stop-hook add -o "script import sys; sys.path.insert(0, '${SCRIPT_DIR}/..'); from main import qjs_handle_stop_event; qjs_handle_stop_event(frame, None, {})"
 
 # Show status
 qjs-status

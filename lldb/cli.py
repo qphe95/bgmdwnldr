@@ -31,7 +31,12 @@ def check_device() -> bool:
         capture_output=True,
         text=True
     )
-    return 'device' in result.stdout and 'emulator' not in result.stdout
+    # Check for any device (including emulators)
+    # Format: "emulator-5554\tdevice" or "ABC123\tdevice"
+    for line in result.stdout.strip().split('\n')[1:]:  # Skip header
+        if '\tdevice' in line:
+            return True
+    return False
 
 
 def get_app_pid(package: str = "com.bgmdwldr.vulkan") -> int:
@@ -237,21 +242,36 @@ Examples:
         print("Error: Failed to setup port forwarding")
         return 1
     
-    # Build LLDB command
-    lldb_cmd = ["lldb"]
-    
-    if args.attach or not args.launch:
-        lldb_cmd.extend(["-p", str(pid)])
-    
-    # Load main.py and set profile
+    # Build LLDB init commands for remote Android debugging
+    # Use proper remote platform connection instead of -p (local attach)
     init_cmds = [
-        f"command script import {SCRIPT_DIR}/main.py",
-        f"qjs-debug {args.profile}",
+        "platform select remote-android",
+        f"platform connect connect://localhost:{args.port}",
+        f"process attach -p {pid}",
     ]
     
-    if args.async_mode:
-        init_cmds.insert(0, "settings set target.async true")
+    # Configure crash signals to stop and notify
+    init_cmds.extend([
+        "process handle SIGSEGV --stop=true --notify=true --pass=false",
+        "process handle SIGBUS --stop=true --notify=true --pass=false",
+        "process handle SIGILL --stop=true --notify=true --pass=false",
+        "process handle SIGABRT --stop=true --notify=true --pass=false",
+    ])
     
+    if args.async_mode:
+        init_cmds.append("settings set target.async true")
+    
+    # Load main.py and set profile
+    init_cmds.extend([
+        f"command script import {SCRIPT_DIR}/main.py",
+        f"qjs-debug {args.profile}",
+    ])
+    
+    # Add stop-hook for crash detection
+    init_cmds.append(f'target stop-hook add -o "script import sys; sys.path.insert(0, \\"{SCRIPT_DIR}\\"); from main import qjs_handle_stop_event; qjs_handle_stop_event(frame, None, {{}})"')
+    
+    # Build final LLDB command
+    lldb_cmd = ["lldb"]
     for cmd in init_cmds:
         lldb_cmd.extend(["-o", cmd])
     

@@ -27,13 +27,27 @@ qjs_start_lldb_server 5039
 # Setup port forwarding
 qjs_setup_port_forward 5039 5039
 
+# Run adb root for better debugging access
+adb root 2>/dev/null || true
+sleep 1
+
 # Create init script for remote debugging
 cat > /tmp/qjs_attach.txt << EOF
 platform select remote-android
 platform connect connect://localhost:5039
 process attach -p $PID
+
+# Configure crash signals
+process handle SIGSEGV --stop=true --notify=true --pass=false
+process handle SIGBUS --stop=true --notify=true --pass=false
+process handle SIGILL --stop=true --notify=true --pass=false
+process handle SIGABRT --stop=true --notify=true --pass=false
+
 command script import ${SCRIPT_DIR}/../main.py
 qjs-debug $PROFILE
+
+# Add stop-hook for enhanced crash detection
+target stop-hook add -o "script import sys; sys.path.insert(0, '${SCRIPT_DIR}/..'); from main import qjs_handle_stop_event; qjs_handle_stop_event(frame, None, {})"
 EOF
 
 # Attach with LLDB

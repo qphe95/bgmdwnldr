@@ -45,16 +45,29 @@ fi
 
 qjs_log "App PID: $PID"
 
+# Run adb root for better debugging access
+adb root 2>/dev/null || true
+sleep 1
+
 # Create LLDB script with crash-catching breakpoints
 cat > /tmp/qjs_lldb_catch.txt << EOF
 platform select remote-android
 platform connect connect://localhost:5039
 process attach -p $PID
 
+# Configure crash signals
+process handle SIGSEGV --stop=true --notify=true --pass=false
+process handle SIGBUS --stop=true --notify=true --pass=false
+process handle SIGILL --stop=true --notify=true --pass=false
+process handle SIGABRT --stop=true --notify=true --pass=false
+
 command script import ${SCRIPT_DIR}/../main.py
 qjs-debug $PROFILE
 
-# Set up crash detection
+# Add stop-hook for enhanced crash detection
+target stop-hook add -o "script import sys; sys.path.insert(0, '${SCRIPT_DIR}/..'); from main import qjs_handle_stop_event; qjs_handle_stop_event(frame, None, {})"
+
+# Set up crash detection breakpoints
 breakpoint set -n abort -C "frame select 0; register read; bt all; qjs-dump-obj \$x0"
 breakpoint set -n __stack_chk_fail -C "bt all"
 
@@ -64,6 +77,7 @@ log enable lldb events $OUTPUT_DIR/lldb-events.log
 # Continue with timeout monitoring
 script import subprocess, time, os
 script print("[LLDB] Ready. Waiting for crash...")
+script print("[LLDB] The debugger will automatically stop on SIGSEGV/SIGBUS/SIGILL/SIGABRT")
 continue
 EOF
 

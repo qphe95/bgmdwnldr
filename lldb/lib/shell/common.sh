@@ -35,21 +35,43 @@ qjs_debug() { echo -e "${QJS_CYAN}[QJS DEBUG]${QJS_NC} $1"; }
 qjs_check_device() {
     if ! adb devices | grep -q "device$"; then
         qjs_error "No Android device connected"
+        qjs_info "Make sure the emulator is running or a device is plugged in"
+        return 1
+    fi
+    
+    # Check if we can execute commands
+    if ! adb shell "echo test" > /dev/null 2>&1; then
+        qjs_error "Device detected but not responding to commands"
+        return 1
+    fi
+    
+    return 0
+}
+
+qjs_get_pid() {
+    local pid=$(adb shell "pidof $QJS_APP_PACKAGE" 2>/dev/null | tr -d '\r')
+    echo "$pid"
+}
+
+qjs_start_app() {
+    qjs_info "Starting $QJS_APP_PACKAGE..."
+    adb shell "am start -n $QJS_APP_PACKAGE/$QJS_ACTIVITY" 2>/dev/null
+    # Wait for app to initialize
+    sleep 2
+    
+    # Verify it started
+    local pid=$(qjs_get_pid)
+    if [ -z "$pid" ]; then
+        qjs_warn "App may not have started properly"
         return 1
     fi
     return 0
 }
 
-qjs_get_pid() {
-    adb shell "pidof $QJS_APP_PACKAGE" 2>/dev/null | tr -d '\r'
-}
-
-qjs_start_app() {
-    adb shell "am start -n $QJS_APP_PACKAGE/$QJS_ACTIVITY" 2>/dev/null
-}
-
 qjs_stop_app() {
+    qjs_info "Stopping $QJS_APP_PACKAGE..."
     adb shell "am force-stop $QJS_APP_PACKAGE" 2>/dev/null
+    sleep 0.5
 }
 
 qjs_clear_logcat() {
@@ -61,18 +83,49 @@ qjs_clear_logcat() {
 # ============================================================================
 qjs_start_lldb_server() {
     local port="${1:-5039}"
-    adb shell "pkill -f lldb-server" 2>/dev/null
-    sleep 0.5
+    
+    # Kill any existing lldb-server
+    qjs_stop_lldb_server
+    sleep 1
+    
+    # Ensure binary exists
+    if ! qjs_check_lldb_binary; then
+        qjs_error "lldb-server binary not found on device at $QJS_LLDB_SERVER"
+        qjs_info "Push it with: adb push <ndk_path>/lldb-server $QJS_LLDB_SERVER"
+        return 1
+    fi
+    
+    qjs_info "Starting lldb-server on port $port..."
     adb shell "$QJS_LLDB_SERVER platform --listen '*:$port' --server" &
+    local pid=$!
     sleep 2
+    
+    # Verify it's running
+    if ! qjs_check_lldb_server; then
+        qjs_warn "lldb-server may not have started correctly, retrying..."
+        sleep 2
+        if ! qjs_check_lldb_server; then
+            qjs_error "Failed to start lldb-server"
+            return 1
+        fi
+    fi
+    
+    qjs_log "lldb-server started successfully"
+    return 0
 }
 
 qjs_check_lldb_server() {
-    adb shell "ps -A | grep lldb-server" | grep -q "lldb-server"
+    adb shell "ps -A | grep lldb-server" 2>/dev/null | grep -q "lldb-server"
+}
+
+qjs_check_lldb_binary() {
+    adb shell "test -f $QJS_LLDB_SERVER && test -x $QJS_LLDB_SERVER" 2>/dev/null
 }
 
 qjs_stop_lldb_server() {
-    adb shell "pkill -9 -f lldb-server" 2>/dev/null
+    qjs_info "Stopping any existing lldb-server..."
+    adb shell "pkill -9 -f lldb-server" 2>/dev/null || true
+    sleep 0.5
 }
 
 # ============================================================================

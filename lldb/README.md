@@ -1,10 +1,16 @@
-# QuickJS Debug System - Improved
+# QuickJS Debug System - Fixed
 
 A fixed and improved debugging system for investigating QuickJS shape corruption issues in the bgmdwnldr app.
 
 ## Quick Start (Recommended)
 
-The fastest way to start debugging:
+First, verify your setup:
+
+```bash
+./lldb/scripts/verify.sh
+```
+
+Then start debugging:
 
 ```bash
 ./lldb/quickstart.sh
@@ -15,30 +21,50 @@ This will:
 2. Start lldb-server on the device
 3. Start the app if not running
 4. Launch LLDB with the comprehensive debug profile
-5. Provide instructions for triggering the crash
+5. Configure crash signal handling (SIGSEGV, SIGBUS, SIGILL, SIGABRT)
+6. Set up stop-hooks for automatic crash detection
+7. Provide instructions for triggering the crash
 
 Then in another terminal:
 ```bash
 ./lldb/scripts/trigger-crash.sh
 ```
 
+When a crash occurs, LLDB will automatically:
+- Stop execution
+- Print crash details (signal, registers, backtrace)
+- Show the current function and PC
+- Allow you to inspect the state
+
 ## What's Fixed
 
-### 1. Python Syntax Error (cli.py)
+### 1. Missing Stop-Hook Registration (CRITICAL)
+- **Problem**: The `on_stop` handlers in modules were never connected to LLDB's event system
+- **Fix**: Added proper `target stop-hook add` commands in all scripts and the `qjs_handle_stop_event` function in main.py
+
+### 2. SIGSEGV Not Caught (CRITICAL)
+- **Problem**: LLDB was not configured to stop on SIGSEGV signals
+- **Fix**: Added `process handle SIGSEGV --stop=true --notify=true --pass=false` in all init scripts, plus SIGBUS, SIGILL, SIGABRT
+
+### 3. Process Attachment on Emulator
+- **Problem**: Scripts didn't wait for proper attachment or use `adb root` for better debugging access
+- **Fix**: Added `adb root` before attachment, better error handling, and verification that lldb-server is running
+
+### 4. Python Syntax Error (cli.py)
 - **Problem**: `async` is a reserved keyword in Python 3.7+
 - **Fix**: Renamed parameter to `--async-mode` / `async_mode`
 
-### 2. Remote Debugging
+### 5. Remote Debugging
 - **Problem**: Old scripts used `lldb -p` for local processes
 - **Fix**: Now properly uses `platform select remote-android` and `platform connect`
 
-### 3. Interactive Mode
-- **Problem**: Batch mode with `continue` doesn't stop on crash
-- **Fix**: Interactive session allows proper debugging when crash occurs
+### 6. Device Detection
+- **Problem**: cli.py incorrectly excluded emulators from device detection
+- **Fix**: Updated check_device() to properly detect both physical devices and emulators
 
-### 4. Crash Detection
+### 7. Crash Detection
 - **Problem**: No automatic crash detection or capture
-- **Fix**: New `debug-catch.sh` monitors logcat and captures tombstones
+- **Fix**: New `debug-catch.sh` monitors logcat and captures tombstones, plus all scripts now register stop-hooks
 
 ## Available Scripts
 
@@ -131,10 +157,36 @@ adb shell chmod +x /data/local/tmp/lldb-server
 ```
 
 ### "attach failed: Operation not permitted"
-The old scripts tried to use local process attachment. Use the new scripts which properly use remote platform debugging.
+The old scripts tried to use local process attachment. Use the new scripts which properly use remote platform debugging. Also try running `adb root` first.
 
-### Crash not caught
-Make sure to trigger the crash AFTER LLDB has attached and shown the "READY" message.
+### Crash not caught / SIGSEGV not stopping
+Make sure to trigger the crash AFTER LLDB has attached and shown the "READY" message. The new scripts configure signal handling automatically. If you still have issues:
+
+1. Verify with `./lldb/scripts/verify.sh`
+2. Check that `process handle` commands are in the init script:
+   ```bash
+   cat /tmp/qjs_quickstart.txt | grep "process handle"
+   ```
+3. Make sure stop-hook is registered:
+   ```
+   (lldb) target stop-hook list
+   ```
+
+### "lldb-server not found on device"
+Push the lldb-server from your NDK:
+```bash
+NDK=$(find $ANDROID_HOME/ndk -name "lldb-server" -type f | grep aarch64 | head -1)
+adb push "$NDK" /data/local/tmp/
+adb shell chmod +x /data/local/tmp/lldb-server
+```
+
+### "Cannot connect to platform"
+Make sure lldb-server is running:
+```bash
+adb shell "ps -A | grep lldb"
+# If not running:
+./lldb/scripts/verify.sh
+```
 
 ## Files Overview
 

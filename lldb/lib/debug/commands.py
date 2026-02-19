@@ -3,7 +3,7 @@ Simplified command registration.
 """
 
 import lldb
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 from dataclasses import dataclass
 
 

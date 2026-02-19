@@ -26,6 +26,67 @@ from modules import AVAILABLE_MODULES
 _session: 'DebugSession' = None
 
 
+def qjs_handle_stop_event(frame, bp_loc, dict):
+    """
+    Stop hook callback - called by LLDB when the process stops.
+    Returns True to stop, False to continue.
+    """
+    global _session
+    
+    if not _session:
+        return True
+    
+    thread = frame.GetThread()
+    process = thread.GetProcess()
+    target = process.GetTarget()
+    
+    # Check for crash signals first
+    stop_reason = thread.GetStopReason()
+    is_crash = False
+    
+    if stop_reason == lldb.eStopReasonSignal:
+        signo = thread.GetStopReasonDataAtIndex(0)
+        
+        # SIGSEGV (11), SIGBUS (7), SIGILL (4), SIGABRT (6)
+        if signo in [11, 7, 4, 6]:
+            is_crash = True
+            sig_names = {11: 'SIGSEGV', 7: 'SIGBUS', 4: 'SIGILL', 6: 'SIGABRT'}
+            sig_name = sig_names.get(signo, f'Signal {signo}')
+            
+            print("\n" + "!" * 70)
+            print(f"!!! CRASH DETECTED: {sig_name} !!!")
+            print("!" * 70)
+            print(f"Frame: {frame.GetFunctionName()}")
+            print(f"PC: {frame.GetPCAddress()}")
+            
+            # Print registers
+            print("\n--- Registers ---")
+            for reg_name in ['x0', 'x1', 'x2', 'x3', 'x28', 'lr', 'sp', 'pc']:
+                reg = frame.FindRegister(reg_name)
+                if reg and reg.GetValue():
+                    print(f"  {reg_name}: {reg.GetValue()}")
+            
+            # Print backtrace
+            print("\n--- Backtrace ---")
+            for i, f in enumerate(thread.frames[:10]):
+                func = f.GetFunctionName() or "???"
+                pc = f.GetPCAddress().GetLoadAddress(target)
+                print(f"  #{i}: 0x{pc:x} {func}")
+            
+            print("!" * 70 + "\n")
+    
+    # Dispatch to modules
+    try:
+        should_stop = _session.on_stop(frame)
+        # Always stop on crashes
+        if is_crash:
+            should_stop = True
+        return should_stop
+    except Exception as e:
+        print(f"[QJS] Error in stop hook: {e}")
+        return True  # Stop on error
+
+
 def qjs_debug(debugger, command, result, internal_dict):
     """
     Start debugging with specified profile.
@@ -64,6 +125,35 @@ def qjs_debug(debugger, command, result, internal_dict):
     profile = profile_class()
     profile.configure(_session)
     
+    # Set up stop hook for crash detection
+    if target:
+        # Create a breakpoint that acts as a stop hook
+        # We'll use a synthetic breakpoint that never gets hit, but has a callback
+        # Actually, let's use a real stop-hook via command
+        
+        # Set up signal handling for crash detection
+        if process:
+            # Ensure SIGSEGV and other crash signals are set to stop
+            signals = process.GetUnixSignals()
+            if signals.IsValid():
+                signals.SetShouldStop(11, True)   # SIGSEGV
+                signals.SetShouldNotify(11, True)
+                signals.SetShouldStop(7, True)    # SIGBUS
+                signals.SetShouldNotify(7, True)
+                signals.SetShouldStop(4, True)    # SIGILL
+                signals.SetShouldNotify(4, True)
+                signals.SetShouldStop(6, True)    # SIGABRT
+                signals.SetShouldNotify(6, True)
+        
+        # Add a breakpoint at a function that gets called frequently
+        # to act as our stop hook dispatcher
+        # Actually, use a different approach: add a breakpoint with script callback
+        # on a common function like "malloc" or just use process events
+        
+        # Simpler approach: create a dummy breakpoint that auto-continues
+        # and set up the real stop handling through the process events
+        # For now, we'll rely on the user running 'continue' and the signal handling
+    
     result.write(f"\n{'='*70}\n")
     result.write(f"QuickJS Debug System - Profile: {profile_name}\n")
     result.write(f"{'='*70}\n")
@@ -76,6 +166,12 @@ def qjs_debug(debugger, command, result, internal_dict):
     result.write("  qjs-module-add   - Add a module dynamically\n")
     result.write("  qjs-dump-obj <addr> - Inspect object at address\n")
     result.write("  continue         - Continue execution\n\n")
+    
+    # Add note about signal handling
+    if target and target.GetProcess():
+        result.write("Signal handling configured:\n")
+        result.write("  SIGSEGV, SIGBUS, SIGILL, SIGABRT -> STOP\n")
+        result.write("The debugger will automatically stop on crashes.\n\n")
 
 
 def qjs_module_add(debugger, command, result, internal_dict):
@@ -183,6 +279,7 @@ def qjs_list_modules(debugger, command, result, internal_dict):
             result.write(f"  {name:15} - {module.description}\n")
         except:
             result.write(f"  {name}\n")
+
 
 
 def __lldb_init_module(debugger, internal_dict):
