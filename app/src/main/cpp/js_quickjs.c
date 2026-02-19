@@ -1011,8 +1011,9 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     if (JS_IsException(default_result)) {
         GCValue exception = JS_GetException(ctx);
         const char *error = JS_ToCString(ctx, exception);
+        __android_log_print(ANDROID_LOG_WARN, "js_quickjs", 
+            "Default video script threw exception: %s", error ? error : "(null)");
         JS_FreeCString(ctx, error);
-
     }
 
     // Note: Data payload scripts (ytInitialPlayerResponse, ytInitialData, etc.)
@@ -1093,12 +1094,11 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
                 }
             }
             
-            JS_FreeCString(ctx, stack);
-
-            JS_FreeCString(ctx, error);
-            
             __android_log_print(ANDROID_LOG_WARN, "js_quickjs", 
                 "[EXEC] Script %d threw exception: %s", i, error ? error : "(null)");
+            
+            JS_FreeCString(ctx, stack);
+            JS_FreeCString(ctx, error);
 
         } else {
             success_count++;
@@ -1243,8 +1243,9 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     if (JS_IsException(init_result)) {
         GCValue exception = JS_GetException(ctx);
         const char *error = JS_ToCString(ctx, exception);
+        __android_log_print(ANDROID_LOG_WARN, "js_quickjs", 
+            "Init player script threw exception: %s", error ? error : "(null)");
         JS_FreeCString(ctx, error);
-
     }
 
     // Get captured URLs
