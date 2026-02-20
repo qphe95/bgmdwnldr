@@ -955,7 +955,7 @@ typedef struct JSProperty {
             GCHandle getter_handle; /* GC_HANDLE_NULL if undefined */
             GCHandle setter_handle; /* GC_HANDLE_NULL if undefined */
         } getset;
-        JSVarRef *var_ref;  /* JS_PROP_VARREF */
+        GCHandle var_ref_handle;  /* JS_PROP_VARREF - handle to JSVarRef */
         struct {            /* JS_PROP_AUTOINIT */
             /* in order to use only 2 pointers, we compress the realm
                and the init function pointer */
@@ -6614,7 +6614,9 @@ static void free_property(JSRuntime *rt, JSProperty *pr, int prop_flags)
 {
     if (unlikely(prop_flags & JS_PROP_TMASK)) {
         if ((prop_flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
-            free_var_ref(rt, pr->u.var_ref);
+            JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
+            if (var_ref)
+                free_var_ref(rt, var_ref);
         } else if ((prop_flags & JS_PROP_TMASK) == JS_PROP_AUTOINIT) {
             js_autoinit_free(rt, pr);
         }
@@ -7244,7 +7246,9 @@ static void mark_children(JSRuntime *rt, void *user_ptr,
                         } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
                             /* Note: the tag does not matter
                                provided it is a GC object */
-                            mark_func(rt, pr->u.var_ref);
+                            JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
+                            if (var_ref)
+                                mark_func(rt, var_ref);
                         } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_AUTOINIT) {
                             js_autoinit_mark(rt, pr, mark_func);
                         }
@@ -9097,8 +9101,9 @@ static int JS_AutoInitProperty(JSContext *ctx, JSObject *p, JSAtom prop,
     if (id == JS_AUTOINIT_ID_MODULE_NS &&
         JS_VALUE_GET_TAG(val) == JS_TAG_STRING) {
         /* WARNING: a varref is returned as a string  ! */
+        JSVarRef *var_ref = JS_VALUE_GET_PTR(val);
         prs->flags |= JS_PROP_VARREF;
-        pr->u.var_ref = JS_VALUE_GET_PTR(val);
+        pr->u.var_ref_handle = gc_ptr_to_handle(var_ref);
         /* ref_count removed - using mark-and-sweep GC */
     } else if (p->class_id == JS_CLASS_GLOBAL_OBJECT) {
         JSVarRef *var_ref;
@@ -9107,7 +9112,7 @@ static int JS_AutoInitProperty(JSContext *ctx, JSObject *p, JSAtom prop,
         if (!var_ref)
             return -1;
         prs->flags |= JS_PROP_VARREF;
-        pr->u.var_ref = var_ref;
+        pr->u.var_ref_handle = gc_ptr_to_handle(var_ref);
         var_ref->value = val; 
         var_ref->is_const = !(prs->flags & JS_PROP_WRITABLE);
     } else {
@@ -9224,7 +9229,10 @@ GCValue JS_GetPropertyInternal(JSContext *ctx, GCValue obj,
                         return JS_CallFree(ctx, func, this_obj, 0, NULL);
                     }
                 } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
-                    GCValue val = *pr->u.var_ref->pvalue;
+                    JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
+                    if (unlikely(!var_ref))
+                        return JS_ThrowReferenceErrorUninitialized(ctx, prs->atom);
+                    GCValue val = *var_ref->pvalue;
                     if (unlikely(JS_IsUninitialized(val)))
                         return JS_ThrowReferenceErrorUninitialized(ctx, prs->atom);
                     return val;
@@ -9594,8 +9602,8 @@ static int __exception JS_GetOwnPropertyNamesInternal(JSContext *ctx,
                    name space (implicit GetOwnProperty) */
                 if (unlikely((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) &&
                     (flags & (JS_GPN_SET_ENUM | JS_GPN_ENUM_ONLY))) {
-                    JSVarRef *var_ref = p_prop[i].u.var_ref;
-                    if (unlikely(JS_IsUninitialized(*var_ref->pvalue))) {
+                    JSVarRef *var_ref = (JSVarRef *)gc_deref(p_prop[i].u.var_ref_handle);
+                    if (unlikely(!var_ref || JS_IsUninitialized(*var_ref->pvalue))) {
                         JS_ThrowReferenceErrorUninitialized(ctx, prs->atom);
                         return -1;
                     }
@@ -9796,7 +9804,12 @@ retry:
                     if (pr->u.getset.setter_handle != GC_HANDLE_NULL)
                         desc->setter = GC_MKHANDLE(JS_TAG_OBJECT, pr->u.getset.setter_handle);
                 } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
-                    GCValue val = *pr->u.var_ref->pvalue;
+                    JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
+                    if (unlikely(!var_ref)) {
+                        JS_ThrowReferenceErrorUninitialized(ctx, prs->atom);
+                        return -1;
+                    }
+                    GCValue val = *var_ref->pvalue;
                     if (unlikely(JS_IsUninitialized(val))) {
                         JS_ThrowReferenceErrorUninitialized(ctx, prs->atom);
                         return -1;
@@ -9814,7 +9827,8 @@ retry:
         } else {
             /* for consistency, send the exception even if desc is NULL */
             if (unlikely((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF)) {
-                if (unlikely(JS_IsUninitialized(*pr->u.var_ref->pvalue))) {
+                JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
+                if (unlikely(!var_ref || JS_IsUninitialized(*var_ref->pvalue))) {
                     JS_ThrowReferenceErrorUninitialized(ctx, prs->atom);
                     return -1;
                 }
@@ -10242,12 +10256,12 @@ static no_inline __exception int convert_fast_array_to_array(JSContext *ctx,
     }
 
     if (p->class_id == JS_CLASS_MAPPED_ARGUMENTS) {
-        JSVarRef **tab = (JSVarRef **)gc_deref(p->u.array.u.var_refs_handle);
+        GCHandle *tab = (GCHandle *)gc_deref(p->u.array.u.var_refs_handle);
         for(i = 0; i < len; i++) {
             /* add_property cannot fail here but
                __JS_AtomFromUInt32(i) fails for i > INT32_MAX */
             pr = add_property(ctx, p, __JS_AtomFromUInt32(i), JS_PROP_C_W_E | JS_PROP_VARREF);
-            pr->u.var_ref = *tab++;
+            pr->u.var_ref_handle = tab[i];
         }
     } else {
         GCValue *tab = p_array_values;
@@ -10273,20 +10287,24 @@ static int remove_global_object_property(JSContext *ctx, JSObject *p,
     JSVarRef *var_ref;
     JSObject *p1;
     JSProperty *pr1;
+    GCHandle var_ref_handle;
     
-    var_ref = pr->u.var_ref;
+    var_ref_handle = pr->u.var_ref_handle;
+    var_ref = (JSVarRef *)gc_deref(var_ref_handle);
     /* ref_count check removed - using mark-and-sweep GC */
     (void)var_ref;
     p1 = JS_VALUE_GET_OBJ(p->u.global_object.uninitialized_vars);
     pr1 = add_property(ctx, p1, prs->atom, JS_PROP_C_W_E | JS_PROP_VARREF);
     if (!pr1)
         return -1;
-    pr1->u.var_ref = var_ref;
+    pr1->u.var_ref_handle = var_ref_handle;
     /* ref_count removed - using mark-and-sweep GC */
     
-    var_ref->is_lexical = FALSE;
-    var_ref->is_const = FALSE;
-    var_ref->value = JS_UNINITIALIZED;
+    if (var_ref) {
+        var_ref->is_lexical = FALSE;
+        var_ref->is_const = FALSE;
+        var_ref->value = JS_UNINITIALIZED;
+    }
     return 0;
 }
 
@@ -10730,9 +10748,11 @@ int JS_SetPropertyInternal(JSContext *ctx, GCValue obj,
         } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
             /* XXX: already use var_ref->is_const. Cannot simplify use the
                writable flag for JS_CLASS_MODULE_NS. */
-            if (p->class_id == JS_CLASS_MODULE_NS || pr->u.var_ref->is_const)
+            JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
+            if (p->class_id == JS_CLASS_MODULE_NS || (var_ref && var_ref->is_const))
                 goto read_only_prop;
-            set_value(ctx, pr->u.var_ref->pvalue, val);
+            if (var_ref)
+                set_value(ctx, var_ref->pvalue, val);
             return TRUE;
         } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_AUTOINIT) {
             /* Instantiate property and retry (potentially useless) */
@@ -11238,7 +11258,7 @@ static int JS_CreateProperty(JSContext *ctx, JSObject *p,
             prs1 = find_own_property(&pr1, p1, prop);
             if (prs1) {
                 delete_obj = p1;
-                var_ref = pr1->u.var_ref;
+                var_ref = (JSVarRef *)gc_deref(pr1->u.var_ref_handle);
                 /* ref_count removed - using mark-and-sweep GC */
             } else {
                 var_ref = js_create_var_ref(ctx, FALSE);
@@ -11267,7 +11287,7 @@ static int JS_CreateProperty(JSContext *ctx, JSObject *p,
     } else if (p->class_id == JS_CLASS_GLOBAL_OBJECT) {
         if (delete_obj)
             delete_property(ctx, delete_obj, prop);
-        pr->u.var_ref = var_ref;
+        pr->u.var_ref_handle = gc_ptr_to_handle(var_ref);
         if (flags & JS_PROP_HAS_VALUE) {
             *var_ref->pvalue = val;
         } else {
@@ -11443,7 +11463,7 @@ int JS_DefineProperty(JSContext *ctx, GCValue this_obj,
                             if (remove_global_object_property(ctx, p, prs, pr))
                                 return -1;
                         }
-                        free_var_ref(ctx_rt, pr->u.var_ref);
+                        { JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle); if (var_ref) free_var_ref(ctx_rt, var_ref); };
                     } else {
                         
                     }
@@ -11493,7 +11513,7 @@ int JS_DefineProperty(JSContext *ctx, GCValue this_obj,
                     if (var_ref) {
                         prs->flags = (prs->flags & ~JS_PROP_TMASK) |
                             JS_PROP_VARREF | JS_PROP_WRITABLE;
-                        pr->u.var_ref = var_ref;
+                        pr->u.var_ref_handle = gc_ptr_to_handle(var_ref);
                     } else {
                         prs->flags &= ~(JS_PROP_TMASK | JS_PROP_WRITABLE);
                         pr->u.value = JS_UNDEFINED;
@@ -11511,17 +11531,18 @@ int JS_DefineProperty(JSContext *ctx, GCValue this_obj,
                     }
                 }
                 if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
+                    JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
+                    if (!var_ref) return JS_ThrowTypeErrorOrFalse(ctx, flags, "invalid var_ref");
                     if (flags & JS_PROP_HAS_VALUE) {
                         if (p->class_id == JS_CLASS_MODULE_NS) {
                             /* JS_PROP_WRITABLE is always true for variable
                                references, but they are write protected in module name
                                spaces. */
-                            if (!js_same_value(ctx, val, *pr->u.var_ref->pvalue))
+                            if (!js_same_value(ctx, val, *var_ref->pvalue))
                                 goto not_configurable;
                         } else {
                             /* update the reference */
-                            set_value(ctx, pr->u.var_ref->pvalue,
-                                      val);
+                            set_value(ctx, var_ref->pvalue, val);
                         }
                     }
                     if ((flags & (JS_PROP_HAS_WRITABLE | JS_PROP_WRITABLE)) == JS_PROP_HAS_WRITABLE) {
@@ -11532,13 +11553,13 @@ int JS_DefineProperty(JSContext *ctx, GCValue this_obj,
                         if (js_shape_prepare_update(ctx, p, &prs))
                             return -1;
                         if (p->class_id == JS_CLASS_GLOBAL_OBJECT) {
-                            pr->u.var_ref->is_const = TRUE; /* mark as read-only */
+                            var_ref->is_const = TRUE; /* mark as read-only */
                             prs->flags &= ~JS_PROP_WRITABLE;
                         } else {
                             /* if writable is set to false, no longer a
                                reference (for mapped arguments) */
-                            val1 = *pr->u.var_ref->pvalue;
-                            free_var_ref(ctx_rt, pr->u.var_ref);
+                            val1 = *var_ref->pvalue;
+                            free_var_ref(ctx_rt, var_ref);
                             pr->u.value = val1;
                             prs->flags &= ~(JS_PROP_TMASK | JS_PROP_WRITABLE);
                         }
@@ -11886,7 +11907,8 @@ static int JS_GetGlobalVarRef(JSContext *ctx, JSAtom prop, GCValue *sp)
     if (prs) {
         /* XXX: conformance: do these tests in
            OP_put_var_ref/OP_get_var_ref ? */
-        if (unlikely(JS_IsUninitialized(*pr->u.var_ref->pvalue))) {
+        JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
+        if (unlikely(!var_ref || JS_IsUninitialized(*var_ref->pvalue))) {
             JS_ThrowReferenceErrorUninitialized(ctx, prs->atom);
             return -1;
         }
@@ -15240,10 +15262,11 @@ static void js_print_object(JSPrintValueState *s, JSObject *p)
                             }
                         }
                     } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
+                        JSVarRef *var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
                         if (s->options.raw_dump) {
-                            js_printf(s, "[varref %p]", (void *)pr->u.var_ref);
-                        } else {
-                            js_print_value(s, *pr->u.var_ref->pvalue);
+                            js_printf(s, "[varref %p]", (void *)var_ref);
+                        } else if (var_ref) {
+                            js_print_value(s, *var_ref->pvalue);
                         }
                     } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_AUTOINIT) {
                         if (s->options.raw_dump) {
@@ -18129,7 +18152,7 @@ static JSVarRef *js_global_object_get_uninitialized_var(JSContext *ctx, JSObject
     prs = find_own_property(&pr, p, atom);
     if (prs) {
         assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
-        var_ref = pr->u.var_ref;
+        var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
         /* ref_count removed - using mark-and-sweep GC */
         return var_ref;
     }
@@ -18142,7 +18165,7 @@ static JSVarRef *js_global_object_get_uninitialized_var(JSContext *ctx, JSObject
         free_var_ref(ctx_rt, var_ref);
         return GC_HANDLE_NULL;
     }
-    pr->u.var_ref = var_ref;
+    pr->u.var_ref_handle = gc_ptr_to_handle(var_ref);
     /* ref_count removed - using mark-and-sweep GC */
     return var_ref;
 }
@@ -18161,7 +18184,7 @@ static JSVarRef *js_global_object_find_uninitialized_var(JSContext *ctx, JSObjec
     prs = find_own_property(&pr, p1, atom);
     if (prs) {
         assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
-        var_ref = pr->u.var_ref;
+        var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
         /* ref_count removed - using mark-and-sweep GC */
         delete_property(ctx, p1, atom);
         if (!is_lexical)
@@ -18192,7 +18215,7 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
         prs = find_own_property(&pr, p, cv->var_name);
         if (prs) {
             assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
-            var_ref = pr->u.var_ref;
+            var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
             /* ref_count removed - using mark-and-sweep GC */
             return var_ref;
         }
@@ -18206,10 +18229,10 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
             var_ref1 = js_create_var_ref(ctx, FALSE);
             if (!var_ref1)
                 return GC_HANDLE_NULL;
-            var_ref = pr->u.var_ref;
+            var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
             var_ref1->value = var_ref->value;
             var_ref->value = JS_UNINITIALIZED;
-            pr->u.var_ref = var_ref1;
+            pr->u.var_ref_handle = gc_ptr_to_handle(var_ref1);
             goto add_var_ref;
         }
     } else {
@@ -18230,7 +18253,7 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
                 if (!var_ref)
                     return GC_HANDLE_NULL;
             } else {
-                var_ref = pr->u.var_ref;
+                var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
                 /* ref_count removed - using mark-and-sweep GC */
             }
             if (cv->var_kind == JS_VAR_GLOBAL_FUNCTION_DECL &&
@@ -18240,7 +18263,7 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
                 if ((prs->flags & JS_PROP_TMASK) == JS_PROP_GETSET) {
                     free_property(ctx_rt, pr, prs->flags);
                     prs->flags = flags | JS_PROP_VARREF;
-                    pr->u.var_ref = var_ref;
+                    pr->u.var_ref_handle = gc_ptr_to_handle(var_ref);
                     /* ref_count removed - using mark-and-sweep GC */
                 } else {
                     assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
@@ -18272,7 +18295,7 @@ static JSVarRef *js_closure_define_global_var(JSContext *ctx, JSClosureVar *cv,
         free_var_ref(ctx_rt, var_ref);
         return GC_HANDLE_NULL;
     }
-    pr->u.var_ref = var_ref;
+    pr->u.var_ref_handle = gc_ptr_to_handle(var_ref);
     /* ref_count removed - using mark-and-sweep GC */
     
     /* bgmdwnldr: sync global var to window object */
@@ -18294,7 +18317,7 @@ static JSVarRef *js_closure_global_var(JSContext *ctx, JSClosureVar *cv)
     prs = find_own_property(&pr, p, cv->var_name);
     if (prs) {
         assert((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF);
-        var_ref = pr->u.var_ref;
+        var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
         /* ref_count removed - using mark-and-sweep GC */
         return var_ref;
     }
@@ -18309,7 +18332,7 @@ static JSVarRef *js_closure_global_var(JSContext *ctx, JSClosureVar *cv)
             goto redo;
         }
         if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
-            var_ref = pr->u.var_ref;
+            var_ref = (JSVarRef *)gc_deref(pr->u.var_ref_handle);
             /* ref_count removed - using mark-and-sweep GC */
             return var_ref;
         }
@@ -19875,7 +19898,7 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
                     free_var_ref(rt, var_ref);
                     goto exception;
                 }
-                pr->u.var_ref = var_ref;
+                pr->u.var_ref_handle = gc_ptr_to_handle(var_ref);
                 *sp++ = JS_AtomToValue(ctx, atom);
             }
             BREAK;
@@ -31326,8 +31349,8 @@ typedef struct ExportedNameEntry {
     JSAtom export_name;
     ExportedNameEntryEnum export_type;
     union {
-        JSExportEntry *me; /* using when the list is built */
-        JSVarRef *var_ref; /* EXPORTED_NAME_NORMAL */
+        JSExportEntry *me; /* using when the list is built - self pointer, not GC object */
+        GCHandle var_ref_handle; /* EXPORTED_NAME_NORMAL - handle to JSVarRef */
     } u;
 } ExportedNameEntry;
 
@@ -31507,12 +31530,12 @@ static GCValue js_build_module_ns(JSContext *ctx, JSModuleDef *m)
                 en->export_type = EXPORTED_NAME_DELAYED;
             } else {
                 if (res_me->u.local.var_ref_handle != GC_HANDLE_NULL) {
-                    en->u.var_ref = (JSVarRef *)gc_deref(res_me->u.local.var_ref_handle);
+                    en->u.var_ref_handle = res_me->u.local.var_ref_handle;
                 } else {
                     JSObject *p1 = JS_VALUE_GET_OBJ(res_m->func_obj);
-                    en->u.var_ref = ((JSVarRef **)gc_deref(p1->u.func.var_refs_handle))[res_me->u.local.var_idx];
+                    en->u.var_ref_handle = ((GCHandle *)gc_deref(p1->u.func.var_refs_handle))[res_me->u.local.var_idx];
                 }
-                if (en->u.var_ref == NULL)
+                if (en->u.var_ref_handle == GC_HANDLE_NULL)
                     en->export_type = EXPORTED_NAME_DELAYED;
                 else
                     en->export_type = EXPORTED_NAME_NORMAL;
@@ -31529,14 +31552,14 @@ static GCValue js_build_module_ns(JSContext *ctx, JSModuleDef *m)
         switch(en->export_type) {
         case EXPORTED_NAME_NORMAL:
             {
-                JSVarRef *var_ref = en->u.var_ref;
+                JSVarRef *var_ref = (JSVarRef *)gc_deref(en->u.var_ref_handle);
                 pr = add_property(ctx, p, en->export_name,
                                   JS_PROP_ENUMERABLE | JS_PROP_WRITABLE |
                                   JS_PROP_VARREF);
                 if (!pr)
                     goto fail;
                 /* ref_count removed - using mark-and-sweep GC */
-                pr->u.var_ref = var_ref;
+                pr->u.var_ref_handle = gc_ptr_to_handle(var_ref);
             }
             break;
         case EXPORTED_NAME_DELAYED:
@@ -54100,7 +54123,7 @@ typedef struct JSPromiseFunctionDataResolved {
 
 typedef struct JSPromiseFunctionData {
     GCValue promise;
-    JSPromiseFunctionDataResolved *presolved;
+    GCHandle presolved_handle; /* Handle to JSPromiseFunctionDataResolved, GC_HANDLE_NULL if not resolved */
 } JSPromiseFunctionData;
 
 typedef struct JSPromiseReactionData {
@@ -54301,7 +54324,7 @@ static int js_create_resolving_functions(JSContext *ctx,
             break;
         }
         sr->ref_count++;
-        s->presolved = sr;
+        s->presolved_handle = gc_ptr_to_handle(sr);
         s->promise = promise;
         JS_SetOpaque(obj, s);
         js_function_set_properties(ctx, obj, JS_ATOM_empty_string, 1);
@@ -54315,7 +54338,9 @@ static void js_promise_resolve_function_finalizer(JSRuntime *rt, GCValue val)
 {
     JSPromiseFunctionData *s = (JSPromiseFunctionData *)gc_deref(JS_VALUE_GET_OBJ(val)->u.promise_function_data_handle);
     if (s) {
-        js_promise_resolve_function_free_resolved(rt, s->presolved);
+        JSPromiseFunctionDataResolved *presolved = (JSPromiseFunctionDataResolved *)gc_deref(s->presolved_handle);
+        if (presolved)
+            js_promise_resolve_function_free_resolved(rt, presolved);
         
         /* GC frees automatically */;
     }
@@ -54338,14 +54363,18 @@ static GCValue js_promise_resolve_function_call(JSContext *ctx,
 {
     JSObject *p = JS_VALUE_GET_OBJ(func_obj);
     JSPromiseFunctionData *s;
+    JSPromiseFunctionDataResolved *presolved;
     GCValue resolution, args[3];
     GCValue then;
     BOOL is_reject;
 
     s = (JSPromiseFunctionData *)gc_deref(p->u.promise_function_data_handle);
-    if (!s || s->presolved->already_resolved)
+    if (!s || s->presolved_handle == GC_HANDLE_NULL)
         return JS_UNDEFINED;
-    s->presolved->already_resolved = TRUE;
+    presolved = (JSPromiseFunctionDataResolved *)gc_deref(s->presolved_handle);
+    if (!presolved || presolved->already_resolved)
+        return JS_UNDEFINED;
+    presolved->already_resolved = TRUE;
     is_reject = p->class_id - JS_CLASS_PROMISE_RESOLVE_FUNCTION;
     if (argc > 0)
         resolution = argv[0];
