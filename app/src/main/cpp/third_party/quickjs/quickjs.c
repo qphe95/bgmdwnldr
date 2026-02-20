@@ -1189,7 +1189,7 @@ typedef struct JSMapRecord {
     int ref_count; /* used during enumeration to avoid freeing the record */
     BOOL empty : 8; /* TRUE if the record is deleted */
     struct list_head link;
-    struct JSMapRecord *hash_next;
+    GCHandle hash_next_handle; /* Handle to next JSMapRecord in hash chain (GC_HANDLE_NULL if none) */
     GCValue key;
     GCValue value;
 } JSMapRecord;
@@ -1198,13 +1198,16 @@ typedef struct JSMapState {
     BOOL is_weak; /* TRUE if WeakSet/WeakMap */
     struct list_head records; /* list of JSMapRecord.link */
     uint32_t record_count;
-    JSMapRecord **hash_table;
+    GCHandle hash_table_handle; /* Handle to array of GCHandle (JSMapRecord handles) */
     int hash_bits;
     uint32_t hash_size; /* = 2 ^ hash_bits */
     uint32_t record_count_threshold; /* count at which a hash table
                                         resize is needed */
     JSWeakRefHeader weakref_header; /* only used if is_weak = TRUE */
 } JSMapState;
+
+/* Accessor for hash_table */
+#define ms_hash_table ((GCHandle*)gc_deref(s->hash_table_handle))
 
 /* Include GC handle access macros after type definitions */
 #include "../../gc_handle_access.h"
@@ -21883,16 +21886,19 @@ typedef enum JSGeneratorStateEnum {
 
 typedef struct JSGeneratorData {
     JSGeneratorStateEnum state;
-    JSAsyncFunctionState *func_state;
+    GCHandle func_state_handle; /* Handle to JSAsyncFunctionState, GC_HANDLE_NULL if completed */
 } JSGeneratorData;
 
 static void free_generator_stack_rt(JSRuntime *rt, JSGeneratorData *s)
 {
+    JSAsyncFunctionState *func_state;
     if (s->state == JS_GENERATOR_STATE_COMPLETED)
         return;
-    if (s->func_state) {
-        async_func_free(rt, s->func_state);
-        s->func_state = NULL;
+    if (s->func_state_handle != GC_HANDLE_NULL) {
+        func_state = (JSAsyncFunctionState *)gc_deref(s->func_state_handle);
+        if (func_state)
+            async_func_free(rt, func_state);
+        s->func_state_handle = GC_HANDLE_NULL;
     }
     s->state = JS_GENERATOR_STATE_COMPLETED;
 }
@@ -21917,10 +21923,13 @@ static void js_generator_mark(JSRuntime *rt, GCValue val,
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
     JSGeneratorData *s = (JSGeneratorData *)gc_deref(p->u.generator_data_handle);
+    JSAsyncFunctionState *func_state;
 
-    if (!s || !s->func_state)
+    if (!s || s->func_state_handle == GC_HANDLE_NULL)
         return;
-    mark_func(rt, s->func_state);
+    func_state = (JSAsyncFunctionState *)gc_deref(s->func_state_handle);
+    if (func_state)
+        mark_func(rt, func_state);
 }
 
 /* XXX: use enum */
@@ -21933,16 +21942,20 @@ static GCValue js_generator_next(JSContext *ctx, GCValue this_val,
                                  BOOL *pdone, int magic)
 {
     JSGeneratorData *s = JS_GetOpaque(this_val, JS_CLASS_GENERATOR);
+    JSAsyncFunctionState *func_state;
     JSStackFrame *sf;
     GCValue ret, func_ret;
 
     *pdone = TRUE;
     if (!s)
         return JS_ThrowTypeError(ctx, "not a generator");
+    func_state = (JSAsyncFunctionState *)gc_deref(s->func_state_handle);
+    if (!func_state && s->state != JS_GENERATOR_STATE_COMPLETED)
+        return JS_ThrowTypeError(ctx, "invalid generator state");
     switch(s->state) {
     default:
     case JS_GENERATOR_STATE_SUSPENDED_START:
-        sf = &s->func_state->frame;
+        sf = &func_state->frame;
         if (magic == GEN_MAGIC_NEXT) {
             goto exec_no_arg;
         } else {
@@ -21952,24 +21965,24 @@ static GCValue js_generator_next(JSContext *ctx, GCValue this_val,
         break;
     case JS_GENERATOR_STATE_SUSPENDED_YIELD_STAR:
     case JS_GENERATOR_STATE_SUSPENDED_YIELD:
-        sf = &s->func_state->frame;
+        sf = &func_state->frame;
         /* cur_sp[-1] was set to JS_UNDEFINED in the previous call */
         ret = argv[0];
         if (magic == GEN_MAGIC_THROW &&
             s->state == JS_GENERATOR_STATE_SUSPENDED_YIELD) {
             JS_Throw(ctx, ret);
-            s->func_state->throw_flag = TRUE;
+            func_state->throw_flag = TRUE;
         } else {
             sf->cur_sp[-1] = ret;
             sf->cur_sp[0] = JS_NewInt32(ctx, magic);
             sf->cur_sp++;
         exec_no_arg:
-            s->func_state->throw_flag = FALSE;
+            func_state->throw_flag = FALSE;
         }
         s->state = JS_GENERATOR_STATE_EXECUTING;
-        func_ret = async_func_resume(ctx, s->func_state);
+        func_ret = async_func_resume(ctx, func_state);
         s->state = JS_GENERATOR_STATE_SUSPENDED_YIELD;
-        if (s->func_state->is_completed) {
+        if (func_state->is_completed) {
             /* finalize the execution in case of exception or normal return */
             free_generator_stack(ctx, s);
             return func_ret;
@@ -22017,19 +22030,21 @@ static GCValue js_generator_function_call(JSContext *ctx, GCValue func_obj,
 {
     GCValue obj, func_ret;
     JSGeneratorData *s;
+    JSAsyncFunctionState *func_state;
 
     s = gc_deref(gc_allocz(sizeof(*s), JS_GC_OBJ_TYPE_DATA));
     if (!s)
         return JS_EXCEPTION;
     s->state = JS_GENERATOR_STATE_SUSPENDED_START;
-    s->func_state = async_func_init(ctx, func_obj, this_obj, argc, argv);
-    if (!s->func_state) {
+    func_state = async_func_init(ctx, func_obj, this_obj, argc, argv);
+    if (!func_state) {
         s->state = JS_GENERATOR_STATE_COMPLETED;
         goto fail;
     }
+    s->func_state_handle = gc_ptr_to_handle(func_state);
 
     /* execute the function up to 'OP_initial_yield' */
-    func_ret = async_func_resume(ctx, s->func_state);
+    func_ret = async_func_resume(ctx, func_state);
     if (JS_IsException(func_ret))
         goto fail;
     
@@ -22216,10 +22231,10 @@ typedef struct JSAsyncGeneratorRequest {
 } JSAsyncGeneratorRequest;
 
 typedef struct JSAsyncGeneratorData {
-    JSObject *generator; /* back pointer to the object (const) */
+    GCHandle generator_handle; /* back pointer to the async generator object */
     JSAsyncGeneratorStateEnum state;
-    /* func_state is NULL is state AWAITING_RETURN and COMPLETED */
-    JSAsyncFunctionState *func_state;
+    /* func_state_handle is GC_HANDLE_NULL in state AWAITING_RETURN and COMPLETED */
+    GCHandle func_state_handle; /* Handle to JSAsyncFunctionState */
     struct list_head queue; /* list of JSAsyncGeneratorRequest.link */
 } JSAsyncGeneratorData;
 
@@ -22228,6 +22243,7 @@ static void js_async_generator_free(JSRuntime *rt,
 {
     struct list_head *el, *el1;
     JSAsyncGeneratorRequest *req;
+    JSAsyncFunctionState *func_state;
 
     list_for_each_safe(el, el1, &s->queue) {
         req = list_entry(el, JSAsyncGeneratorRequest, link);
@@ -22237,8 +22253,11 @@ static void js_async_generator_free(JSRuntime *rt,
         
         /* GC frees automatically */;
     }
-    if (s->func_state)
-        async_func_free(rt, s->func_state);
+    if (s->func_state_handle != GC_HANDLE_NULL) {
+        func_state = (JSAsyncFunctionState *)gc_deref(s->func_state_handle);
+        if (func_state)
+            async_func_free(rt, func_state);
+    }
     /* GC frees automatically */;
 }
 
@@ -22257,6 +22276,7 @@ static void js_async_generator_mark(JSRuntime *rt, GCValue val,
     JSAsyncGeneratorData *s = JS_GetOpaque(val, JS_CLASS_ASYNC_GENERATOR);
     struct list_head *el;
     JSAsyncGeneratorRequest *req;
+    JSAsyncFunctionState *func_state;
     if (s) {
         list_for_each(el, &s->queue) {
             req = list_entry(el, JSAsyncGeneratorRequest, link);
@@ -22265,8 +22285,10 @@ static void js_async_generator_mark(JSRuntime *rt, GCValue val,
             JS_MarkValue(rt, req->resolving_funcs[0], mark_func);
             JS_MarkValue(rt, req->resolving_funcs[1], mark_func);
         }
-        if (s->func_state) {
-            mark_func(rt, s->func_state);
+        if (s->func_state_handle != GC_HANDLE_NULL) {
+            func_state = (JSAsyncFunctionState *)gc_deref(s->func_state_handle);
+            if (func_state)
+                mark_func(rt, func_state);
         }
     }
 }
@@ -22302,6 +22324,7 @@ static int js_async_generator_await(JSContext *ctx,
                                     GCValue value)
 {
     GCValue promise, resolving_funcs[2], resolving_funcs1[2];
+    JSObject *generator;
     int i, res;
 
     promise = js_promise_resolve(ctx, ctx->promise_ctor,
@@ -22309,7 +22332,10 @@ static int js_async_generator_await(JSContext *ctx,
     if (JS_IsException(promise))
         goto fail;
 
-    if (js_async_generator_resolve_function_create(ctx, JS_MKPTR(JS_TAG_OBJECT, s->generator),
+    generator = (JSObject *)gc_deref(s->generator_handle);
+    if (!generator)
+        goto fail;
+    if (js_async_generator_resolve_function_create(ctx, JS_MKPTR(JS_TAG_OBJECT, generator),
                                                    resolving_funcs, FALSE)) {
         
         goto fail;
@@ -22374,10 +22400,15 @@ static void js_async_generator_reject(JSContext *ctx,
 static void js_async_generator_complete(JSContext *ctx,
                                         JSAsyncGeneratorData *s)
 {
+    JSAsyncFunctionState *func_state;
     if (s->state != JS_ASYNC_GENERATOR_STATE_COMPLETED) {
         s->state = JS_ASYNC_GENERATOR_STATE_COMPLETED;
-        async_func_free(ctx_rt, s->func_state);
-        s->func_state = NULL;
+        if (s->func_state_handle != GC_HANDLE_NULL) {
+            func_state = (JSAsyncFunctionState *)gc_deref(s->func_state_handle);
+            if (func_state)
+                async_func_free(ctx_rt, func_state);
+            s->func_state_handle = GC_HANDLE_NULL;
+        }
     }
 }
 
@@ -22386,6 +22417,7 @@ static int js_async_generator_completed_return(JSContext *ctx,
                                                GCValue value)
 {
     GCValue promise, resolving_funcs[2], resolving_funcs1[2];
+    JSObject *generator;
     int res;
 
     // Can fail looking up JS_ATOM_constructor when is_reject==0.
@@ -22401,8 +22433,11 @@ static int js_async_generator_completed_return(JSContext *ctx,
         if (JS_IsException(promise))
             return -1;
     }
+    generator = (JSObject *)gc_deref(s->generator_handle);
+    if (!generator)
+        return -1;
     if (js_async_generator_resolve_function_create(ctx,
-                                                   JS_MKPTR(JS_TAG_OBJECT, s->generator),
+                                                   JS_MKPTR(JS_TAG_OBJECT, generator),
                                                    resolving_funcs1,
                                                    TRUE)) {
         
@@ -22423,12 +22458,14 @@ static void js_async_generator_resume_next(JSContext *ctx,
                                            JSAsyncGeneratorData *s)
 {
     JSAsyncGeneratorRequest *next;
+    JSAsyncFunctionState *func_state;
     GCValue func_ret, value;
 
     for(;;) {
         if (list_empty(&s->queue))
             break;
         next = list_entry(s->queue.next, JSAsyncGeneratorRequest, link);
+        func_state = (JSAsyncFunctionState *)gc_deref(s->func_state_handle);
         switch(s->state) {
         case JS_ASYNC_GENERATOR_STATE_EXECUTING:
             /* only happens when restarting execution after await() */
@@ -22455,24 +22492,26 @@ static void js_async_generator_resume_next(JSContext *ctx,
         case JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD:
         case JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD_STAR:
             value = next->result;
+            if (!func_state)
+                goto done;
             if (next->completion_type == GEN_MAGIC_THROW &&
                 s->state == JS_ASYNC_GENERATOR_STATE_SUSPENDED_YIELD) {
                 JS_Throw(ctx, value);
-                s->func_state->throw_flag = TRUE;
+                func_state->throw_flag = TRUE;
             } else {
                 /* 'yield' returns a value. 'yield *' also returns a value
                    in case the 'throw' method is called */
-                s->func_state->frame.cur_sp[-1] = value;
-                s->func_state->frame.cur_sp[0] =
+                func_state->frame.cur_sp[-1] = value;
+                func_state->frame.cur_sp[0] =
                     JS_NewInt32(ctx, next->completion_type);
-                s->func_state->frame.cur_sp++;
+                func_state->frame.cur_sp++;
             exec_no_arg:
-                s->func_state->throw_flag = FALSE;
+                func_state->throw_flag = FALSE;
             }
             s->state = JS_ASYNC_GENERATOR_STATE_EXECUTING;
         resume_exec:
-            func_ret = async_func_resume(ctx, s->func_state);
-            if (s->func_state->is_completed) {
+            func_ret = async_func_resume(ctx, func_state);
+            if (func_state->is_completed) {
                 if (JS_IsException(func_ret)) {
                     value = JS_GetException(ctx);
                     js_async_generator_complete(ctx, s);
@@ -22488,8 +22527,8 @@ static void js_async_generator_resume_next(JSContext *ctx,
                 int func_ret_code, ret;
                 assert(JS_VALUE_GET_TAG(func_ret) == JS_TAG_INT);
                 func_ret_code = JS_VALUE_GET_INT(func_ret);
-                value = s->func_state->frame.cur_sp[-1];
-                s->func_state->frame.cur_sp[-1] = JS_UNDEFINED;
+                value = func_state->frame.cur_sp[-1];
+                func_state->frame.cur_sp[-1] = JS_UNDEFINED;
                 switch(func_ret_code) {
                 case FUNC_RET_YIELD:
                 case FUNC_RET_YIELD_STAR:
@@ -22505,7 +22544,9 @@ static void js_async_generator_resume_next(JSContext *ctx,
                     
                     if (ret < 0) {
                         /* exception: throw it */
-                        s->func_state->throw_flag = TRUE;
+                        func_state = (JSAsyncFunctionState *)gc_deref(s->func_state_handle);
+                        if (func_state)
+                            func_state->throw_flag = TRUE;
                         goto resume_exec;
                     }
                     goto done;
@@ -22528,6 +22569,7 @@ static GCValue js_async_generator_resolve_function(JSContext *ctx,
 {
     BOOL is_reject = magic & 1;
     JSAsyncGeneratorData *s = JS_GetOpaque(func_data[0], JS_CLASS_ASYNC_GENERATOR);
+    JSAsyncFunctionState *func_state;
     GCValue arg = argv[0];
 
     /* XXX: what if s == NULL */
@@ -22545,12 +22587,15 @@ static GCValue js_async_generator_resolve_function(JSContext *ctx,
     } else {
         /* restart function execution after await() */
         assert(s->state == JS_ASYNC_GENERATOR_STATE_EXECUTING);
-        s->func_state->throw_flag = is_reject;
+        func_state = (JSAsyncFunctionState *)gc_deref(s->func_state_handle);
+        if (!func_state)
+            return JS_UNDEFINED;
+        func_state->throw_flag = is_reject;
         if (is_reject) {
             JS_Throw(ctx, arg);
         } else {
             /* return value of await */
-            s->func_state->frame.cur_sp[-1] = arg;
+            func_state->frame.cur_sp[-1] = arg;
         }
         js_async_generator_resume_next(ctx, s);
     }
@@ -22608,18 +22653,20 @@ static GCValue js_async_generator_function_call(JSContext *ctx, GCValue func_obj
 {
     GCValue obj, func_ret;
     JSAsyncGeneratorData *s;
+    JSAsyncFunctionState *func_state;
 
     s = gc_deref(gc_allocz(sizeof(*s), JS_GC_OBJ_TYPE_DATA));
     if (!s)
         return JS_EXCEPTION;
     s->state = JS_ASYNC_GENERATOR_STATE_SUSPENDED_START;
     init_list_head(&s->queue);
-    s->func_state = async_func_init(ctx, func_obj, this_obj, argc, argv);
-    if (!s->func_state)
+    func_state = async_func_init(ctx, func_obj, this_obj, argc, argv);
+    if (!func_state)
         goto fail;
+    s->func_state_handle = gc_ptr_to_handle(func_state);
     /* execute the function up to 'OP_initial_yield' (no yield nor
        await are possible) */
-    func_ret = async_func_resume(ctx, s->func_state);
+    func_ret = async_func_resume(ctx, func_state);
     if (JS_IsException(func_ret))
         goto fail;
     
@@ -22627,7 +22674,7 @@ static GCValue js_async_generator_function_call(JSContext *ctx, GCValue func_obj
     obj = js_create_from_ctor(ctx, func_obj, JS_CLASS_ASYNC_GENERATOR);
     if (JS_IsException(obj))
         goto fail;
-    s->generator = JS_VALUE_GET_OBJ(obj);
+    s->generator_handle = gc_ptr_to_handle(JS_VALUE_GET_OBJ(obj));
     JS_SetOpaque(obj, s);
     return obj;
  fail:
@@ -38390,63 +38437,67 @@ int JS_ResolveModule(JSContext *ctx, GCValue obj)
 /* object list */
 
 typedef struct {
-    JSObject *obj;
+    GCHandle obj_handle; /* Handle to JSObject */
     uint32_t hash_next; /* -1 if no next entry */
 } JSObjectListEntry;
 
 /* XXX: reuse it to optimize weak references */
 typedef struct {
-    JSObjectListEntry *object_tab;
+    GCHandle object_tab_handle; /* Handle to array of JSObjectListEntry */
     int object_count;
     int object_size;
-    uint32_t *hash_table;
+    GCHandle hash_table_handle; /* Handle to array of uint32_t indices */
     uint32_t hash_size;
 } JSObjectList;
+
+#define jsol_object_tab ((JSObjectListEntry*)gc_deref(s->object_tab_handle))
+#define jsol_hash_table ((uint32_t*)gc_deref(s->hash_table_handle))
 
 static void js_object_list_init(JSObjectList *s)
 {
     memset(s, 0, sizeof(*s));
 }
 
-static uint32_t js_object_list_get_hash(JSObject *p, uint32_t hash_size)
+static uint32_t js_object_list_get_hash(GCHandle handle, uint32_t hash_size)
 {
-    return ((uintptr_t)p * 3163) & (hash_size - 1);
+    return ((uintptr_t)handle * 3163) & (hash_size - 1);
 }
 
 static int js_object_list_resize_hash(JSContext *ctx, JSObjectList *s,
                                  uint32_t new_hash_size)
 {
     JSObjectListEntry *e;
-    uint32_t i, h, *new_hash_table;
+    uint32_t i, h;
+    uint32_t *new_hash_table;
 
-    new_hash_table = (uint32_t *)gc_deref(gc_alloc(sizeof(new_hash_table[0]) * new_hash_size, JS_GC_OBJ_TYPE_DATA));
-    if (!new_hash_table)
+    s->hash_table_handle = gc_alloc(sizeof(uint32_t) * new_hash_size, JS_GC_OBJ_TYPE_DATA);
+    if (s->hash_table_handle == GC_HANDLE_NULL)
         return -1;
-    /* GC frees automatically */;
-    s->hash_table = new_hash_table;
+    new_hash_table = jsol_hash_table;
     s->hash_size = new_hash_size;
 
     for(i = 0; i < s->hash_size; i++) {
-        s->hash_table[i] = -1;
+        new_hash_table[i] = -1;
     }
     for(i = 0; i < s->object_count; i++) {
-        e = &s->object_tab[i];
-        h = js_object_list_get_hash(e->obj, s->hash_size);
-        e->hash_next = s->hash_table[h];
-        s->hash_table[h] = i;
+        e = &jsol_object_tab[i];
+        h = js_object_list_get_hash(e->obj_handle, s->hash_size);
+        e->hash_next = new_hash_table[h];
+        new_hash_table[h] = i;
     }
     return 0;
 }
 
 /* the reference count of 'obj' is not modified. Return 0 if OK, -1 if
    memory error */
-static int js_object_list_add(JSContext *ctx, JSObjectList *s, JSObject *obj)
+static int js_object_list_add(JSContext *ctx, JSObjectList *s, GCHandle obj_handle)
 {
     JSObjectListEntry *e;
     uint32_t h, new_hash_size;
+    uint32_t *hash_table;
 
-    if (js_resize_array(ctx, (void *)&s->object_tab,
-                        sizeof(s->object_tab[0]),
+    if (js_resize_array(ctx, (void *)&s->object_tab_handle,
+                        sizeof(JSObjectListEntry),
                         &s->object_size, s->object_count + 1))
         return -1;
     if (unlikely((s->object_count + 1) >= s->hash_size)) {
@@ -38456,28 +38507,31 @@ static int js_object_list_add(JSContext *ctx, JSObjectList *s, JSObject *obj)
         if (js_object_list_resize_hash(ctx, s, new_hash_size))
             return -1;
     }
-    e = &s->object_tab[s->object_count++];
-    h = js_object_list_get_hash(obj, s->hash_size);
-    e->obj = obj;
-    e->hash_next = s->hash_table[h];
-    s->hash_table[h] = s->object_count - 1;
+    e = &jsol_object_tab[s->object_count++];
+    hash_table = jsol_hash_table;
+    h = js_object_list_get_hash(obj_handle, s->hash_size);
+    e->obj_handle = obj_handle;
+    e->hash_next = hash_table[h];
+    hash_table[h] = s->object_count - 1;
     return 0;
 }
 
 /* return -1 if not present or the object index */
-static int js_object_list_find(JSContext *ctx, JSObjectList *s, JSObject *obj)
+static int js_object_list_find(JSContext *ctx, JSObjectList *s, GCHandle obj_handle)
 {
     JSObjectListEntry *e;
     uint32_t h, p;
+    uint32_t *hash_table;
 
     /* must test empty size because there is no hash table */
     if (s->object_count == 0)
         return -1;
-    h = js_object_list_get_hash(obj, s->hash_size);
-    p = s->hash_table[h];
+    hash_table = jsol_hash_table;
+    h = js_object_list_get_hash(obj_handle, s->hash_size);
+    p = hash_table[h];
     while (p != -1) {
-        e = &s->object_tab[p];
-        if (e->obj == obj)
+        e = &jsol_object_tab[p];
+        if (e->obj_handle == obj_handle)
             return p;
         p = e->hash_next;
     }
@@ -39206,16 +39260,17 @@ static int JS_WriteObjectRec(BCWriterState *s, GCValue obj)
     case JS_TAG_OBJECT:
         {
             JSObject *p = JS_VALUE_GET_OBJ(obj);
+            GCHandle obj_handle = gc_ptr_to_handle(p);
             int ret, idx;
 
             if (s->allow_reference) {
-                idx = js_object_list_find(s->ctx, &s->object_list, p);
+                idx = js_object_list_find(s->ctx, &s->object_list, obj_handle);
                 if (idx >= 0) {
                     bc_put_u8(s, BC_TAG_OBJECT_REFERENCE);
                     bc_put_leb128(s, idx);
                     break;
                 } else {
-                    if (js_object_list_add(s->ctx, &s->object_list, p))
+                    if (js_object_list_add(s->ctx, &s->object_list, obj_handle))
                         goto fail;
                 }
             } else {
@@ -52471,8 +52526,8 @@ static GCValue js_map_constructor(JSContext *ctx, GCValue new_target,
     JS_SetOpaque(obj, s);
     s->hash_bits = 1;
     s->hash_size = 1U << s->hash_bits;
-    s->hash_table = (JSMapRecord **)gc_deref(gc_allocz(sizeof(s->hash_table[0]) * s->hash_size, JS_GC_OBJ_TYPE_DATA));
-    if (!s->hash_table)
+    s->hash_table_handle = gc_allocz(sizeof(GCHandle) * s->hash_size, JS_GC_OBJ_TYPE_DATA);
+    if (s->hash_table_handle == GC_HANDLE_NULL)
         goto fail;
     s->record_count_threshold = 4;
 
@@ -52660,14 +52715,21 @@ static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,
                                     GCValue key)
 {
     JSMapRecord *mr;
+    GCHandle mr_handle;
     uint32_t h;
+    GCHandle *hash_table = ms_hash_table;
     h = map_hash_key(key, s->hash_bits);
-    for(mr = s->hash_table[h]; mr != NULL; mr = mr->hash_next) {
-        if (mr->empty || (s->is_weak && !js_weakref_is_live(mr->key))) {
-            /* cannot match */
+    mr_handle = hash_table[h];
+    while (mr_handle != GC_HANDLE_NULL) {
+        mr = (JSMapRecord *)gc_deref(mr_handle);
+        if (mr) {
+            if (!mr->empty && !(s->is_weak && !js_weakref_is_live(mr->key))) {
+                if (js_same_value_zero(ctx, mr->key, key))
+                    return mr;
+            }
+            mr_handle = mr->hash_next_handle;
         } else {
-            if (js_same_value_zero(ctx, mr->key, key))
-                return mr;
+            break;
         }
     }
     return NULL;
@@ -52678,28 +52740,31 @@ static void map_hash_resize(JSContext *ctx, JSMapState *s)
     uint32_t new_hash_size, h;
     int new_hash_bits;
     struct list_head *el;
-    JSMapRecord *mr, **new_hash_table;
+    JSMapRecord *mr;
+    GCHandle *new_hash_table;
+    GCHandle mr_handle;
 
     /* XXX: no reporting of memory allocation failure */
     new_hash_bits = min_int(s->hash_bits + 1, 31);
     new_hash_size = 1U << new_hash_bits;
-    new_hash_table = (JSMapRecord **)gc_deref(gc_realloc(s->hash_table ? gc_header(s->hash_table)->handle : 0,
-                                sizeof(new_hash_table[0]) * new_hash_size));
-    if (!new_hash_table)
+    s->hash_table_handle = gc_realloc(s->hash_table_handle,
+                                sizeof(GCHandle) * new_hash_size);
+    if (s->hash_table_handle == GC_HANDLE_NULL)
         return;
 
-    memset(new_hash_table, 0, sizeof(new_hash_table[0]) * new_hash_size);
+    new_hash_table = ms_hash_table;
+    memset(new_hash_table, 0, sizeof(GCHandle) * new_hash_size);
 
     list_for_each(el, &s->records) {
         mr = list_entry(el, JSMapRecord, link);
         if (mr->empty || (s->is_weak && !js_weakref_is_live(mr->key))) {
         } else {
             h = map_hash_key(mr->key, new_hash_bits);
-            mr->hash_next = new_hash_table[h];
-            new_hash_table[h] = mr;
+            mr_handle = gc_ptr_to_handle(mr);
+            mr->hash_next_handle = new_hash_table[h];
+            new_hash_table[h] = mr_handle;
         }
     }
-    s->hash_table = new_hash_table;
     s->hash_bits = new_hash_bits;
     s->hash_size = new_hash_size;
     s->record_count_threshold = new_hash_size * 2;
@@ -52710,8 +52775,11 @@ static JSMapRecord *map_add_record(JSContext *ctx, JSMapState *s,
 {
     uint32_t h;
     JSMapRecord *mr;
+    GCHandle mr_handle;
+    GCHandle *hash_table;
 
-    mr = (JSMapRecord *)gc_deref(gc_alloc(sizeof(*mr), JS_GC_OBJ_TYPE_DATA));
+    mr_handle = gc_alloc(sizeof(*mr), JS_GC_OBJ_TYPE_DATA);
+    mr = (JSMapRecord *)gc_deref(mr_handle);
     if (!mr)
         return GC_HANDLE_NULL;
     mr->ref_count = 1;
@@ -52722,8 +52790,9 @@ static JSMapRecord *map_add_record(JSContext *ctx, JSMapState *s,
         mr->key = key;
     }
     h = map_hash_key(key, s->hash_bits);
-    mr->hash_next = s->hash_table[h];
-    s->hash_table[h] = mr;
+    hash_table = ms_hash_table;
+    mr->hash_next_handle = hash_table[h];
+    hash_table[h] = mr_handle;
     list_add_tail(&mr->link, &s->records);
     s->record_count++;
     if (s->record_count >= s->record_count_threshold) {
@@ -52781,7 +52850,9 @@ static void map_delete_weakrefs(JSRuntime *rt, JSWeakRefHeader *wh)
 {
     JSMapState *s = container_of(wh, JSMapState, weakref_header);
     struct list_head *el, *el1;
-    JSMapRecord *mr1, **pmr;
+    JSMapRecord *mr1;
+    GCHandle *hash_table;
+    GCHandle *pmr_handle;
     uint32_t h;
 
     list_for_each_safe(el, el1, &s->records) {
@@ -52790,19 +52861,18 @@ static void map_delete_weakrefs(JSRuntime *rt, JSWeakRefHeader *wh)
 
             /* even if key is not live it can be hashed as a pointer */
             h = map_hash_key(mr->key, s->hash_bits);
-            pmr = &s->hash_table[h];
+            hash_table = ms_hash_table;
+            pmr_handle = &hash_table[h];
             for(;;) {
-                mr1 = *pmr;
-                /* the entry may already be removed from the hash
-                   table if the map was resized */
-                if (mr1 == NULL)
+                if (*pmr_handle == GC_HANDLE_NULL)
                     goto done; 
+                mr1 = (JSMapRecord *)gc_deref(*pmr_handle);
                 if (mr1 == mr)
                     break;
-                pmr = &mr1->hash_next;
+                pmr_handle = &mr1->hash_next_handle;
             }
             /* remove from the hash table */
-            *pmr = mr1->hash_next;
+            *pmr_handle = mr1->hash_next_handle;
         done:
             map_delete_record_internal(rt, s, mr);
         }
@@ -52857,28 +52927,31 @@ static GCValue js_map_get(JSContext *ctx, GCValue this_val,
 /* return JS_TRUE or JS_FALSE */
 static GCValue map_delete_record(JSContext *ctx, JSMapState *s, GCValue key)
 {
-    JSMapRecord *mr, **pmr;
+    JSMapRecord *mr;
+    GCHandle *hash_table;
+    GCHandle *pmr_handle;
     uint32_t h;
 
     key = map_normalize_key_const(ctx, key);
     
     h = map_hash_key(key, s->hash_bits);
-    pmr = &s->hash_table[h];
+    hash_table = ms_hash_table;
+    pmr_handle = &hash_table[h];
     for(;;) {
-        mr = *pmr;
-        if (mr == NULL)
+        if (*pmr_handle == GC_HANDLE_NULL)
             return JS_FALSE;
+        mr = (JSMapRecord *)gc_deref(*pmr_handle);
         if (mr->empty || (s->is_weak && !js_weakref_is_live(mr->key))) {
             /* not valid */
         } else {
             if (js_same_value_zero(ctx, mr->key, key))
                 break;
         }
-        pmr = &mr->hash_next;
+        pmr_handle = &mr->hash_next_handle;
     }
 
     /* remove from the hash table */
-    *pmr = mr->hash_next;
+    *pmr_handle = mr->hash_next_handle;
     
     map_delete_record_internal(ctx_rt, s, mr);
     return JS_TRUE;
@@ -52955,7 +53028,7 @@ static GCValue js_map_clear(JSContext *ctx, GCValue this_val,
         return JS_EXCEPTION;
 
     /* remove from the hash table */
-    memset(s->hash_table, 0, sizeof(s->hash_table[0]) * s->hash_size);
+    memset(ms_hash_table, 0, sizeof(GCHandle) * s->hash_size);
     
     list_for_each_safe(el, el1, &s->records) {
         mr = list_entry(el, JSMapRecord, link);
@@ -53188,21 +53261,24 @@ static void js_map_mark(JSRuntime *rt, GCValue val, JS_MarkFunc *mark_func)
 typedef struct JSMapIteratorData {
     GCValue obj;
     JSIteratorKindEnum kind;
-    JSMapRecord *cur_record;
+    GCHandle cur_record_handle; /* Handle to current JSMapRecord, GC_HANDLE_NULL if none */
 } JSMapIteratorData;
 
 static void js_map_iterator_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p;
     JSMapIteratorData *it;
+    JSMapRecord *cur_record;
 
     p = JS_VALUE_GET_OBJ(val);
     it = (JSMapIteratorData *)gc_deref(p->u.map_iterator_data_handle);
     if (it) {
         /* During the GC sweep phase the Map finalizer may be
            called before the Map iterator finalizer */
-        if (JS_IsLiveObject(rt, it->obj) && it->cur_record) {
-            map_decref_record(rt, it->cur_record);
+        if (JS_IsLiveObject(rt, it->obj) && it->cur_record_handle != GC_HANDLE_NULL) {
+            cur_record = (JSMapRecord *)gc_deref(it->cur_record_handle);
+            if (cur_record)
+                map_decref_record(rt, cur_record);
         }
         
         /* GC frees automatically */;
@@ -53244,7 +53320,7 @@ static GCValue js_create_map_iterator(JSContext *ctx, GCValue this_val,
     }
     it->obj = this_val;
     it->kind = kind;
-    it->cur_record = NULL;
+    it->cur_record_handle = GC_HANDLE_NULL;
     JS_SetOpaque(enum_obj, it);
     return enum_obj;
  fail:
@@ -53257,7 +53333,7 @@ static GCValue js_map_iterator_next(JSContext *ctx, GCValue this_val,
 {
     JSMapIteratorData *it;
     JSMapState *s;
-    JSMapRecord *mr;
+    JSMapRecord *mr, *cur_record;
     struct list_head *el;
 
     it = JS_GetOpaque2(ctx, this_val, JS_CLASS_MAP_ITERATOR + magic);
@@ -53269,17 +53345,17 @@ static GCValue js_map_iterator_next(JSContext *ctx, GCValue this_val,
         goto done;
     s = JS_GetOpaque(it->obj, JS_CLASS_MAP + magic);
     assert(s != NULL);
-    if (!it->cur_record) {
+    if (it->cur_record_handle == GC_HANDLE_NULL) {
         el = s->records.next;
     } else {
-        mr = it->cur_record;
-        el = mr->link.next;
-        map_decref_record(ctx_rt, mr); /* the record can be freed here */
+        cur_record = (JSMapRecord *)gc_deref(it->cur_record_handle);
+        el = cur_record->link.next;
+        map_decref_record(ctx_rt, cur_record); /* the record can be freed here */
     }
     for(;;) {
         if (el == &s->records) {
             /* no more record  */
-            it->cur_record = NULL;
+            it->cur_record_handle = GC_HANDLE_NULL;
             
             it->obj = JS_UNDEFINED;
         done:
@@ -53296,7 +53372,7 @@ static GCValue js_map_iterator_next(JSContext *ctx, GCValue this_val,
 
     /* lock the record so that it won't be freed */
     mr->ref_count++;
-    it->cur_record = mr;
+    it->cur_record_handle = gc_ptr_to_handle(mr);
     *pdone = FALSE;
 
     if (it->kind == JS_ITERATOR_KIND_KEY) {
@@ -61106,7 +61182,7 @@ typedef struct JSFinRecEntry {
 typedef struct JSFinalizationRegistryData {
     JSWeakRefHeader weakref_header;
     struct list_head entries; /* list of JSFinRecEntry.link */
-    JSContext *realm;
+    GCHandle realm_handle; /* Handle to JSContext realm */
     GCValue cb;
 } JSFinalizationRegistryData;
 
@@ -61123,7 +61199,11 @@ static void js_finrec_finalizer(JSRuntime *rt, GCValue val)
             /* GC frees automatically */;
         }
         
-        JS_FreeContext(frd->realm);
+        if (frd->realm_handle != GC_HANDLE_NULL) {
+            JSContext *realm = (JSContext *)gc_deref(frd->realm_handle);
+            if (realm)
+                JS_FreeContext(realm);
+        }
         list_del(&frd->weakref_header.link);
         /* GC frees: js_free_rt(rt, frd); */
     }
@@ -61134,13 +61214,18 @@ static void js_finrec_mark(JSRuntime *rt, GCValue val,
 {
     JSFinalizationRegistryData *frd = JS_GetOpaque(val, JS_CLASS_FINALIZATION_REGISTRY);
     struct list_head *el;
+    JSContext *realm;
     if (frd) {
         list_for_each(el, &frd->entries) {
             JSFinRecEntry *fre = list_entry(el, JSFinRecEntry, link);
             JS_MarkValue(rt, fre->held_val, mark_func);
         }
         JS_MarkValue(rt, frd->cb, mark_func);
-        mark_func(rt, frd->realm);
+        if (frd->realm_handle != GC_HANDLE_NULL) {
+            realm = (JSContext *)gc_deref(frd->realm_handle);
+            if (realm)
+                mark_func(rt, realm);
+        }
     }
 }
 
@@ -61153,6 +61238,11 @@ static void finrec_delete_weakref(JSRuntime *rt, JSWeakRefHeader *wh)
 {
     JSFinalizationRegistryData *frd = container_of(wh, JSFinalizationRegistryData, weakref_header);
     struct list_head *el, *el1;
+    JSContext *realm;
+
+    realm = (JSContext *)gc_deref(frd->realm_handle);
+    if (!realm)
+        return;
 
     list_for_each_safe(el, el1, &frd->entries) {
         JSFinRecEntry *fre = list_entry(el, JSFinRecEntry, link);
@@ -61166,7 +61256,7 @@ static void finrec_delete_weakref(JSRuntime *rt, JSWeakRefHeader *wh)
             GCValue args[2];
             args[0] = frd->cb;
             args[1] = fre->held_val;
-            JS_EnqueueJob(frd->realm, js_finrec_job, 2, args);
+            JS_EnqueueJob(realm, js_finrec_job, 2, args);
                 
             js_weakref_free(rt, fre->target);
             js_weakref_free(rt, fre->token);
@@ -61206,7 +61296,10 @@ static GCValue js_finrec_constructor(JSContext *ctx, GCValue new_target,
     if (js_handle_array_add(ctx_rt, &ctx_rt->weakref_handles, weakref_handle) < 0)
         return JS_EXCEPTION;
     init_list_head(&frd->entries);
-    frd->realm = JS_DupContext(ctx);
+    {
+        JSContext *dup_ctx = JS_DupContext(ctx);
+        frd->realm_handle = gc_ptr_to_handle(dup_ctx);
+    }
     frd->cb = cb;
     JS_SetOpaque(obj, frd);
     return obj;
