@@ -393,6 +393,7 @@ struct JSRuntime {
 
 /* Object accessors */
 #define p_prop ((JSProperty*)gc_deref(p->prop_handle))
+#define p_array_values ((GCValue*)gc_deref(p->u.array.u.values_handle))
 
 struct JSClass {
     uint32_t class_id; /* 0 means free entry */
@@ -1011,25 +1012,25 @@ struct JSObject {
     GCHandle prop_handle; /* Handle to prop array */
     union {
         void *opaque;
-        struct JSBoundFunction *bound_function; /* JS_CLASS_BOUND_FUNCTION */
-        struct JSCFunctionDataRecord *c_function_data_record; /* JS_CLASS_C_FUNCTION_DATA */
-        struct JSForInIterator *for_in_iterator; /* JS_CLASS_FOR_IN_ITERATOR */
-        struct JSArrayBuffer *array_buffer; /* JS_CLASS_ARRAY_BUFFER, JS_CLASS_SHARED_ARRAY_BUFFER */
-        struct JSTypedArray *typed_array; /* JS_CLASS_UINT8C_ARRAY..JS_CLASS_DATAVIEW */
-        struct JSMapState *map_state;   /* JS_CLASS_MAP..JS_CLASS_WEAKSET */
-        struct JSMapIteratorData *map_iterator_data; /* JS_CLASS_MAP_ITERATOR, JS_CLASS_SET_ITERATOR */
-        struct JSArrayIteratorData *array_iterator_data; /* JS_CLASS_ARRAY_ITERATOR, JS_CLASS_STRING_ITERATOR */
-        struct JSRegExpStringIteratorData *regexp_string_iterator_data; /* JS_CLASS_REGEXP_STRING_ITERATOR */
-        struct JSGeneratorData *generator_data; /* JS_CLASS_GENERATOR */
-        struct JSIteratorConcatData *iterator_concat_data; /* JS_CLASS_ITERATOR_CONCAT */
-        struct JSIteratorHelperData *iterator_helper_data; /* JS_CLASS_ITERATOR_HELPER */
-        struct JSIteratorWrapData *iterator_wrap_data; /* JS_CLASS_ITERATOR_WRAP */
-        struct JSProxyData *proxy_data; /* JS_CLASS_PROXY */
-        struct JSPromiseData *promise_data; /* JS_CLASS_PROMISE */
-        struct JSPromiseFunctionData *promise_function_data; /* JS_CLASS_PROMISE_RESOLVE_FUNCTION, JS_CLASS_PROMISE_REJECT_FUNCTION */
-        struct JSAsyncFunctionState *async_function_data; /* JS_CLASS_ASYNC_FUNCTION_RESOLVE, JS_CLASS_ASYNC_FUNCTION_REJECT */
-        struct JSAsyncFromSyncIteratorData *async_from_sync_iterator_data; /* JS_CLASS_ASYNC_FROM_SYNC_ITERATOR */
-        struct JSAsyncGeneratorData *async_generator_data; /* JS_CLASS_ASYNC_GENERATOR */
+        GCHandle bound_function_handle; /* JS_CLASS_BOUND_FUNCTION - handle to JSBoundFunction */
+        GCHandle c_function_data_record_handle; /* JS_CLASS_C_FUNCTION_DATA - handle to JSCFunctionDataRecord */
+        GCHandle for_in_iterator_handle; /* JS_CLASS_FOR_IN_ITERATOR - handle to JSForInIterator */
+        GCHandle array_buffer_handle; /* JS_CLASS_ARRAY_BUFFER, JS_CLASS_SHARED_ARRAY_BUFFER - handle to JSArrayBuffer */
+        GCHandle typed_array_handle; /* JS_CLASS_UINT8C_ARRAY..JS_CLASS_DATAVIEW - handle to JSTypedArray */
+        GCHandle map_state_handle;   /* JS_CLASS_MAP..JS_CLASS_WEAKSET - handle to JSMapState */
+        GCHandle map_iterator_data_handle; /* JS_CLASS_MAP_ITERATOR, JS_CLASS_SET_ITERATOR - handle to JSMapIteratorData */
+        GCHandle array_iterator_data_handle; /* JS_CLASS_ARRAY_ITERATOR, JS_CLASS_STRING_ITERATOR - handle to JSArrayIteratorData */
+        GCHandle regexp_string_iterator_data_handle; /* JS_CLASS_REGEXP_STRING_ITERATOR - handle to JSRegExpStringIteratorData */
+        GCHandle generator_data_handle; /* JS_CLASS_GENERATOR - handle to JSGeneratorData */
+        GCHandle iterator_concat_data_handle; /* JS_CLASS_ITERATOR_CONCAT - handle to JSIteratorConcatData */
+        GCHandle iterator_helper_data_handle; /* JS_CLASS_ITERATOR_HELPER - handle to JSIteratorHelperData */
+        GCHandle iterator_wrap_data_handle; /* JS_CLASS_ITERATOR_WRAP - handle to JSIteratorWrapData */
+        GCHandle proxy_data_handle; /* JS_CLASS_PROXY - handle to JSProxyData */
+        GCHandle promise_data_handle; /* JS_CLASS_PROMISE - handle to JSPromiseData */
+        GCHandle promise_function_data_handle; /* JS_CLASS_PROMISE_RESOLVE_FUNCTION, JS_CLASS_PROMISE_REJECT_FUNCTION - handle to JSPromiseFunctionData */
+        GCHandle async_function_data_handle; /* JS_CLASS_ASYNC_FUNCTION_RESOLVE, JS_CLASS_ASYNC_FUNCTION_REJECT - handle to JSAsyncFunctionState */
+        GCHandle async_from_sync_iterator_data_handle; /* JS_CLASS_ASYNC_FROM_SYNC_ITERATOR - handle to JSAsyncFromSyncIteratorData */
+        GCHandle async_generator_data_handle; /* JS_CLASS_ASYNC_GENERATOR - handle to JSAsyncGeneratorData */
         struct { /* JS_CLASS_BYTECODE_FUNCTION: 12/24 bytes */
             /* also used by JS_CLASS_GENERATOR_FUNCTION, JS_CLASS_ASYNC_FUNCTION and JS_CLASS_ASYNC_GENERATOR_FUNCTION */
             GCHandle function_bytecode_handle; /* handle to JSFunctionBytecode */
@@ -1047,10 +1048,10 @@ struct JSObject {
         struct { /* JS_CLASS_ARRAY, JS_CLASS_ARGUMENTS, JS_CLASS_MAPPED_ARGUMENTS, JS_CLASS_UINT8C_ARRAY..JS_CLASS_FLOAT64_ARRAY */
             union {
                 uint32_t size;          /* JS_CLASS_ARRAY */
-                struct JSTypedArray *typed_array; /* JS_CLASS_UINT8C_ARRAY..JS_CLASS_FLOAT64_ARRAY */
+                GCHandle typed_array_handle; /* JS_CLASS_UINT8C_ARRAY..JS_CLASS_FLOAT64_ARRAY - handle to JSTypedArray */
             } u1;
             union {
-                GCValue *values;        /* JS_CLASS_ARRAY, JS_CLASS_ARGUMENTS */
+                GCHandle values_handle; /* handle to GCValue array, JS_CLASS_ARRAY, JS_CLASS_ARGUMENTS */
                 GCHandle var_refs_handle; /* handle to array of JSVarRef handles, JS_CLASS_MAPPED_ARGUMENTS */
                 void *ptr;              /* JS_CLASS_UINT8C_ARRAY..JS_CLASS_FLOAT64_ARRAY */
                 int8_t *int8_ptr;       /* JS_CLASS_INT8_ARRAY */
@@ -5582,6 +5583,7 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
     JSRuntime *rt = ctx_rt;
     void *sh_alloc;
     JSShape *sh;
+    GCHandle proto_handle = GC_PTR_TO_HANDLE(proto);  /* Save handle before allocation */
 
     QJS_LOGI("js_new_shape_nohash: START ctx=%p rt=%p", (void*)ctx, (void*)rt);
     if (!rt) {
@@ -5605,7 +5607,7 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
     /* Store handle in shape for later retrieval (GC_PTR_TO_HANDLE won't work on sh directly) */
     sh->handle = sh_handle;
     /* Object already registered with GC by gc_alloc_js_object */
-    sh->proto_handle = GC_PTR_TO_HANDLE(proto);
+    sh->proto_handle = proto_handle;  /* Use saved handle */
     QJS_LOGI("js_new_shape_nohash: memset...");
     memset(prop_hash_end(sh) - hash_size, 0, sizeof(prop_hash_end(sh)[0]) *
            hash_size);
@@ -5658,6 +5660,7 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     size_t size;
     JSShapeProperty *pr;
     uint32_t i, hash_size;
+    GCHandle sh1_handle = GC_PTR_TO_HANDLE(sh1);  /* Save handle before allocation */
 
     hash_size = sh1->prop_hash_mask + 1;
     size = get_shape_size(hash_size, sh1->prop_size);
@@ -5666,6 +5669,9 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     sh_alloc = gc_alloc_js_object(size, JS_GC_OBJ_TYPE_SHAPE);
     if (!sh_alloc)
         return GC_HANDLE_NULL;
+    
+    /* CRITICAL: Re-dereference sh1 after allocation which may trigger GC */
+    sh1 = GC_SHAPE_DEREF(sh1_handle);
     
     /* Get handle from sh_alloc before memcpy overwrites it */
     GCHandle sh_handle = GC_PTR_TO_HANDLE(sh_alloc);
@@ -5802,6 +5808,8 @@ static no_inline int resize_properties(JSContext *ctx, GCHandle *psh_handle,
         return -1;
     sh_alloc = gc_deref(sh_handle);
     sh = get_shape_from_alloc(sh_alloc, new_hash_size);
+    /* CRITICAL: Re-dereference old_sh after gc_alloc which may trigger GC compaction */
+    old_sh = GC_SHAPE_DEREF(old_sh_handle);
     /* copy all the shape properties */
     memcpy(sh, old_sh,
            sizeof(JSShape) + sizeof(sh->prop[0]) * old_sh->prop_count);
@@ -5821,6 +5829,8 @@ static no_inline int resize_properties(JSContext *ctx, GCHandle *psh_handle,
         }
     } else {
         /* just copy the previous hash table */
+        /* CRITICAL: Re-dereference old_sh again before use */
+        old_sh = GC_SHAPE_DEREF(old_sh_handle);
         memcpy(prop_hash_end(sh) - new_hash_size, prop_hash_end(old_sh) - new_hash_size,
                sizeof(prop_hash_end(sh)[0]) * new_hash_size);
     }
@@ -6140,7 +6150,7 @@ static GCValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
             JSProperty *pr;
             p->is_exotic = 1;
             p->fast_array = 1;
-            p->u.array.u.values = NULL;
+            p->u.array.u.values_handle = GC_HANDLE_NULL;
             p->u.array.count = 0;
             p->u.array.u1.size = 0;
             if (!props) {
@@ -6733,7 +6743,7 @@ static void js_array_mark(JSRuntime *rt, GCValue val,
     int i;
 
     for(i = 0; i < p->u.array.count; i++) {
-        JS_MarkValue(rt, p->u.array.u.values[i], mark_func);
+        JS_MarkValue(rt, p_array_values[i], mark_func);
     }
 }
 
@@ -6818,7 +6828,7 @@ static void js_bytecode_function_mark(JSRuntime *rt, GCValue val,
 static void js_bound_function_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSBoundFunction *bf = p->u.bound_function;
+    JSBoundFunction *bf = (JSBoundFunction *)gc_deref(p->u.bound_function_handle);
     int i;
 
     
@@ -6833,7 +6843,7 @@ static void js_bound_function_mark(JSRuntime *rt, GCValue val,
                                 JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSBoundFunction *bf = p->u.bound_function;
+    JSBoundFunction *bf = (JSBoundFunction *)gc_deref(p->u.bound_function_handle);
     int i;
 
     JS_MarkValue(rt, bf->func_obj, mark_func);
@@ -6845,7 +6855,7 @@ static void js_bound_function_mark(JSRuntime *rt, GCValue val,
 static void js_for_in_iterator_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSForInIterator *it = p->u.for_in_iterator;
+    JSForInIterator *it = (JSForInIterator *)gc_deref(p->u.for_in_iterator_handle);
     int i;
 
     
@@ -6863,7 +6873,7 @@ static void js_for_in_iterator_mark(JSRuntime *rt, GCValue val,
                                 JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSForInIterator *it = p->u.for_in_iterator;
+    JSForInIterator *it = (JSForInIterator *)gc_deref(p->u.for_in_iterator_handle);
     JS_MarkValue(rt, it->obj, mark_func);
 }
 
@@ -7946,13 +7956,13 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
             s->array_count++;
             if (p->fast_array) {
                 s->fast_array_count++;
-                if (p->u.array.u.values) {
+                if (p->u.array.u.values_handle != GC_HANDLE_NULL) {
                     s->memory_used_count++;
                     s->memory_used_size += p->u.array.count *
-                        sizeof(*p->u.array.u.values);
+                        sizeof(GCValue);
                     s->fast_array_elements += p->u.array.count;
                     for (i = 0; i < p->u.array.count; i++) {
-                        compute_value_size(p->u.array.u.values[i], hp);
+                        compute_value_size(p_array_values[i], hp);
                     }
                 }
             }
@@ -7960,7 +7970,7 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
         case JS_CLASS_MAPPED_ARGUMENTS:         /* u.array | length */
             if (p->fast_array) {
                 s->fast_array_count++;
-                if (p->u.array.u.values) {
+                if (p->u.array.u.values_handle != GC_HANDLE_NULL) {
                     s->memory_used_count++;
                     s->memory_used_size += p->u.array.count *
                         sizeof(*((JSVarRef **)gc_deref(p->u.array.u.var_refs_handle)));
@@ -8007,7 +8017,7 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
             break;
         case JS_CLASS_BOUND_FUNCTION:    /* u.bound_function */
             {
-                JSBoundFunction *bf = p->u.bound_function;
+                JSBoundFunction *bf = (JSBoundFunction *)gc_deref(p->u.bound_function_handle);
                 /* func_obj and this_val are objects */
                 for (i = 0; i < bf->argc; i++) {
                     compute_value_size(bf->argv[i], hp);
@@ -8018,7 +8028,7 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
             break;
         case JS_CLASS_C_FUNCTION_DATA:   /* u.c_function_data_record */
             {
-                JSCFunctionDataRecord *fd = p->u.c_function_data_record;
+                JSCFunctionDataRecord *fd = (JSCFunctionDataRecord *)gc_deref(p->u.c_function_data_record_handle);
                 if (fd) {
                     for (i = 0; i < fd->data_len; i++) {
                         compute_value_size(fd->data[i], hp);
@@ -8035,7 +8045,7 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
 
         case JS_CLASS_FOR_IN_ITERATOR:   /* u.for_in_iterator */
             {
-                JSForInIterator *it = p->u.for_in_iterator;
+                JSForInIterator *it = (JSForInIterator *)gc_deref(p->u.for_in_iterator_handle);
                 if (it) {
                     compute_value_size(it->obj, hp);
                     s->memory_used_count += 1;
@@ -8046,7 +8056,7 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
         case JS_CLASS_ARRAY_BUFFER:      /* u.array_buffer */
         case JS_CLASS_SHARED_ARRAY_BUFFER: /* u.array_buffer */
             {
-                JSArrayBuffer *abuf = p->u.array_buffer;
+                JSArrayBuffer *abuf = (JSArrayBuffer *)gc_deref(p->u.array_buffer_handle);
                 if (abuf) {
                     s->memory_used_count += 1;
                     s->memory_used_size += sizeof(*abuf);
@@ -8966,7 +8976,7 @@ static int JS_OrdinaryIsInstanceOf(JSContext *ctx, GCValue val,
         return FALSE;
     p = JS_VALUE_GET_OBJ(obj);
     if (p->class_id == JS_CLASS_BOUND_FUNCTION) {
-        JSBoundFunction *s = p->u.bound_function;
+        JSBoundFunction *s = (JSBoundFunction *)gc_deref(p->u.bound_function_handle);
         return JS_IsInstanceOf(ctx, val, s->func_obj);
     }
 
@@ -9880,8 +9890,8 @@ int JS_PreventExtensions(JSContext *ctx, GCValue obj)
             JSTypedArray *ta;
             JSArrayBuffer *abuf;
             /* resizable type arrays return FALSE */
-            ta = p->u.typed_array;
-            abuf = ((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer;
+            ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
+            abuf = (JSArrayBuffer *)gc_deref(((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer_handle);
             if (ta->track_rab ||
                 (array_buffer_is_resizable(abuf) && !abuf->shared))
                 return FALSE;
@@ -9992,7 +10002,7 @@ static GCValue JS_GetPropertyValue(JSContext *ctx, GCValue this_obj,
         case JS_CLASS_ARRAY:
         case JS_CLASS_ARGUMENTS:
             if (unlikely(idx >= p->u.array.count)) goto slow_path;
-            return p->u.array.u.values[idx];
+            return p_array_values[idx];
         case JS_CLASS_MAPPED_ARGUMENTS:
             if (unlikely(idx >= p->u.array.count)) goto slow_path;
             return *((JSVarRef **)gc_deref(p->u.array.u.var_refs_handle))[idx]->pvalue;
@@ -10237,7 +10247,7 @@ static no_inline __exception int convert_fast_array_to_array(JSContext *ctx,
             pr->u.var_ref = *tab++;
         }
     } else {
-        GCValue *tab = p->u.array.u.values;
+        GCValue *tab = p_array_values;
         for(i = 0; i < len; i++) {
             /* add_property cannot fail here but
                __JS_AtomFromUInt32(i) fails for i > INT32_MAX */
@@ -10247,7 +10257,7 @@ static no_inline __exception int convert_fast_array_to_array(JSContext *ctx,
     }
     /* GC frees automatically */;
     p->u.array.count = 0;
-    p->u.array.u.values = NULL; /* fail safe */
+    p->u.array.u.values_handle = GC_HANDLE_NULL; /* fail safe */
     p->u.array.u1.size = 0;
     p->fast_array = 0;
     p->is_std_array_prototype = FALSE;
@@ -10497,11 +10507,11 @@ static int expand_fast_array(JSContext *ctx, JSObject *p, uint32_t new_len)
     GCValue *new_array_prop;
     /* XXX: potential arithmetic overflow */
     new_size = max_int(new_len, p->u.array.u1.size * 3 / 2);
-    new_array_prop = (GCValue *)gc_deref(gc_realloc2(p->u.array.u.values ? gc_header(p->u.array.u.values)->handle : 0, sizeof(GCValue) * new_size, &slack));
+    new_array_prop = (GCValue *)gc_deref(gc_realloc2(p->u.array.u.values_handle, sizeof(GCValue) * new_size, &slack));
     if (!new_array_prop)
         return -1;
     new_size += slack / sizeof(*new_array_prop);
-    p->u.array.u.values = new_array_prop;
+    p->u.array.u.values_handle = gc_ptr_to_handle(new_array_prop);
     p->u.array.u1.size = new_size;
     return 0;
 }
@@ -10533,7 +10543,7 @@ static inline int add_fast_array_element(JSContext *ctx, JSObject *p,
             return -1;
         }
     }
-    p->u.array.u.values[new_len - 1] = val;
+    p_array_values[new_len - 1] = val;
     p->u.array.count = new_len;
     return TRUE;
 }
@@ -10579,7 +10589,7 @@ static GCValue js_create_array(JSContext *ctx, int len, GCValue *tab)
         }
         p->u.array.count = len;
         for(i = 0; i < len; i++) 
-            p->u.array.u.values[i] = tab[i];
+            p_array_values[i] = tab[i];
         /* update the 'length' field */
         set_value(ctx, &p_prop[0].u.value, JS_NewInt32(ctx, len));
     }
@@ -10606,7 +10616,7 @@ static GCValue js_create_array_free(JSContext *ctx, int len, GCValue *tab)
         }
         p->u.array.count = len;
         for(i = 0; i < len; i++) 
-            p->u.array.u.values[i] = tab[i];
+            p_array_values[i] = tab[i];
         /* update the 'length' field */
         set_value(ctx, &p_prop[0].u.value, JS_NewInt32(ctx, len));
     }
@@ -10973,12 +10983,12 @@ static int JS_SetPropertyValue(JSContext *ctx, GCValue this_obj,
                 /* add element */
                 return add_fast_array_element(ctx, p, val, flags);
             }
-            set_value(ctx, &p->u.array.u.values[idx], val);
+            set_value(ctx, &p_array_values[idx], val);
             break;
         case JS_CLASS_ARGUMENTS:
             if (unlikely(idx >= (uint32_t)p->u.array.count))
                 goto slow_path;
-            set_value(ctx, &p->u.array.u.values[idx], val);
+            set_value(ctx, &p_array_values[idx], val);
             break;
         case JS_CLASS_MAPPED_ARGUMENTS:
             if (unlikely(idx >= (uint32_t)p->u.array.count))
@@ -11595,7 +11605,7 @@ int JS_DefineProperty(JSContext *ctx, GCValue this_obj,
                             goto redo_prop_update;
                     }
                     if (flags & JS_PROP_HAS_VALUE) {
-                        set_value(ctx, &p->u.array.u.values[idx], val);
+                        set_value(ctx, &p_array_values[idx], val);
                     }
                     return TRUE;
                 }
@@ -11971,7 +11981,7 @@ BOOL JS_IsFunction(JSContext *ctx, GCValue val)
     case JS_CLASS_BYTECODE_FUNCTION:
         return TRUE;
     case JS_CLASS_PROXY:
-        return p->u.proxy_data->is_func;
+        return ((JSProxyData *)gc_deref(p->u.proxy_data_handle))->is_func;
     default:
         {
             JSRuntime *rt = ctx_rt;
@@ -15066,7 +15076,7 @@ static void js_print_object(JSPrintValueState *s, JSObject *p)
             len1 = min_uint32(p->u.array.count, s->options.max_item_count);
             for(i = 0; i < len1; i++) {
                 js_print_comma(s, &comma_state);
-                js_print_value(s, p->u.array.u.values[i]);
+                js_print_value(s, p_array_values[i]);
             }
             if (len1 < p->u.array.count)
                 js_print_more_items(s, &comma_state, p->u.array.count - len1);
@@ -17214,7 +17224,7 @@ static GCValue js_build_arguments(JSContext *ctx, int argc, GCValue *argv)
             tab[i] = argv[i];
         }
     }
-    p->u.array.u.values = tab;
+    p->u.array.u.values_handle = gc_ptr_to_handle(tab);
     p->u.array.count = argc;
     return val;
  fail:
@@ -17314,7 +17324,8 @@ static GCValue build_for_in_iterator(JSContext *ctx, GCValue obj)
         obj = JS_ToObjectFree(ctx, obj);
     }
 
-    it = (JSForInIterator *)gc_deref(gc_alloc(sizeof(*it), JS_GC_OBJ_TYPE_DATA));
+    GCHandle it_handle = gc_alloc(sizeof(*it), JS_GC_OBJ_TYPE_DATA);
+    it = (JSForInIterator *)gc_deref(it_handle);
     if (!it) {
         
         return JS_EXCEPTION;
@@ -17332,7 +17343,7 @@ static GCValue build_for_in_iterator(JSContext *ctx, GCValue obj)
     it->atom_count = 0;
     it->in_prototype_chain = FALSE;
     p1 = JS_VALUE_GET_OBJ(enum_obj);
-    p1->u.for_in_iterator = it;
+    p1->u.for_in_iterator_handle = it_handle;
 
     if (tag == JS_TAG_NULL || tag == JS_TAG_UNDEFINED)
         return enum_obj;
@@ -17383,7 +17394,7 @@ static __exception int js_for_in_prepare_prototype_chain_enum(JSContext *ctx,
     GCValue obj1;
 
     p = JS_VALUE_GET_OBJ(enum_obj);
-    it = p->u.for_in_iterator;
+    it = (JSForInIterator *)gc_deref(p->u.for_in_iterator_handle);
 
     /* check if there are enumerable properties in the prototype chain (fast path) */
     obj1 = it->obj;
@@ -17449,7 +17460,7 @@ static __exception int js_for_in_next(JSContext *ctx, GCValue *sp)
     p = JS_VALUE_GET_OBJ(enum_obj);
     if (p->class_id != JS_CLASS_FOR_IN_ITERATOR)
         goto done;
-    it = p->u.for_in_iterator;
+    it = (JSForInIterator *)gc_deref(p->u.for_in_iterator_handle);
 
     for(;;) {
         if (it->idx >= it->atom_count) {
@@ -17844,7 +17855,7 @@ static BOOL js_get_fast_array(JSContext *ctx, GCValue obj,
         JSObject *p = JS_VALUE_GET_OBJ(obj);
         if (p->class_id == JS_CLASS_ARRAY && p->fast_array) {
             *countp = p->u.array.count;
-            *arrpp = p->u.array.u.values;
+            *arrpp = p_array_values;
             return TRUE;
         }
     }
@@ -18743,7 +18754,7 @@ static GCValue js_call_bound_function(JSContext *ctx, GCValue func_obj,
     int arg_count, i;
 
     p = JS_VALUE_GET_OBJ(func_obj);
-    bf = p->u.bound_function;
+    bf = (JSBoundFunction *)gc_deref(p->u.bound_function_handle);
     arg_count = bf->argc + argc;
     if (js_check_stack_overflow(ctx_rt, sizeof(GCValue) * arg_count))
         return JS_ThrowStackOverflow(ctx);
@@ -20458,7 +20469,7 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
                         goto name ## _slow_path;                        \
                     if (unlikely(idx >= p->u.array.count))              \
                         goto name ## _slow_path;                        \
-                    val = p->u.array.u.values[idx];   \
+                    val = p_array_values[idx];   \
                 } else {                                                \
                     name ## _slow_path:                                 \
                     sf->cur_pc = pc;                                    \
@@ -20502,7 +20513,7 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
                         goto get_array_el3_slow_path;
                     if (unlikely(idx >= p->u.array.count))
                         goto get_array_el3_slow_path;
-                    val = p->u.array.u.values[idx];
+                    val = p_array_values[idx];
                 } else {
                 get_array_el3_slow_path:
                     switch (JS_VALUE_GET_TAG(sp[-1])) {
@@ -20624,9 +20635,9 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
                             p_prop[0].u.value = JS_NewInt32(ctx, new_len);
                         }
                         p->u.array.count = new_len;
-                        p->u.array.u.values[idx] = sp[-1];
+                        p_array_values[idx] = sp[-1];
                     } else {
-                        set_value(ctx, &p->u.array.u.values[idx], sp[-1]);
+                        set_value(ctx, &p_array_values[idx], sp[-1]);
                     }
                     
                     sp -= 3;
@@ -21624,7 +21635,7 @@ static JSContext *JS_GetFunctionRealm(JSContext *ctx, GCValue func_obj)
         break;
     case JS_CLASS_BOUND_FUNCTION:
         {
-            JSBoundFunction *bf = p->u.bound_function;
+            JSBoundFunction *bf = (JSBoundFunction *)gc_deref(p->u.bound_function_handle);
             realm = JS_GetFunctionRealm(ctx, bf->func_obj);
         }
         break;
@@ -21905,7 +21916,7 @@ static void js_generator_mark(JSRuntime *rt, GCValue val,
                               JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSGeneratorData *s = p->u.generator_data;
+    JSGeneratorData *s = (JSGeneratorData *)gc_deref(p->u.generator_data_handle);
 
     if (!s || !s->func_state)
         return;
@@ -22039,7 +22050,7 @@ static GCValue js_generator_function_call(JSContext *ctx, GCValue func_obj,
 static void js_async_function_resolve_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSAsyncFunctionState *s = p->u.async_function_data;
+    JSAsyncFunctionState *s = (JSAsyncFunctionState *)gc_deref(p->u.async_function_data_handle);
     if (s) {
         async_func_free(rt, s);
     }
@@ -22049,7 +22060,7 @@ static void js_async_function_resolve_mark(JSRuntime *rt, GCValue val,
                                            JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSAsyncFunctionState *s = p->u.async_function_data;
+    JSAsyncFunctionState *s = (JSAsyncFunctionState *)gc_deref(p->u.async_function_data_handle);
     if (s) {
         mark_func(rt, s);
     }
@@ -22073,7 +22084,7 @@ static int js_async_function_resolve_create(JSContext *ctx,
         }
         p = JS_VALUE_GET_OBJ(resolving_funcs[i]);
         /* ref_count removed - using mark-and-sweep GC */
-        p->u.async_function_data = s;
+        p->u.async_function_data_handle = gc_ptr_to_handle(s);
     }
     return 0;
 }
@@ -22140,7 +22151,7 @@ static GCValue js_async_function_resolve_call(JSContext *ctx,
                                               int flags)
 {
     JSObject *p = JS_VALUE_GET_OBJ(func_obj);
-    JSAsyncFunctionState *s = p->u.async_function_data;
+    JSAsyncFunctionState *s = (JSAsyncFunctionState *)gc_deref(p->u.async_function_data_handle);
     BOOL is_reject = p->class_id - JS_CLASS_ASYNC_FUNCTION_RESOLVE;
     GCValue arg;
 
@@ -38992,7 +39003,7 @@ static int JS_WriteArray(BCWriterState *s, GCValue obj)
     bc_put_leb128(s, len);
     if (p->fast_array) {
         for(i = 0; i < p->u.array.count; i++) {
-            ret = JS_WriteObjectRec(s, p->u.array.u.values[i]);
+            ret = JS_WriteObjectRec(s, p_array_values[i]);
             if (ret)
                 goto fail;
         }
@@ -39088,7 +39099,7 @@ static int JS_WriteObjectTag(BCWriterState *s, GCValue obj)
 static int JS_WriteTypedArray(BCWriterState *s, GCValue obj)
 {
     JSObject *p = JS_VALUE_GET_OBJ(obj);
-    JSTypedArray *ta = p->u.typed_array;
+    JSTypedArray *ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
 
     bc_put_u8(s, BC_TAG_TYPED_ARRAY);
     bc_put_u8(s, p->class_id - JS_CLASS_UINT8C_ARRAY);
@@ -39102,7 +39113,7 @@ static int JS_WriteTypedArray(BCWriterState *s, GCValue obj)
 static int JS_WriteArrayBuffer(BCWriterState *s, GCValue obj)
 {
     JSObject *p = JS_VALUE_GET_OBJ(obj);
-    JSArrayBuffer *abuf = p->u.array_buffer;
+    JSArrayBuffer *abuf = (JSArrayBuffer *)gc_deref(p->u.array_buffer_handle);
     if (abuf->detached) {
         JS_ThrowTypeErrorDetachedArrayBuffer(s->ctx);
         return -1;
@@ -39117,7 +39128,7 @@ static int JS_WriteArrayBuffer(BCWriterState *s, GCValue obj)
 static int JS_WriteSharedArrayBuffer(BCWriterState *s, GCValue obj)
 {
     JSObject *p = JS_VALUE_GET_OBJ(obj);
-    JSArrayBuffer *abuf = p->u.array_buffer;
+    JSArrayBuffer *abuf = (JSArrayBuffer *)gc_deref(p->u.array_buffer_handle);
     assert(!abuf->detached); /* SharedArrayBuffer are never detached */
     bc_put_u8(s, BC_TAG_SHARED_ARRAY_BUFFER);
     bc_put_leb128(s, abuf->byte_length);
@@ -42310,7 +42321,7 @@ static GCValue *build_arg_list(JSContext *ctx, uint32_t *plen,
             }
         } else {
             for(i = 0; i < len; i++) {
-                tab[i] = p->u.array.u.values[i];
+                tab[i] = p_array_values[i];
             }
         }
     } else {
@@ -42394,7 +42405,7 @@ static GCValue js_function_bind(JSContext *ctx, GCValue this_val,
     for(i = 0; i < arg_count; i++) {
         bf->argv[i] = argv[i + 1];
     }
-    p->u.bound_function = bf;
+    p->u.bound_function_handle = bf_handle;
 
     /* XXX: the spec could be simpler by only using GetOwnProperty */
     ret = JS_GetOwnProperty(ctx, NULL, this_val, JS_ATOM_length);
@@ -42753,15 +42764,15 @@ static int JS_CopySubArray(JSContext *ctx,
                 l = min_int64(l, from + 1);
                 l = min_int64(l, to + 1);
                 for(j = 0; j < l; j++) {
-                    set_value(ctx, &p->u.array.u.values[to - j],
-                              p->u.array.u.values[from - j]);
+                    set_value(ctx, &p_array_values[to - j],
+                              p_array_values[from - j]);
                 }
             } else {
                 l = min_int64(l, len - from);
                 l = min_int64(l, len - to);
                 for(j = 0; j < l; j++) {
-                    set_value(ctx, &p->u.array.u.values[to + j],
-                              p->u.array.u.values[from + j]);
+                    set_value(ctx, &p_array_values[to + j],
+                              p_array_values[from + j]);
                 }
             }
             i += l;
@@ -43110,7 +43121,7 @@ static GCValue js_array_with(JSContext *ctx, GCValue this_val,
 
     p = JS_VALUE_GET_OBJ(arr);
     i = 0;
-    pval = p->u.array.u.values;
+    pval = p_array_values;
     if (js_get_fast_array(ctx, obj, &arrp, &count32) && count32 == len) {
         for (; i < idx; i++, pval++)
             *pval = arrp[i];
@@ -43879,7 +43890,7 @@ static GCValue js_array_push(JSContext *ctx, GCValue this_val,
                         return JS_EXCEPTION;
                 }
                 for(i = 0; i < argc; i++)
-                    p->u.array.u.values[p->u.array.count + i] = argv[i];
+                    p_array_values[p->u.array.count + i] = argv[i];
                 p_prop[0].u.value = JS_NewInt32(ctx, new_len);
                 p->u.array.count = new_len;
                 return JS_NewInt32(ctx, new_len);
@@ -44011,7 +44022,7 @@ static GCValue js_array_toReversed(JSContext *ctx, GCValue this_val,
         p = JS_VALUE_GET_OBJ(arr);
 
         i = len - 1;
-        pval = p->u.array.u.values;
+        pval = p_array_values;
         if (js_get_fast_array(ctx, obj, &arrp, &count32) && count32 == len) {
             for (; i >= 0; i--, pval++)
                 *pval = arrp[i];
@@ -44194,8 +44205,8 @@ static GCValue js_array_toSpliced(JSContext *ctx, GCValue this_val,
         goto done;
 
     p = JS_VALUE_GET_OBJ(arr);
-    pval = &p->u.array.u.values[0];
-    last = &p->u.array.u.values[newlen];
+    pval = &p_array_values[0];
+    last = &p_array_values[newlen];
 
     if (js_get_fast_array(ctx, obj, &arrp, &count32) && count32 == len) {
         for (i = 0; i < start; i++, pval++)
@@ -44561,7 +44572,7 @@ static GCValue js_array_toSorted(JSContext *ctx, GCValue this_val,
     if (len > 0) {
         p = JS_VALUE_GET_OBJ(arr);
         i = 0;
-        pval = p->u.array.u.values;
+        pval = p_array_values;
         if (js_get_fast_array(ctx, obj, &arrp, &count32) && count32 == len) {
             for (; i < len; i++, pval++)
                 *pval = arrp[i];
@@ -44602,7 +44613,7 @@ typedef struct JSArrayIteratorData {
 static void js_array_iterator_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSArrayIteratorData *it = p->u.array_iterator_data;
+    JSArrayIteratorData *it = (JSArrayIteratorData *)gc_deref(p->u.array_iterator_data_handle);
     if (it) {
         
         /* GC frees automatically */;
@@ -44613,7 +44624,7 @@ static void js_array_iterator_mark(JSRuntime *rt, GCValue val,
                                    JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSArrayIteratorData *it = p->u.array_iterator_data;
+    JSArrayIteratorData *it = (JSArrayIteratorData *)gc_deref(p->u.array_iterator_data_handle);
     if (it) {
         JS_MarkValue(rt, it->obj, mark_func);
     }
@@ -44727,7 +44738,7 @@ typedef struct JSIteratorWrapData {
 static void js_iterator_wrap_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSIteratorWrapData *it = p->u.iterator_wrap_data;
+    JSIteratorWrapData *it = (JSIteratorWrapData *)gc_deref(p->u.iterator_wrap_data_handle);
     if (it) {
         
         
@@ -44739,7 +44750,7 @@ static void js_iterator_wrap_mark(JSRuntime *rt, GCValue val,
                                   JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSIteratorWrapData *it = p->u.iterator_wrap_data;
+    JSIteratorWrapData *it = (JSIteratorWrapData *)gc_deref(p->u.iterator_wrap_data_handle);
     if (it) {
         JS_MarkValue(rt, it->wrapped_iter, mark_func);
         JS_MarkValue(rt, it->wrapped_next, mark_func);
@@ -44826,7 +44837,7 @@ typedef struct JSIteratorConcatData {
 static void js_iterator_concat_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSIteratorConcatData *it = p->u.iterator_concat_data;
+    JSIteratorConcatData *it = (JSIteratorConcatData *)gc_deref(p->u.iterator_concat_data_handle);
     if (it) {
         
         
@@ -44840,7 +44851,7 @@ static void js_iterator_concat_mark(JSRuntime *rt, GCValue val,
                                     JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSIteratorConcatData *it = p->u.iterator_concat_data;
+    JSIteratorConcatData *it = (JSIteratorConcatData *)gc_deref(p->u.iterator_concat_data_handle);
     if (it) {
         JS_MarkValue(rt, it->iter, mark_func);
         JS_MarkValue(rt, it->next, mark_func);
@@ -45468,7 +45479,7 @@ static GCValue js_iterator_proto_set_toStringTag(JSContext *ctx, GCValue this_va
 static void js_iterator_helper_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSIteratorHelperData *it = p->u.iterator_helper_data;
+    JSIteratorHelperData *it = (JSIteratorHelperData *)gc_deref(p->u.iterator_helper_data_handle);
     if (it) {
         
         
@@ -45482,7 +45493,7 @@ static void js_iterator_helper_mark(JSRuntime *rt, GCValue val,
                                    JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSIteratorHelperData *it = p->u.iterator_helper_data;
+    JSIteratorHelperData *it = (JSIteratorHelperData *)gc_deref(p->u.iterator_helper_data_handle);
     if (it) {
         JS_MarkValue(rt, it->obj, mark_func);
         JS_MarkValue(rt, it->func, mark_func);
@@ -49309,7 +49320,7 @@ static GCValue js_regexp_exec(JSContext *ctx, GCValue this_val,
                 JS_FreeAtom(ctx, group_name);
                 group_name = JS_ATOM_NULL;
             }
-            p_obj->u.array.u.values[p_obj->u.array.count++] = val;
+            ((GCValue*)gc_deref(p_obj->u.array.u.values_handle))[p_obj->u.array.count++] = val;
         }
 
         if (!JS_IsUndefined(indices)) {
@@ -49580,7 +49591,7 @@ typedef struct JSRegExpStringIteratorData {
 static void js_regexp_string_iterator_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSRegExpStringIteratorData *it = p->u.regexp_string_iterator_data;
+    JSRegExpStringIteratorData *it = (JSRegExpStringIteratorData *)gc_deref(p->u.regexp_string_iterator_data_handle);
     if (it) {
         
         
@@ -49592,7 +49603,7 @@ static void js_regexp_string_iterator_mark(JSRuntime *rt, GCValue val,
                                            JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSRegExpStringIteratorData *it = p->u.regexp_string_iterator_data;
+    JSRegExpStringIteratorData *it = (JSRegExpStringIteratorData *)gc_deref(p->u.regexp_string_iterator_data_handle);
     if (it) {
         JS_MarkValue(rt, it->iterating_regexp, mark_func);
         JS_MarkValue(rt, it->iterated_string, mark_func);
@@ -53134,7 +53145,7 @@ static void js_map_finalizer(JSRuntime *rt, GCValue val)
     JSMapRecord *mr;
 
     p = JS_VALUE_GET_OBJ(val);
-    s = p->u.map_state;
+    s = (JSMapState *)gc_deref(p->u.map_state_handle);
     if (s) {
         /* if the object is deleted we are sure that no iterator is
            using it */
@@ -53161,7 +53172,7 @@ static void js_map_mark(JSRuntime *rt, GCValue val, JS_MarkFunc *mark_func)
     struct list_head *el;
     JSMapRecord *mr;
 
-    s = p->u.map_state;
+    s = (JSMapState *)gc_deref(p->u.map_state_handle);
     if (s) {
         list_for_each(el, &s->records) {
             mr = list_entry(el, JSMapRecord, link);
@@ -53186,7 +53197,7 @@ static void js_map_iterator_finalizer(JSRuntime *rt, GCValue val)
     JSMapIteratorData *it;
 
     p = JS_VALUE_GET_OBJ(val);
-    it = p->u.map_iterator_data;
+    it = (JSMapIteratorData *)gc_deref(p->u.map_iterator_data_handle);
     if (it) {
         /* During the GC sweep phase the Map finalizer may be
            called before the Map iterator finalizer */
@@ -53203,7 +53214,7 @@ static void js_map_iterator_mark(JSRuntime *rt, GCValue val,
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
     JSMapIteratorData *it;
-    it = p->u.map_iterator_data;
+    it = (JSMapIteratorData *)gc_deref(p->u.map_iterator_data_handle);
     if (it) {
         /* the record is already marked by the object */
         JS_MarkValue(rt, it->obj, mark_func);
@@ -54226,7 +54237,7 @@ static int js_create_resolving_functions(JSContext *ctx,
 
 static void js_promise_resolve_function_finalizer(JSRuntime *rt, GCValue val)
 {
-    JSPromiseFunctionData *s = JS_VALUE_GET_OBJ(val)->u.promise_function_data;
+    JSPromiseFunctionData *s = (JSPromiseFunctionData *)gc_deref(JS_VALUE_GET_OBJ(val)->u.promise_function_data_handle);
     if (s) {
         js_promise_resolve_function_free_resolved(rt, s->presolved);
         
@@ -54237,7 +54248,7 @@ static void js_promise_resolve_function_finalizer(JSRuntime *rt, GCValue val)
 static void js_promise_resolve_function_mark(JSRuntime *rt, GCValue val,
                                              JS_MarkFunc *mark_func)
 {
-    JSPromiseFunctionData *s = JS_VALUE_GET_OBJ(val)->u.promise_function_data;
+    JSPromiseFunctionData *s = (JSPromiseFunctionData *)gc_deref(JS_VALUE_GET_OBJ(val)->u.promise_function_data_handle);
     if (s) {
         JS_MarkValue(rt, s->promise, mark_func);
     }
@@ -54255,7 +54266,7 @@ static GCValue js_promise_resolve_function_call(JSContext *ctx,
     GCValue then;
     BOOL is_reject;
 
-    s = p->u.promise_function_data;
+    s = (JSPromiseFunctionData *)gc_deref(p->u.promise_function_data_handle);
     if (!s || s->presolved->already_resolved)
         return JS_UNDEFINED;
     s->presolved->already_resolved = TRUE;
@@ -57636,7 +57647,7 @@ static GCValue js_shared_array_buffer_constructor(JSContext *ctx,
 static void js_array_buffer_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSArrayBuffer *abuf = p->u.array_buffer;
+    JSArrayBuffer *abuf = (JSArrayBuffer *)gc_deref(p->u.array_buffer_handle);
     struct list_head *el, *el1;
 
     if (abuf) {
@@ -57814,7 +57825,7 @@ static JSArrayBuffer *js_get_array_buffer(JSContext *ctx, GCValue obj)
         JS_ThrowTypeErrorInvalidClass(ctx, JS_CLASS_ARRAY_BUFFER);
         return GC_HANDLE_NULL;
     }
-    return p->u.array_buffer;
+    return (JSArrayBuffer *)gc_deref(p->u.array_buffer_handle);
 }
 
 /* return NULL if exception. WARNING: any JS call can detach the
@@ -58091,8 +58102,8 @@ static BOOL typed_array_is_oob(JSObject *p)
     assert(p->class_id >= JS_CLASS_UINT8C_ARRAY);
     assert(p->class_id <= JS_CLASS_FLOAT64_ARRAY);
 
-    ta = p->u.typed_array;
-    abuf = ((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
+    abuf = (JSArrayBuffer *)gc_deref(((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer_handle);
     if (abuf->detached)
         return TRUE;
     len = abuf->byte_length;
@@ -58159,7 +58170,7 @@ static GCValue js_typed_array_get_buffer(JSContext *ctx,
     p = get_typed_array(ctx, this_val);
     if (!p)
         return JS_EXCEPTION;
-    ta = p->u.typed_array;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     return GC_MKHANDLE(JS_TAG_OBJECT, ta->buffer_handle);
 }
 
@@ -58175,7 +58186,7 @@ static GCValue js_typed_array_get_byteLength(JSContext *ctx,
         return JS_EXCEPTION;
     if (typed_array_is_oob(p))
         return JS_NewInt32(ctx, 0);
-    ta = p->u.typed_array;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     if (!ta->track_rab)
         return JS_NewUint32(ctx, ta->length);
     size_log2 = typed_array_size_log2(p->class_id);
@@ -58192,7 +58203,7 @@ static GCValue js_typed_array_get_byteOffset(JSContext *ctx,
         return JS_EXCEPTION;
     if (typed_array_is_oob(p))
         return JS_NewInt32(ctx, 0);
-    ta = p->u.typed_array;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     return JS_NewUint32(ctx, ta->offset);
 }
 
@@ -58221,7 +58232,7 @@ GCValue JS_GetTypedArrayBuffer(JSContext *ctx, GCValue obj,
         return JS_EXCEPTION;
     if (typed_array_is_oob(p))
         return JS_ThrowTypeErrorArrayBufferOOB(ctx);
-    ta = p->u.typed_array;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     if (pbyte_offset)
         *pbyte_offset = ta->offset;
     if (pbyte_length)
@@ -58276,10 +58287,10 @@ static GCValue js_typed_array_set_internal(JSContext *ctx,
     src_p = JS_VALUE_GET_OBJ(src_obj);
     if (src_p->class_id >= JS_CLASS_UINT8C_ARRAY &&
         src_p->class_id <= JS_CLASS_FLOAT64_ARRAY) {
-        JSTypedArray *dest_ta = p->u.typed_array;
-        JSArrayBuffer *dest_abuf = ((JSObject *)gc_deref(dest_ta->buffer_handle))->u.array_buffer;
-        JSTypedArray *src_ta = src_p->u.typed_array;
-        JSArrayBuffer *src_abuf = ((JSObject *)gc_deref(src_ta->buffer_handle))->u.array_buffer;
+        JSTypedArray *dest_ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
+        JSArrayBuffer *dest_abuf = (JSArrayBuffer *)gc_deref(((JSObject *)gc_deref(dest_ta->buffer_handle))->u.array_buffer_handle);
+        JSTypedArray *src_ta = (JSTypedArray *)gc_deref(src_p->u.typed_array_handle);
+        JSArrayBuffer *src_abuf = (JSArrayBuffer *)gc_deref(((JSObject *)gc_deref(src_ta->buffer_handle))->u.array_buffer_handle);
         int shift = typed_array_size_log2(p->class_id);
 
         if (typed_array_is_oob(src_p))
@@ -59316,7 +59327,7 @@ static GCValue js_typed_array_subarray(JSContext *ctx, GCValue this_val,
         goto exception;
 
     shift = typed_array_size_log2(p->class_id);
-    ta = p->u.typed_array;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     /* Read byteOffset (ta->offset) even if detached */
     offset = ta->offset + (start << shift);
 
@@ -59754,14 +59765,14 @@ static int typed_array_init(JSContext *ctx, GCValue obj,
         return -1;
     }
     pbuffer = JS_VALUE_GET_OBJ(buffer);
-    abuf = pbuffer->u.array_buffer;
+    abuf = (JSArrayBuffer *)gc_deref(pbuffer->u.array_buffer_handle);
     ta->obj_handle = GC_PTR_TO_HANDLE(p);
     ta->buffer_handle = GC_VALUE_GET_HANDLE(buffer);
     ta->offset = offset;
     ta->length = len << size_log2;
     ta->track_rab = track_rab;
     list_add_tail(&ta->link, &abuf->array_list);
-    p->u.typed_array = ta;
+    p->u.typed_array_handle = gc_ptr_to_handle(ta);
     p->u.array.count = len;
     p->u.array.u.ptr = abuf->data + offset;
     return 0;
@@ -59881,9 +59892,9 @@ static GCValue js_typed_array_constructor_ta(JSContext *ctx,
         JS_ThrowTypeErrorArrayBufferOOB(ctx);
         goto fail;
     }
-    ta = p->u.typed_array;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     src_buffer = gc_deref(ta->buffer_handle);
-    src_abuf = src_buffer->u.array_buffer;
+    src_abuf = (JSArrayBuffer *)gc_deref(src_buffer->u.array_buffer_handle);
     size_log2 = typed_array_size_log2(classid);
     buffer = js_array_buffer_constructor1(ctx, JS_UNDEFINED,
                                           (uint64_t)len << size_log2,
@@ -59943,7 +59954,7 @@ static GCValue js_typed_array_constructor(JSContext *ctx,
         JSObject *p = JS_VALUE_GET_OBJ(argv[0]);
         if (p->class_id == JS_CLASS_ARRAY_BUFFER ||
             p->class_id == JS_CLASS_SHARED_ARRAY_BUFFER) {
-            abuf = p->u.array_buffer;
+            abuf = (JSArrayBuffer *)gc_deref(p->u.array_buffer_handle);
             if (JS_ToIndex(ctx, &offset, argv[1]))
                 return JS_EXCEPTION;
             if (abuf->detached)
@@ -59994,7 +60005,7 @@ static GCValue js_typed_array_constructor(JSContext *ctx,
 static void js_typed_array_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSTypedArray *ta = p->u.typed_array;
+    JSTypedArray *ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     if (ta) {
         /* during the GC the finalizers are called in an arbitrary
            order so the ArrayBuffer finalizer may have been called */
@@ -60010,7 +60021,7 @@ static void js_typed_array_mark(JSRuntime *rt, GCValue val,
                                 JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSTypedArray *ta = p->u.typed_array;
+    JSTypedArray *ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     if (ta && ta->buffer_handle != GC_HANDLE_NULL) {
         JS_MarkValue(rt, GC_MKHANDLE(JS_TAG_OBJECT, ta->buffer_handle), mark_func);
     }
@@ -60087,7 +60098,7 @@ static GCValue js_dataview_constructor(JSContext *ctx,
     ta->length = len;
     ta->track_rab = track_rab;
     list_add_tail(&ta->link, &abuf->array_list);
-    p->u.typed_array = ta;
+    p->u.typed_array_handle = gc_ptr_to_handle(ta);
     return obj;
 }
 
@@ -60098,8 +60109,8 @@ static BOOL dataview_is_oob(JSObject *p)
     JSTypedArray *ta;
 
     assert(p->class_id == JS_CLASS_DATAVIEW);
-    ta = p->u.typed_array;
-    abuf = ((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
+    abuf = (JSArrayBuffer *)gc_deref(((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer_handle);
     if (abuf->detached)
         return TRUE;
     if (ta->offset > abuf->byte_length)
@@ -60130,7 +60141,7 @@ static GCValue js_dataview_get_buffer(JSContext *ctx, GCValue this_val)
     p = get_dataview(ctx, this_val);
     if (!p)
         return JS_EXCEPTION;
-    ta = p->u.typed_array;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     return GC_MKHANDLE(JS_TAG_OBJECT, ta->buffer_handle);
 }
 
@@ -60145,9 +60156,9 @@ static GCValue js_dataview_get_byteLength(JSContext *ctx, GCValue this_val)
         return JS_EXCEPTION;
     if (dataview_is_oob(p))
         return JS_ThrowTypeErrorArrayBufferOOB(ctx);
-    ta = p->u.typed_array;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     if (ta->track_rab) {
-        abuf = ((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer;
+        abuf = (JSArrayBuffer *)gc_deref(((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer_handle);
         return JS_NewUint32(ctx, abuf->byte_length - ta->offset);
     }
     return JS_NewUint32(ctx, ta->length);
@@ -60163,7 +60174,7 @@ static GCValue js_dataview_get_byteOffset(JSContext *ctx, GCValue this_val)
         return JS_EXCEPTION;
     if (dataview_is_oob(p))
         return JS_ThrowTypeErrorArrayBufferOOB(ctx);
-    ta = p->u.typed_array;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
     return JS_NewUint32(ctx, ta->offset);
 }
 
@@ -60187,7 +60198,7 @@ static GCValue js_dataview_getValue(JSContext *ctx,
         return JS_EXCEPTION;
     littleEndian = argc > 1 && JS_ToBool(ctx, argv[1]);
     is_swap = littleEndian ^ !is_be();
-    abuf = ((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer;
+    abuf = (JSArrayBuffer *)gc_deref(((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer_handle);
     if (abuf->detached)
         return JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
     // order matters: this check should come before the next one
@@ -60329,7 +60340,7 @@ static GCValue js_dataview_setValue(JSContext *ctx,
     }
     littleEndian = argc > 2 && JS_ToBool(ctx, argv[2]);
     is_swap = littleEndian ^ !is_be();
-    abuf = ((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer;
+    abuf = (JSArrayBuffer *)gc_deref(((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer_handle);
     if (abuf->detached)
         return JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
     // order matters: this check should come before the next one
@@ -60446,8 +60457,8 @@ static int js_atomics_get_ptr(JSContext *ctx,
         JS_ThrowTypeError(ctx, "integer TypedArray expected");
         return -1;
     }
-    ta = p->u.typed_array;
-    abuf = ((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer;
+    ta = (JSTypedArray *)gc_deref(p->u.typed_array_handle);
+    abuf = (JSArrayBuffer *)gc_deref(((JSObject *)gc_deref(ta->buffer_handle))->u.array_buffer_handle);
     if (!abuf->shared) {
         if (is_waitable == 2) {
             JS_ThrowTypeError(ctx, "not a SharedArrayBuffer TypedArray");
