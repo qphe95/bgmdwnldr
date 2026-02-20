@@ -961,7 +961,7 @@ typedef struct JSProperty {
                and the init function pointer */
             uintptr_t realm_and_id; /* realm and init_id (JS_AUTOINIT_ID_x)
                                        in the 2 low bits */
-            void *opaque;
+            GCHandle opaque_handle; /* Handle to opaque data, GC_HANDLE_NULL if none */
         } init;
     } u;
 } JSProperty;
@@ -1011,7 +1011,7 @@ struct JSObject {
     GCHandle shape_handle; /* Handle to shape (prototype and property names + flag) */
     GCHandle prop_handle; /* Handle to prop array */
     union {
-        void *opaque;
+        GCHandle opaque_handle; /* Handle to class-specific opaque data, GC_HANDLE_NULL if none */
         GCHandle bound_function_handle; /* JS_CLASS_BOUND_FUNCTION - handle to JSBoundFunction */
         GCHandle c_function_data_record_handle; /* JS_CLASS_C_FUNCTION_DATA - handle to JSCFunctionDataRecord */
         GCHandle for_in_iterator_handle; /* JS_CLASS_FOR_IN_ITERATOR - handle to JSForInIterator */
@@ -6106,7 +6106,7 @@ static GCValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
     p->tmp_mark = 0;
     p->is_HTMLDDA = 0;
     p->weakref_count = 0;
-    p->u.opaque = NULL;
+    p->u.opaque_handle = GC_HANDLE_NULL;
     /* Use sh->handle instead of GC_PTR_TO_HANDLE(sh) because shapes are offset from alloc base */
     p->shape_handle = sh->handle;
     
@@ -6914,7 +6914,7 @@ static void free_object(JSRuntime *rt, JSObject *p)
 
     /* fail safe */
     p->class_id = 0;
-    p->u.opaque = NULL;
+    p->u.opaque_handle = GC_HANDLE_NULL;
     p->u.func.var_refs_handle = GC_HANDLE_NULL;
     p->u.func.home_object_handle = GC_HANDLE_NULL;
 
@@ -8107,7 +8107,7 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
             /* TODO */
         default:
             /* XXX: class definition should have an opaque block size */
-            if (p->u.opaque) {
+            if (p->u.opaque_handle != GC_HANDLE_NULL) {
                 s->memory_used_count += 1;
             }
             break;
@@ -9092,7 +9092,7 @@ static int JS_AutoInitProperty(JSContext *ctx, JSObject *p, JSAtom prop,
     id = js_autoinit_get_id(pr);
     func = js_autoinit_func_table[id];
     /* 'func' shall not modify the object properties 'pr' */
-    val = func(realm, p, prop, pr->u.init.opaque);
+    val = func(realm, p, prop, gc_deref(pr->u.init.opaque_handle));
     js_autoinit_free(ctx_rt, pr);
     prs->flags &= ~JS_PROP_TMASK;
     pr->u.value = JS_UNDEFINED;
@@ -11710,7 +11710,7 @@ static int JS_DefineAutoInitProperty(JSContext *ctx, GCValue this_obj,
     assert((pr->u.init.realm_and_id & 3) == 0);
     assert(id <= 3);
     pr->u.init.realm_and_id |= id;
-    pr->u.init.opaque = opaque;
+    pr->u.init.opaque_handle = gc_ptr_to_handle(opaque);
     return TRUE;
 }
 
@@ -12066,7 +12066,7 @@ void JS_SetOpaque(GCValue obj, void *opaque)
    JSObject *p;
     if (JS_VALUE_GET_TAG(obj) == JS_TAG_OBJECT) {
         p = JS_VALUE_GET_OBJ(obj);
-        p->u.opaque = opaque;
+        p->u.opaque_handle = gc_ptr_to_handle(opaque);
     }
 }
 
@@ -12075,11 +12075,11 @@ void *JS_GetOpaque(GCValue obj, JSClassID class_id)
 {
     JSObject *p;
     if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
-        return GC_HANDLE_NULL;
+        return NULL;
     p = JS_VALUE_GET_OBJ(obj);
     if (p->class_id != class_id)
-        return GC_HANDLE_NULL;
-    return p->u.opaque;
+        return NULL;
+    return gc_deref(p->u.opaque_handle);
 }
 
 void *JS_GetOpaque2(JSContext *ctx, GCValue obj, JSClassID class_id)
@@ -12096,11 +12096,11 @@ void *JS_GetAnyOpaque(GCValue obj, JSClassID *class_id)
     JSObject *p;
     if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT) {
         *class_id = 0;
-        return GC_HANDLE_NULL;
+        return NULL;
     }
     p = JS_VALUE_GET_OBJ(obj);
     *class_id = p->class_id;
-    return p->u.opaque;
+    return gc_deref(p->u.opaque_handle);
 }
 
 static GCValue JS_ToPrimitiveFree(JSContext *ctx, GCValue val, int hint)
@@ -15183,7 +15183,7 @@ static void js_print_object(JSPrintValueState *s, JSObject *p)
         js_printf(s, "]");
         comma_state = 2;
     } else if (p->class_id == JS_CLASS_MAP || p->class_id == JS_CLASS_SET) {
-        JSMapState *ms = p->u.opaque;
+        JSMapState *ms = (JSMapState *)gc_deref(p->u.opaque_handle);
         struct list_head *el;
         
         if (!ms)
@@ -15273,7 +15273,7 @@ static void js_print_object(JSPrintValueState *s, JSObject *p)
                             js_printf(s, "[autoinit %p %d %p]",
                                     (void *)js_autoinit_get_realm(pr),
                                     js_autoinit_get_id(pr),
-                                    (void *)pr->u.init.opaque);
+                                    (void *)gc_deref(pr->u.init.opaque_handle));
                         } else {
                             /* XXX: could autoinit but need to restart
                                the iteration */
@@ -21648,7 +21648,7 @@ static JSContext *JS_GetFunctionRealm(JSContext *ctx, GCValue func_obj)
         break;
     case JS_CLASS_PROXY:
         {
-            JSProxyData *s = p->u.opaque;
+            JSProxyData *s = (JSProxyData *)gc_deref(p->u.opaque_handle);
             if (!s)
                 return ctx;
             if (s->is_revoked) {
@@ -52180,7 +52180,7 @@ static int js_resolve_proxy(JSContext *ctx, GCValue *pval, BOOL throw_exception)
                 JS_ThrowStackOverflow(ctx);
             return -1;
         }
-        s = p->u.opaque;
+        s = (JSProxyData *)gc_deref(p->u.opaque_handle);
         if (s->is_revoked) {
             if (throw_exception)
                 JS_ThrowTypeErrorRevokedProxy(ctx);
@@ -57646,7 +57646,11 @@ static GCValue js_array_buffer_constructor3(JSContext *ctx,
     abuf->free_func = free_func;
     if (alloc_flag && buf)
         memcpy(abuf->data, buf, len);
-    JS_SetOpaque(obj, abuf);
+    /* Store handle to array buffer in the object */
+    {
+        JSObject *p = JS_VALUE_GET_OBJ(obj);
+        p->u.array_buffer_handle = gc_ptr_to_handle(abuf);
+    }
     return obj;
  fail:
     
