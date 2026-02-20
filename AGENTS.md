@@ -68,8 +68,8 @@ adb shell dumpsys activity activities | grep mFocusedApp
 ### Entering Test URL
 
 ```bash
-# Tap input field (center of text box)
-adb shell input tap 540 600
+# Tap input field (center of URL box)
+adb shell input tap 540 1126
 
 # Clear existing text
 adb shell input keyevent --longpress 67 67 67 67 67 67 67 67
