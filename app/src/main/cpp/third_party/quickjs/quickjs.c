@@ -408,11 +408,11 @@ struct JSClass {
 #define JS_MODE_BACKTRACE_BARRIER (1 << 3) /* stop backtrace before this frame */
 
 typedef struct JSStackFrame {
-    struct JSStackFrame *prev_frame; /* NULL if first stack frame */
+    GCHandle prev_frame_handle; /* Handle to previous stack frame, GC_HANDLE_NULL if first */
     GCValue cur_func; /* current function, JS_UNDEFINED if the frame is detached */
-    GCValue *arg_buf; /* arguments */
-    GCValue *var_buf; /* variables */
-    struct JSVarRef **var_refs; /* references to arguments or local variables */ 
+    GCValue *arg_buf; /* arguments (C stack pointer, not GC managed) */
+    GCValue *var_buf; /* variables (C stack pointer, not GC managed) */
+    GCHandle var_refs_handle; /* Handle to array of JSVarRef handles */
     const uint8_t *cur_pc; /* only used in bytecode functions : PC of the
                         instruction after the call */
     int arg_count;
@@ -449,12 +449,12 @@ typedef struct JSVarRef {
     uint8_t is_const;   /* only used with global variables */
     
     GCValue *pvalue; /* pointer to the value, either on the stack or
-                        to 'value' */
+                        to 'value' (C stack pointer, not GC managed) */
     union {
         GCValue value; /* used when is_detached = TRUE */
         struct {
             uint16_t var_ref_idx; /* index in JSStackFrame.var_refs[] */
-            JSStackFrame *stack_frame;
+            GCHandle stack_frame_handle; /* Handle to stack frame (GC_HANDLE_NULL if detached) */
         }; /* used when is_detached = FALSE */
     };
 } JSVarRef;
@@ -713,7 +713,7 @@ typedef struct JSFunctionBytecode {
     uint16_t defined_arg_count; /* for length function property */
     uint16_t stack_size; /* maximum stack size */
     uint16_t var_ref_count; /* number of local variable references */
-    JSContext *realm; /* function realm */
+    GCHandle realm_handle; /* Handle to function realm context */
     GCValue *cpool; /* constant pool (self pointer) */
     int cpool_count;
     int closure_var_count;
@@ -746,12 +746,12 @@ typedef struct JSForInIterator {
     uint32_t atom_count;
     uint8_t in_prototype_chain;
     uint8_t is_array;
-    JSPropertyEnum *tab_atom; /* is_array = FALSE */
+    GCHandle tab_atom_handle; /* Handle to JSPropertyEnum array, GC_HANDLE_NULL if is_array = TRUE */
 } JSForInIterator;
 
 typedef struct JSRegExp {
-    JSString *pattern;
-    JSString *bytecode; /* also contains the flags */
+    GCHandle pattern_handle; /* Handle to JSString pattern */
+    GCHandle bytecode_handle; /* Handle to JSString bytecode (contains flags) */
 } JSRegExp;
 
 typedef struct JSProxyData {
@@ -826,7 +826,7 @@ typedef enum {
 
 typedef struct {
     uint32_t operator_index;
-    JSObject *ops[JS_OVOP_BINARY_COUNT]; /* self operators */
+    GCHandle ops_handles[JS_OVOP_BINARY_COUNT]; /* handles to self operator objects */
 } JSBinaryOperatorDefEntry;
 
 typedef struct {
@@ -837,15 +837,15 @@ typedef struct {
 typedef struct {
     uint32_t operator_counter;
     BOOL is_primitive; /* OperatorSet for a primitive type */
-    /* NULL if no operator is defined */
-    JSObject *self_ops[JS_OVOP_COUNT]; /* self operators */
+    /* GC_HANDLE_NULL if no operator is defined */
+    GCHandle self_ops_handles[JS_OVOP_COUNT]; /* handles to self operator objects */
     JSBinaryOperatorDef left;
     JSBinaryOperatorDef right;
 } JSOperatorSetData;
 
 typedef struct JSReqModuleEntry {
     JSAtom module_name;
-    JSModuleDef *module; /* used using resolution */
+    GCHandle module_handle; /* handle to module definition, GC_HANDLE_NULL before resolution */
     GCValue attributes; /* JS_UNDEFINED or an object contains the attributes as key/value */
 } JSReqModuleEntry;
 
@@ -858,7 +858,7 @@ typedef struct JSExportEntry {
     union {
         struct {
             int var_idx; /* closure variable index */
-            JSVarRef *var_ref; /* if != NULL, reference to the variable */
+            GCHandle var_ref_handle; /* handle to variable reference, GC_HANDLE_NULL if not created */
         } local; /* for local export */
         int req_module_idx; /* module for indirect export */
     } u;
@@ -917,16 +917,16 @@ struct JSModuleDef {
     JSModuleStatus status : 8;
     /* temp use during js_module_link() & js_module_evaluate() */
     int dfs_index, dfs_ancestor_index;
-    JSModuleDef *stack_prev;
+    GCHandle stack_prev_handle; /* handle to previous module in stack during linking */
     /* temp use during js_module_evaluate() */
-    JSModuleDef **async_parent_modules;
+    GCHandle async_parent_modules_handle; /* handle to array of module handles */
     int async_parent_modules_count;
     int async_parent_modules_size;
     int pending_async_dependencies;
     BOOL async_evaluation; /* true: async_evaluation_timestamp corresponds to [[AsyncEvaluationOrder]] 
                               false: [[AsyncEvaluationOrder]] is UNSET or DONE */
     int64_t async_evaluation_timestamp;
-    JSModuleDef *cycle_root;
+    GCHandle cycle_root_handle; /* handle to cycle root module */
     GCValue promise; /* corresponds to spec field: capability */
     GCValue resolving_funcs[2]; /* corresponds to spec field: capability */
 
@@ -940,7 +940,7 @@ struct JSModuleDef {
 
 typedef struct JSJobEntry {
     struct list_head link;
-    JSContext *realm;
+    GCHandle realm_handle; /* handle to JSContext realm */
     JSJobFunc *job_func;
     int argc;
     GCValue argv[0];
@@ -1031,12 +1031,12 @@ struct JSObject {
         struct JSAsyncGeneratorData *async_generator_data; /* JS_CLASS_ASYNC_GENERATOR */
         struct { /* JS_CLASS_BYTECODE_FUNCTION: 12/24 bytes */
             /* also used by JS_CLASS_GENERATOR_FUNCTION, JS_CLASS_ASYNC_FUNCTION and JS_CLASS_ASYNC_GENERATOR_FUNCTION */
-            struct JSFunctionBytecode *function_bytecode;
-            JSVarRef **var_refs;
+            GCHandle function_bytecode_handle; /* handle to JSFunctionBytecode */
+            GCHandle var_refs_handle; /* handle to array of JSVarRef handles */
             GCHandle home_object_handle; /* for 'super' access (GC_HANDLE_NULL if none) */
         } func;
         struct { /* JS_CLASS_C_FUNCTION: 12/20 bytes */
-            JSContext *realm;
+            GCHandle realm_handle; /* handle to JSContext realm */
             JSCFunctionType c_function;
             uint8_t length;
             uint8_t cproto;
@@ -1050,7 +1050,7 @@ struct JSObject {
             } u1;
             union {
                 GCValue *values;        /* JS_CLASS_ARRAY, JS_CLASS_ARGUMENTS */
-                JSVarRef **var_refs;     /* JS_CLASS_MAPPED_ARGUMENTS */
+                GCHandle var_refs_handle; /* handle to array of JSVarRef handles, JS_CLASS_MAPPED_ARGUMENTS */
                 void *ptr;              /* JS_CLASS_UINT8C_ARRAY..JS_CLASS_FLOAT64_ARRAY */
                 int8_t *int8_ptr;       /* JS_CLASS_INT8_ARRAY */
                 uint8_t *uint8_ptr;     /* JS_CLASS_UINT8_ARRAY, JS_CLASS_UINT8C_ARRAY */
@@ -1884,7 +1884,7 @@ int JS_EnqueueJob(JSContext *ctx, JSJobFunc *job_func,
     if (e_handle == GC_HANDLE_NULL)
         return -1;
     e = gc_deref(e_handle);
-    e->realm = JS_DupContext(ctx);
+    e->realm_handle = GC_PTR_TO_HANDLE(JS_DupContext(ctx));
     e->job_func = job_func;
     e->argc = argc;
     for(i = 0; i < argc; i++) {
@@ -1924,7 +1924,7 @@ int JS_ExecutePendingJob(JSRuntime *rt, JSContext **pctx)
         rt->job_handles.handles[i] = rt->job_handles.handles[i + 1];
     }
     rt->job_handles.count--;
-    ctx = e->realm;
+    ctx = (JSContext*)gc_deref(e->realm_handle);
     res = e->job_func(ctx, e->argc, (GCValue *)e->argv);
     for(i = 0; i < e->argc; i++)
         
@@ -2049,7 +2049,7 @@ void JS_FreeRuntime(JSRuntime *rt)
         if (!js_handle_array_entry_is_valid(job_handle)) continue;
         JSJobEntry *e = (JSJobEntry *)gc_deref(job_handle);
         if (!e) continue;
-        JS_FreeContext(e->realm);
+        JS_FreeContext((JSContext*)gc_deref(e->realm_handle));
         /* GC frees automatically */;
     }
     rt->job_handles.count = 0;
@@ -6192,8 +6192,8 @@ static GCValue JS_NewObjectFromShape(JSContext *ctx, JSShape *sh, JSClassID clas
         p->u.object_data = JS_UNDEFINED;
         goto set_exotic;
     case JS_CLASS_REGEXP:
-        p->u.regexp.pattern = NULL;
-        p->u.regexp.bytecode = NULL;
+        p->u.regexp.pattern_handle = GC_HANDLE_NULL;
+        p->u.regexp.bytecode_handle = GC_HANDLE_NULL;
         break;
     case JS_CLASS_GLOBAL_OBJECT:
         p->u.global_object.uninitialized_vars = JS_UNDEFINED;
@@ -6382,7 +6382,7 @@ static JSFunctionBytecode *JS_GetFunctionBytecode(GCValue val)
     p = JS_VALUE_GET_OBJ(val);
     if (!js_class_has_bytecode(p->class_id))
         return GC_HANDLE_NULL;
-    return p->u.func.function_bytecode;
+    return (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
 }
 
 static void js_method_set_home_object(JSContext *ctx, GCValue func_obj,
@@ -6397,7 +6397,7 @@ static void js_method_set_home_object(JSContext *ctx, GCValue func_obj,
     p = JS_VALUE_GET_OBJ(func_obj);
     if (!js_class_has_bytecode(p->class_id))
         return;
-    b = p->u.func.function_bytecode;
+    b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
     if (b->need_home_object) {
         if (JS_VALUE_GET_TAG(home_obj) == JS_TAG_OBJECT)
             home_object_handle = GC_VALUE_GET_HANDLE(home_obj);
@@ -6460,7 +6460,7 @@ static GCValue JS_NewCFunction3(JSContext *ctx, JSCFunction *func,
     if (JS_IsException(func_obj))
         return func_obj;
     p = JS_VALUE_GET_OBJ(func_obj);
-    p->u.cfunc.realm = JS_DupContext(ctx);
+    p->u.cfunc.realm_handle = GC_PTR_TO_HANDLE(JS_DupContext(ctx));
     p->u.cfunc.c_function.generic = func;
     p->u.cfunc.length = length;
     p->u.cfunc.cproto = cproto;
@@ -6700,9 +6700,10 @@ static void free_var_ref(JSRuntime *rt, JSVarRef *var_ref)
         if (var_ref->is_detached) {
             
         } else {
-            JSStackFrame *sf = var_ref->stack_frame;
-            assert(sf->var_refs[var_ref->var_ref_idx] == var_ref);
-            sf->var_refs[var_ref->var_ref_idx] = NULL;
+            JSStackFrame *sf = (JSStackFrame *)gc_deref(var_ref->stack_frame_handle);
+            JSVarRef **var_refs = (JSVarRef **)gc_deref(sf->var_refs_handle);
+            assert(var_refs[var_ref->var_ref_idx] == var_ref);
+            var_refs[var_ref->var_ref_idx] = NULL;
             if (sf->js_mode & JS_MODE_ASYNC) {
                 JSAsyncFunctionState *async_func = container_of(sf, JSAsyncFunctionState, frame);
                 async_func_free(rt, async_func);
@@ -6753,8 +6754,8 @@ static void js_c_function_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
 
-    if (p->u.cfunc.realm)
-        JS_FreeContext(p->u.cfunc.realm);
+    if (p->u.cfunc.realm_handle != GC_HANDLE_NULL)
+        JS_FreeContext((JSContext *)gc_deref(p->u.cfunc.realm_handle));
 }
 
 static void js_c_function_mark(JSRuntime *rt, GCValue val,
@@ -6762,8 +6763,8 @@ static void js_c_function_mark(JSRuntime *rt, GCValue val,
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
 
-    if (p->u.cfunc.realm)
-        mark_func(rt, p->u.cfunc.realm);
+    if (p->u.cfunc.realm_handle != GC_HANDLE_NULL)
+        mark_func(rt, (JSContext *)gc_deref(p->u.cfunc.realm_handle));
 }
 
 static void js_bytecode_function_finalizer(JSRuntime *rt, GCValue val)
@@ -6774,9 +6775,9 @@ static void js_bytecode_function_finalizer(JSRuntime *rt, GCValue val)
     int i;
 
     /* home_object is a handle, GC manages it automatically */
-    b = p->u.func.function_bytecode;
+    b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
     if (b) {
-        var_refs = p->u.func.var_refs;
+        var_refs = (JSVarRef **)gc_deref(p->u.func.var_refs_handle);
         if (var_refs) {
             for(i = 0; i < b->closure_var_count; i++)
                 free_var_ref(rt, var_refs[i]);
@@ -6790,8 +6791,8 @@ static void js_bytecode_function_mark(JSRuntime *rt, GCValue val,
                                       JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSVarRef **var_refs = p->u.func.var_refs;
-    JSFunctionBytecode *b = p->u.func.function_bytecode;
+    JSVarRef **var_refs = (JSVarRef **)gc_deref(p->u.func.var_refs_handle);
+    JSFunctionBytecode *b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
     int i;
 
     if (p->u.func.home_object_handle != GC_HANDLE_NULL) {
@@ -6848,8 +6849,9 @@ static void js_for_in_iterator_finalizer(JSRuntime *rt, GCValue val)
 
     
     if (!it->is_array) {
+        JSPropertyEnum *tab_atom = (JSPropertyEnum *)gc_deref(it->tab_atom_handle);
         for(i = 0; i < it->atom_count; i++) {
-            JS_FreeAtomRT(rt, it->tab_atom[i].atom);
+            JS_FreeAtomRT(rt, tab_atom[i].atom);
         }
         /* GC frees automatically */;
     }
@@ -6897,7 +6899,7 @@ static void free_object(JSRuntime *rt, JSObject *p)
     /* fail safe */
     p->class_id = 0;
     p->u.opaque = NULL;
-    p->u.func.var_refs = NULL;
+    p->u.func.var_refs_handle = GC_HANDLE_NULL;
     p->u.func.home_object_handle = GC_HANDLE_NULL;
 
     remove_gc_object(gc_header(p));
@@ -7255,8 +7257,8 @@ static void mark_children(JSRuntime *rt, void *user_ptr,
             for(i = 0; i < b->cpool_count; i++) {
                 JS_MarkValue(rt, b->cpool[i], mark_func);
             }
-            if (b->realm)
-                mark_func(rt, b->realm);
+            if (b->realm_handle)
+                mark_func(rt, (JSContext*)gc_deref(b->realm_handle));
         }
         break;
     case JS_GC_OBJ_TYPE_VAR_REF:
@@ -7265,7 +7267,7 @@ static void mark_children(JSRuntime *rt, void *user_ptr,
             if (var_ref->is_detached) {
                 JS_MarkValue(rt, *var_ref->pvalue, mark_func);
             } else {
-                JSStackFrame *sf = var_ref->stack_frame;
+                JSStackFrame *sf = (JSStackFrame *)gc_deref(var_ref->stack_frame_handle);
                 if (sf->js_mode & JS_MODE_ASYNC) {
                     JSAsyncFunctionState *async_func = container_of(sf, JSAsyncFunctionState, frame);
                     mark_func(rt, async_func);
@@ -7450,6 +7452,9 @@ static void gc_mark_roots(JSRuntime *rt)
         if (!js_handle_array_entry_is_valid(job_handle)) continue;
         JSJobEntry *job = (JSJobEntry *)gc_deref(job_handle);
         if (!job) continue;
+        /* Mark the job's realm to prevent it from being GC'd */
+        if (job->realm_handle)
+            gc_mark_recursive(rt, (JSContext*)gc_deref(job->realm_handle));
         int j;
         for(j = 0; j < job->argc; j++) {
             JS_MarkValue(rt, job->argv[j], gc_mark_recursive);
@@ -7874,10 +7879,10 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
                 s->memory_used_size += m->export_entries_count * sizeof(*m->export_entries);
                 for (i = 0; i < m->export_entries_count; i++) {
                     JSExportEntry *me = &m->export_entries[i];
-                    if (me->export_type == JS_EXPORT_TYPE_LOCAL && me->u.local.var_ref) {
+                    if (me->export_type == JS_EXPORT_TYPE_LOCAL && me->u.local.var_ref_handle != GC_HANDLE_NULL) {
                         /* potential multiple count */
                         s->memory_used_count += 1;
-                        compute_value_size(me->u.local.var_ref->value, hp);
+                        compute_value_size(((JSVarRef *)gc_deref(me->u.local.var_ref_handle))->value, hp);
                     }
                 }
             }
@@ -7957,10 +7962,10 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
                 if (p->u.array.u.values) {
                     s->memory_used_count++;
                     s->memory_used_size += p->u.array.count *
-                        sizeof(*p->u.array.u.var_refs);
+                        sizeof(*((JSVarRef **)gc_deref(p->u.array.u.var_refs_handle)));
                     s->fast_array_elements += p->u.array.count;
                     for (i = 0; i < p->u.array.count; i++) {
-                        compute_value_size(*p->u.array.u.var_refs[i]->pvalue, hp);
+                        compute_value_size(*((JSVarRef **)gc_deref(p->u.array.u.var_refs_handle))[i]->pvalue, hp);
                     }
                 }
             }
@@ -7978,8 +7983,8 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
             break;
         case JS_CLASS_BYTECODE_FUNCTION: /* u.func */
             {
-                JSFunctionBytecode *b = p->u.func.function_bytecode;
-                JSVarRef **var_refs = p->u.func.var_refs;
+                JSFunctionBytecode *b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
+                JSVarRef **var_refs = (JSVarRef **)gc_deref(p->u.func.var_refs_handle);
                 /* home_object: object will be accounted for in list scan */
                 if (var_refs) {
                     s->memory_used_count++;
@@ -8023,8 +8028,8 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
             }
             break;
         case JS_CLASS_REGEXP:            /* u.regexp */
-            compute_jsstring_size(p->u.regexp.pattern, hp);
-            compute_jsstring_size(p->u.regexp.bytecode, hp);
+            compute_jsstring_size((JSString *)gc_deref(p->u.regexp.pattern_handle), hp);
+            compute_jsstring_size((JSString *)gc_deref(p->u.regexp.bytecode_handle), hp);
             break;
 
         case JS_CLASS_FOR_IN_ITERATOR:   /* u.for_in_iterator */
@@ -8489,7 +8494,7 @@ static void build_backtrace(JSContext *ctx, GCValue error_obj,
             return;
         }
     }
-    for(sf = ctx->rt->current_stack_frame; sf != NULL; sf = sf->prev_frame) {
+    for(sf = ctx->rt->current_stack_frame; sf != NULL; sf = (JSStackFrame *)gc_deref(sf->prev_frame_handle)) {
         if (sf->js_mode & JS_MODE_BACKTRACE_BARRIER)
             break;
         if (backtrace_flags & JS_BACKTRACE_FLAG_SKIP_FIRST_LEVEL) {
@@ -8510,7 +8515,7 @@ static void build_backtrace(JSContext *ctx, GCValue error_obj,
             const char *atom_str;
             int line_num1, col_num1;
 
-            b = p->u.func.function_bytecode;
+            b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
             if (b->has_debug) {
                 line_num1 = find_line_num(ctx, b,
                                           sf->cur_pc - b->byte_code_buf - 1, &col_num1);
@@ -9989,7 +9994,7 @@ static GCValue JS_GetPropertyValue(JSContext *ctx, GCValue this_obj,
             return p->u.array.u.values[idx];
         case JS_CLASS_MAPPED_ARGUMENTS:
             if (unlikely(idx >= p->u.array.count)) goto slow_path;
-            return *p->u.array.u.var_refs[idx]->pvalue;
+            return *((JSVarRef **)gc_deref(p->u.array.u.var_refs_handle))[idx]->pvalue;
         case JS_CLASS_INT8_ARRAY:
             if (unlikely(idx >= p->u.array.count)) goto slow_path;
             return JS_NewInt32(ctx, p->u.array.u.int8_ptr[idx]);
@@ -10223,7 +10228,7 @@ static no_inline __exception int convert_fast_array_to_array(JSContext *ctx,
     }
 
     if (p->class_id == JS_CLASS_MAPPED_ARGUMENTS) {
-        JSVarRef **tab = p->u.array.u.var_refs;
+        JSVarRef **tab = (JSVarRef **)gc_deref(p->u.array.u.var_refs_handle);
         for(i = 0; i < len; i++) {
             /* add_property cannot fail here but
                __JS_AtomFromUInt32(i) fails for i > INT32_MAX */
@@ -10342,7 +10347,7 @@ static int delete_property(JSContext *ctx, JSObject *p, JSAtom atom)
                     /* Special case deleting the last element of a fast Array */
                     if (idx == p->u.array.count - 1) {
                         if (p->class_id == JS_CLASS_MAPPED_ARGUMENTS) {
-                            free_var_ref(ctx->rt, p->u.array.u.var_refs[idx]);
+                            free_var_ref(ctx->rt, ((JSVarRef **)gc_deref(p->u.array.u.var_refs_handle))[idx]);
                         } else {
                             
                         }
@@ -10977,7 +10982,7 @@ static int JS_SetPropertyValue(JSContext *ctx, GCValue this_obj,
         case JS_CLASS_MAPPED_ARGUMENTS:
             if (unlikely(idx >= (uint32_t)p->u.array.count))
                 goto slow_path;
-            set_value(ctx, p->u.array.u.var_refs[idx]->pvalue, val);
+            set_value(ctx, ((JSVarRef **)gc_deref(p->u.array.u.var_refs_handle))[idx]->pvalue, val);
             break;
         case JS_CLASS_UINT8C_ARRAY:
             if (JS_ToUint8ClampFree(ctx, &v, val))
@@ -14942,12 +14947,12 @@ static void js_print_regexp(JSPrintValueState *s, JSObject *p1)
     int i, n, c, c2, bra, flags;
     static const char regexp_flags[] = { 'g', 'i', 'm', 's', 'u', 'y', 'd', 'v' };
 
-    if (!re->pattern || !re->bytecode) {
+    if (re->pattern_handle == GC_HANDLE_NULL || re->bytecode_handle == GC_HANDLE_NULL) {
         /* the regexp fields are zeroed at init */
         js_puts(s, "[uninitialized_regexp]");
         return;
     }
-    p = re->pattern;
+    p = (JSString *)gc_deref(re->pattern_handle);
     js_putc(s, '/');
     if (p->len == 0) {
         js_puts(s, "(?:)");
@@ -14992,7 +14997,7 @@ static void js_print_regexp(JSPrintValueState *s, JSObject *p1)
     }
     js_putc(s, '/');
 
-    flags = lre_get_flags(re->bytecode->u.str8);
+    flags = lre_get_flags(((JSString *)gc_deref(re->bytecode_handle))->u.str8);
     for(i = 0; i < countof(regexp_flags); i++) {
         if ((flags >> i) & 1) {
             js_putc(s, regexp_flags[i]);
@@ -15248,10 +15253,10 @@ static void js_print_object(JSPrintValueState *s, JSObject *p)
             js_print_more_items(s, &comma_state, j - s->options.max_item_count);
     }
     if (s->options.raw_dump && js_class_has_bytecode(p->class_id)) {
-        JSFunctionBytecode *b = p->u.func.function_bytecode;
+        JSFunctionBytecode *b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
         if (b->closure_var_count) {
             JSVarRef **var_refs;
-            var_refs = p->u.func.var_refs;
+            var_refs = (JSVarRef **)gc_deref(p->u.func.var_refs_handle);
             
             js_print_comma(s, &comma_state);
             js_printf(s, "[[Closure]]: [");
@@ -17222,7 +17227,7 @@ static GCValue js_build_arguments(JSContext *ctx, int argc, GCValue *argv)
 static void js_mapped_arguments_finalizer(JSRuntime *rt, GCValue val)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSVarRef **var_refs = p->u.array.u.var_refs;
+    JSVarRef **var_refs = (JSVarRef **)gc_deref(p->u.array.u.var_refs_handle);
     int i;
     for(i = 0; i < p->u.array.count; i++)
         free_var_ref(rt, var_refs[i]);
@@ -17233,7 +17238,7 @@ static void js_mapped_arguments_mark(JSRuntime *rt, GCValue val,
                                      JS_MarkFunc *mark_func)
 {
     JSObject *p = JS_VALUE_GET_OBJ(val);
-    JSVarRef **var_refs = p->u.array.u.var_refs;
+    JSVarRef **var_refs = (JSVarRef **)gc_deref(p->u.array.u.var_refs_handle);
     int i;
     
     for(i = 0; i < p->u.array.count; i++)
@@ -17286,7 +17291,7 @@ static GCValue js_build_mapped_arguments(JSContext *ctx, int argc,
             tab[i] = var_ref;
         }
     }
-    p->u.array.u.var_refs = tab;
+    p->u.array.u.var_refs_handle = GC_PTR_TO_HANDLE(tab);
     p->u.array.count = argc;
     return val;
  fail:
@@ -17322,7 +17327,7 @@ static GCValue build_for_in_iterator(JSContext *ctx, GCValue obj)
     it->is_array = FALSE;
     it->obj = obj;
     it->idx = 0;
-    it->tab_atom = NULL;
+    it->tab_atom_handle = GC_HANDLE_NULL;
     it->atom_count = 0;
     it->in_prototype_chain = FALSE;
     p1 = JS_VALUE_GET_OBJ(enum_obj);
@@ -17351,7 +17356,7 @@ static GCValue build_for_in_iterator(JSContext *ctx, GCValue obj)
             
             return JS_EXCEPTION;
         }
-        it->tab_atom = tab_atom;
+        it->tab_atom_handle = GC_PTR_TO_HANDLE(tab_atom);
         it->atom_count = tab_atom_count;
     }
     return enum_obj;
@@ -17411,12 +17416,13 @@ static __exception int js_for_in_prepare_prototype_chain_enum(JSContext *ctx,
             goto fail;
         }
         it->is_array = FALSE;
-        it->tab_atom = tab_atom;
+        it->tab_atom_handle = GC_PTR_TO_HANDLE(tab_atom);
         it->atom_count = tab_atom_count;
     }
 
     for(i = 0; i < it->atom_count; i++) {
-        if (JS_DefinePropertyValue(ctx, enum_obj, it->tab_atom[i].atom, JS_NULL, JS_PROP_ENUMERABLE) < 0)
+        JSPropertyEnum *tab_atom = (JSPropertyEnum *)gc_deref(it->tab_atom_handle);
+        if (JS_DefinePropertyValue(ctx, enum_obj, tab_atom[i].atom, JS_NULL, JS_PROP_ENUMERABLE) < 0)
             goto fail;
     }
     return 0;
@@ -17468,8 +17474,8 @@ static __exception int js_for_in_next(JSContext *ctx, GCValue *sp)
                                                JS_GPN_STRING_MASK | JS_GPN_SET_ENUM)) {
                 return -1;
             }
-            JS_FreePropertyEnum(ctx, it->tab_atom, it->atom_count);
-            it->tab_atom = tab_atom;
+            JS_FreePropertyEnum(ctx, (JSPropertyEnum *)gc_deref(it->tab_atom_handle), it->atom_count);
+            it->tab_atom_handle = GC_PTR_TO_HANDLE(tab_atom);
             it->atom_count = tab_atom_count;
             it->idx = 0;
         } else {
@@ -17478,8 +17484,9 @@ static __exception int js_for_in_next(JSContext *ctx, GCValue *sp)
                 it->idx++;
             } else {
                 BOOL is_enumerable;
-                prop = it->tab_atom[it->idx].atom;
-                is_enumerable = it->tab_atom[it->idx].is_enumerable;
+                JSPropertyEnum *tab_atom = (JSPropertyEnum *)gc_deref(it->tab_atom_handle);
+                prop = tab_atom[it->idx].atom;
+                is_enumerable = tab_atom[it->idx].is_enumerable;
                 it->idx++;
                 if (it->in_prototype_chain) {
                     /* slow case: we are in the prototype chain */
@@ -18036,7 +18043,7 @@ static JSVarRef *get_var_ref(JSContext *ctx, JSStackFrame *sf, int var_idx,
     JSBytecodeVarDef *vd;
     
     p = JS_VALUE_GET_OBJ(sf->cur_func);
-    b = p->u.func.function_bytecode;
+    b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
     
     if (is_arg) {
         vd = &b->vardefs[var_idx];
@@ -18048,7 +18055,7 @@ static JSVarRef *get_var_ref(JSContext *ctx, JSStackFrame *sf, int var_idx,
     assert(vd->is_captured);
     var_ref_idx = vd->var_ref_idx;
     assert(var_ref_idx < b->var_ref_count);
-    var_ref = sf->var_refs[var_ref_idx];
+    var_ref = ((JSVarRef **)gc_deref(sf->var_refs_handle))[var_ref_idx];
     if (var_ref) {
         /* reference to the already created local variable */
         assert(var_ref->pvalue == pvalue);
@@ -18065,8 +18072,8 @@ static JSVarRef *get_var_ref(JSContext *ctx, JSStackFrame *sf, int var_idx,
     var_ref->is_lexical = FALSE;
     var_ref->is_const = FALSE;
     var_ref->var_ref_idx = var_ref_idx;
-    var_ref->stack_frame = sf;
-    sf->var_refs[var_ref_idx] = var_ref;
+    var_ref->stack_frame_handle = GC_PTR_TO_HANDLE(sf);
+    ((JSVarRef **)gc_deref(sf->var_refs_handle))[var_ref_idx] = var_ref;
     if (sf->js_mode & JS_MODE_ASYNC) {
         JSAsyncFunctionState *async_func = container_of(sf, JSAsyncFunctionState, frame);
         /* The stack frame is detached and may be destroyed at any
@@ -18306,14 +18313,14 @@ static GCValue js_closure2(JSContext *ctx, GCValue func_obj,
     int i;
 
     p = JS_VALUE_GET_OBJ(func_obj);
-    p->u.func.function_bytecode = b;
+    p->u.func.function_bytecode_handle = GC_PTR_TO_HANDLE(b);
     p->u.func.home_object_handle = GC_HANDLE_NULL;
-    p->u.func.var_refs = NULL;
+    p->u.func.var_refs_handle = GC_HANDLE_NULL;
     if (b->closure_var_count) {
         var_refs = (JSVarRef **)gc_deref(gc_allocz(sizeof(var_refs[0]) * b->closure_var_count, JS_GC_OBJ_TYPE_DATA));
         if (!var_refs)
             goto fail;
-        p->u.func.var_refs = var_refs;
+        p->u.func.var_refs_handle = GC_PTR_TO_HANDLE(var_refs);
         if (is_eval) {
             /* first pass to check the global variable definitions */
             for(i = 0; i < b->closure_var_count; i++) {
@@ -18572,7 +18579,7 @@ static void close_var_refs(JSRuntime *rt, JSFunctionBytecode *b, JSStackFrame *s
     int i;
 
     for(i = 0; i < b->var_ref_count; i++) {
-        var_ref = sf->var_refs[i];
+        var_ref = ((JSVarRef **)gc_deref(sf->var_refs_handle))[i];
         if (var_ref)
             close_var_ref(rt, sf, var_ref);
     }
@@ -18585,10 +18592,10 @@ static void close_lexical_var(JSContext *ctx, JSFunctionBytecode *b,
     int var_ref_idx;
     
     var_ref_idx = b->vardefs[b->arg_count + var_idx].var_ref_idx;
-    var_ref = sf->var_refs[var_ref_idx];
+    var_ref = ((JSVarRef **)gc_deref(sf->var_refs_handle))[var_ref_idx];
     if (var_ref) {
         close_var_ref(ctx->rt, sf, var_ref);
-        sf->var_refs[var_ref_idx] = NULL;
+        ((JSVarRef **)gc_deref(sf->var_refs_handle))[var_ref_idx] = NULL;
     }
 }
 
@@ -18618,9 +18625,9 @@ static GCValue js_call_c_function(JSContext *ctx, GCValue func_obj,
         return JS_ThrowStackOverflow(ctx);
 
     prev_sf = rt->current_stack_frame;
-    sf->prev_frame = prev_sf;
+    sf->prev_frame_handle = GC_PTR_TO_HANDLE(prev_sf);
     rt->current_stack_frame = sf;
-    ctx = p->u.cfunc.realm; /* change the current realm */
+    ctx = (JSContext *)gc_deref(p->u.cfunc.realm_handle); /* change the current realm */
     sf->js_mode = 0;
     sf->cur_func = (GCValue)func_obj;
     sf->arg_count = argc;
@@ -18721,7 +18728,7 @@ static GCValue js_call_c_function(JSContext *ctx, GCValue func_obj,
         abort();
     }
 
-    rt->current_stack_frame = sf->prev_frame;
+    rt->current_stack_frame = (JSStackFrame *)gc_deref(sf->prev_frame_handle);
     return ret_val;
 }
 
@@ -18833,16 +18840,16 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
             /* the stack frame is already allocated */
             sf = &s->frame;
             p = JS_VALUE_GET_OBJ(sf->cur_func);
-            b = p->u.func.function_bytecode;
-            ctx = b->realm;
-            var_refs = p->u.func.var_refs;
+            b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
+            ctx = (JSContext*)gc_deref(b->realm_handle);
+            var_refs = (JSVarRef **)gc_deref(p->u.func.var_refs_handle);
             local_buf = arg_buf = sf->arg_buf;
             var_buf = sf->var_buf;
             stack_buf = sf->var_buf + b->var_count;
             sp = sf->cur_sp;
             sf->cur_sp = NULL; /* cur_sp is NULL if the function is running */
             pc = sf->cur_pc;
-            sf->prev_frame = rt->current_stack_frame;
+            sf->prev_frame_handle = GC_PTR_TO_HANDLE(rt->current_stack_frame);
             rt->current_stack_frame = sf;
             if (s->throw_flag)
                 goto exception;
@@ -18864,7 +18871,7 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
         return call_func(caller_ctx, func_obj, this_obj, argc,
                          (GCValue *)argv, flags);
     }
-    b = p->u.func.function_bytecode;
+    b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
 
     if (unlikely(argc < b->arg_count || (flags & JS_CALL_FLAG_COPY_ARGV))) {
         arg_allocated_size = b->arg_count;
@@ -18882,7 +18889,7 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
     arg_buf = argv;
     sf->arg_count = argc;
     sf->cur_func = (GCValue)func_obj;
-    var_refs = p->u.func.var_refs;
+    var_refs = (JSVarRef **)gc_deref(p->u.func.var_refs_handle);
 
     local_buf = alloca(alloca_size);
     if (unlikely(arg_allocated_size)) {
@@ -18902,14 +18909,14 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
         var_buf[i] = JS_UNDEFINED;
 
     stack_buf = var_buf + b->var_count;
-    sf->var_refs = (JSVarRef **)(stack_buf + b->stack_size);
+    sf->var_refs_handle = GC_PTR_TO_HANDLE(stack_buf + b->stack_size);
     for(i = 0; i < b->var_ref_count; i++)
-        sf->var_refs[i] = NULL;
+        ((JSVarRef **)gc_deref(sf->var_refs_handle))[i] = NULL;
     sp = stack_buf;
     pc = b->byte_code_buf;
-    sf->prev_frame = rt->current_stack_frame;
+    sf->prev_frame_handle = GC_PTR_TO_HANDLE(rt->current_stack_frame);
     rt->current_stack_frame = sf;
-    ctx = b->realm; /* set the current realm */
+    ctx = (JSContext*)gc_deref(b->realm_handle); /* set the current realm */
 
  restart:
     for(;;) {
@@ -21557,7 +21564,7 @@ static GCValue JS_CallInternal(JSContext *caller_ctx, GCValue func_obj,
             
         }
     }
-    rt->current_stack_frame = sf->prev_frame;
+    rt->current_stack_frame = (JSStackFrame *)gc_deref(sf->prev_frame_handle);
     return ret_val;
 }
 
@@ -21589,7 +21596,7 @@ static JSContext *JS_GetFunctionRealm(JSContext *ctx, GCValue func_obj)
     p = JS_VALUE_GET_OBJ(func_obj);
     switch(p->class_id) {
     case JS_CLASS_C_FUNCTION:
-        realm = p->u.cfunc.realm;
+        realm = (JSContext *)gc_deref(p->u.cfunc.realm_handle);
         break;
     case JS_CLASS_BYTECODE_FUNCTION:
     case JS_CLASS_GENERATOR_FUNCTION:
@@ -21597,8 +21604,8 @@ static JSContext *JS_GetFunctionRealm(JSContext *ctx, GCValue func_obj)
     case JS_CLASS_ASYNC_GENERATOR_FUNCTION:
         {
             JSFunctionBytecode *b;
-            b = p->u.func.function_bytecode;
-            realm = b->realm;
+            b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
+            realm = (JSContext*)gc_deref(b->realm_handle);
         }
         break;
     case JS_CLASS_PROXY:
@@ -21679,7 +21686,7 @@ static GCValue JS_CallConstructorInternal(JSContext *ctx,
                          (GCValue *)argv, flags);
     }
 
-    b = p->u.func.function_bytecode;
+    b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
     if (b->is_derived_class_constructor) {
         return JS_CallInternal(ctx, func_obj, JS_UNDEFINED, new_target, argc, argv, flags);
     } else {
@@ -21747,7 +21754,7 @@ static JSAsyncFunctionState *async_func_init(JSContext *ctx,
     int i, arg_buf_len, n;
 
     p = JS_VALUE_GET_OBJ(func_obj);
-    b = p->u.func.function_bytecode;
+    b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
     arg_buf_len = max_int(b->arg_count, argc);
     size_t async_func_size = sizeof(*s) + sizeof(GCValue) * (arg_buf_len + b->var_count + b->stack_size) + sizeof(JSVarRef *) * b->var_ref_count;
     s = gc_alloc_js_object(async_func_size, JS_GC_OBJ_TYPE_ASYNC_FUNCTION);
@@ -21766,9 +21773,9 @@ static JSAsyncFunctionState *async_func_init(JSContext *ctx,
     sf->arg_count = arg_buf_len;
     sf->var_buf = sf->arg_buf + arg_buf_len;
     sf->cur_sp = sf->var_buf + b->var_count;
-    sf->var_refs = (JSVarRef **)(sf->cur_sp + b->stack_size);
+    sf->var_refs_handle = GC_PTR_TO_HANDLE(sf->cur_sp + b->stack_size);
     for(i = 0; i < b->var_ref_count; i++)
-        sf->var_refs[i] = NULL;
+        ((JSVarRef **)gc_deref(sf->var_refs_handle))[i] = NULL;
     for(i = 0; i < argc; i++)
         sf->arg_buf[i] = argv[i];
     n = arg_buf_len + b->var_count;
@@ -21814,7 +21821,7 @@ static GCValue async_func_resume(JSContext *ctx, JSAsyncFunctionState *s)
         JSFunctionBytecode *b;
         
         p = JS_VALUE_GET_OBJ(sf->cur_func);
-        b = p->u.func.function_bytecode;
+        b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
         
         if (JS_IsUndefined(ret)) {
             ret = sf->cur_sp[-1];
@@ -30693,8 +30700,8 @@ static void js_mark_module_def(JSRuntime *rt, JSModuleDef *m,
     for(i = 0; i < m->export_entries_count; i++) {
         JSExportEntry *me = &m->export_entries[i];
         if (me->export_type == JS_EXPORT_TYPE_LOCAL &&
-            me->u.local.var_ref) {
-            mark_func(rt, me->u.local.var_ref);
+            me->u.local.var_ref_handle != GC_HANDLE_NULL) {
+            mark_func(rt, (JSVarRef *)gc_deref(me->u.local.var_ref_handle));
         }
     }
 
@@ -30723,8 +30730,8 @@ static void js_free_module_def(JSRuntime *rt, JSModuleDef *m)
 
     for(i = 0; i < m->export_entries_count; i++) {
         JSExportEntry *me = &m->export_entries[i];
-        if (me->export_type == JS_EXPORT_TYPE_LOCAL)
-            free_var_ref(rt, me->u.local.var_ref);
+        if (me->export_type == JS_EXPORT_TYPE_LOCAL && me->u.local.var_ref_handle != GC_HANDLE_NULL)
+            free_var_ref(rt, (JSVarRef *)gc_deref(me->u.local.var_ref_handle));
         JS_FreeAtomRT(rt, me->export_name);
         JS_FreeAtomRT(rt, me->local_name);
     }
@@ -30768,7 +30775,7 @@ static int add_req_module_entry(JSContext *ctx, JSModuleDef *m,
         return -1;
     rme = &m->req_module_entries[m->req_module_entries_count++];
     rme->module_name = JS_DupAtom(ctx, module_name);
-    rme->module = NULL;
+    rme->module_handle = GC_HANDLE_NULL;
     rme->attributes = JS_UNDEFINED;
     return m->req_module_entries_count - 1;
 }
@@ -30884,7 +30891,7 @@ int JS_SetModuleExport(JSContext *ctx, JSModuleDef *m, const char *export_name,
     JS_FreeAtom(ctx, name);
     if (!me)
         goto fail;
-    set_value(ctx, me->u.local.var_ref->pvalue, val);
+    set_value(ctx, ((JSVarRef *)gc_deref(me->u.local.var_ref_handle))->pvalue, val);
     return 0;
  fail:
     
@@ -31146,7 +31153,7 @@ static JSResolveResultEnum js_resolve_export1(JSContext *ctx,
         } else {
             /* indirect export */
             JSModuleDef *m1;
-            m1 = m->req_module_entries[me->u.req_module_idx].module;
+            m1 = (JSModuleDef*)gc_deref(m->req_module_entries[me->u.req_module_idx].module_handle);
             if (me->local_name == JS_ATOM__star_) {
                 /* export ns from */
                 *pmodule = m;
@@ -31168,7 +31175,7 @@ static JSResolveResultEnum js_resolve_export1(JSContext *ctx,
                 JSExportEntry *res_me;
                 JSResolveResultEnum ret;
 
-                m1 = m->req_module_entries[se->req_module_idx].module;
+                m1 = (JSModuleDef*)gc_deref(m->req_module_entries[se->req_module_idx].module_handle);
                 ret = js_resolve_export1(ctx, &res_m, &res_me, m1,
                                          export_name, s);
                 if (ret == JS_RESOLVE_RES_AMBIGUOUS ||
@@ -31327,7 +31334,7 @@ static __exception int get_exported_names(JSContext *ctx,
     for(i = 0; i < m->star_export_entries_count; i++) {
         JSStarExportEntry *se = &m->star_export_entries[i];
         JSModuleDef *m1;
-        m1 = m->req_module_entries[se->req_module_idx].module;
+        m1 = (JSModuleDef*)gc_deref(m->req_module_entries[se->req_module_idx].module_handle);
         if (get_exported_names(ctx, s, m1, TRUE))
             return -1;
     }
@@ -31383,13 +31390,13 @@ static GCValue js_module_ns_autoinit(JSContext *ctx, JSObject *p, JSAtom atom,
         return JS_EXCEPTION;
     }
     if (res_me->local_name == JS_ATOM__star_) {
-        return JS_GetModuleNamespace(ctx, res_m->req_module_entries[res_me->u.req_module_idx].module);
+        return JS_GetModuleNamespace(ctx, (JSModuleDef*)gc_deref(res_m->req_module_entries[res_me->u.req_module_idx].module_handle));
     } else {
-        if (res_me->u.local.var_ref) {
-            var_ref = res_me->u.local.var_ref;
+        if (res_me->u.local.var_ref_handle != GC_HANDLE_NULL) {
+            var_ref = (JSVarRef *)gc_deref(res_me->u.local.var_ref_handle);
         } else {
             JSObject *p1 = JS_VALUE_GET_OBJ(res_m->func_obj);
-            var_ref = p1->u.func.var_refs[res_me->u.local.var_idx];
+            var_ref = ((JSVarRef **)gc_deref(p1->u.func.var_refs_handle))[res_me->u.local.var_idx];
         }
         /* WARNING: a varref is returned as a string ! */
         return JS_MKPTR(JS_TAG_STRING, var_ref);
@@ -31440,11 +31447,11 @@ static GCValue js_build_module_ns(JSContext *ctx, JSModuleDef *m)
             if (res_me->local_name == JS_ATOM__star_) {
                 en->export_type = EXPORTED_NAME_DELAYED;
             } else {
-                if (res_me->u.local.var_ref) {
-                    en->u.var_ref = res_me->u.local.var_ref;
+                if (res_me->u.local.var_ref_handle != GC_HANDLE_NULL) {
+                    en->u.var_ref = (JSVarRef *)gc_deref(res_me->u.local.var_ref_handle);
                 } else {
                     JSObject *p1 = JS_VALUE_GET_OBJ(res_m->func_obj);
-                    en->u.var_ref = p1->u.func.var_refs[res_me->u.local.var_idx];
+                    en->u.var_ref = ((JSVarRef **)gc_deref(p1->u.func.var_refs_handle))[res_me->u.local.var_idx];
                 }
                 if (en->u.var_ref == NULL)
                     en->export_type = EXPORTED_NAME_DELAYED;
@@ -31536,7 +31543,7 @@ static int js_resolve_module(JSContext *ctx, JSModuleDef *m)
                                                   rme->attributes);
         if (!m1)
             return -1;
-        rme->module = m1;
+        rme->module_handle = GC_PTR_TO_HANDLE(m1);
         /* already done in js_host_resolve_imported_module() except if
            the module was loaded with JS_EvalBinary() */
         if (js_resolve_module(ctx, m1) < 0)
@@ -31588,7 +31595,7 @@ static int js_create_module_function(JSContext *ctx, JSModuleDef *m)
                 var_ref = js_create_var_ref(ctx, FALSE);
                 if (!var_ref)
                     return -1;
-                me->u.local.var_ref = var_ref;
+                me->u.local.var_ref_handle = GC_PTR_TO_HANDLE(var_ref);
             }
         }
     } else {
@@ -31601,7 +31608,7 @@ static int js_create_module_function(JSContext *ctx, JSModuleDef *m)
 
     for(i = 0; i < m->req_module_entries_count; i++) {
         JSReqModuleEntry *rme = &m->req_module_entries[i];
-        if (js_create_module_function(ctx, rme->module) < 0)
+        if (js_create_module_function(ctx, (JSModuleDef*)gc_deref(rme->module_handle)) < 0)
             return -1;
     }
 
@@ -31646,12 +31653,12 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
     m->dfs_ancestor_index = index;
     index++;
     /* push 'm' on stack */
-    m->stack_prev = *pstack_top;
+    m->stack_prev_handle = GC_PTR_TO_HANDLE(*pstack_top);
     *pstack_top = m;
 
     for(i = 0; i < m->req_module_entries_count; i++) {
         JSReqModuleEntry *rme = &m->req_module_entries[i];
-        m1 = rme->module;
+        m1 = (JSModuleDef*)gc_deref(rme->module_handle);
         index = js_inner_module_linking(ctx, m1, pstack_top, index);
         if (index < 0)
             goto fail;
@@ -31679,7 +31686,7 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
             JSResolveResultEnum ret;
             JSExportEntry *res_me;
             JSModuleDef *res_m, *m1;
-            m1 = m->req_module_entries[me->u.req_module_idx].module;
+            m1 = (JSModuleDef*)gc_deref(m->req_module_entries[me->u.req_module_idx].module_handle);
             ret = js_resolve_export(ctx, &res_m, &res_me, m1, me->local_name);
             if (ret != JS_RESOLVE_RES_FOUND) {
                 js_resolve_export_throw_error(ctx, ret, m, me->export_name);
@@ -31704,7 +31711,7 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
 
     if (!is_c_module) {
         p = JS_VALUE_GET_OBJ(m->func_obj);
-        var_refs = p->u.func.var_refs;
+        var_refs = (JSVarRef **)gc_deref(p->u.func.var_refs_handle);
 
         for(i = 0; i < m->import_entries_count; i++) {
             mi = &m->import_entries[i];
@@ -31713,7 +31720,7 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
             print_atom(ctx, mi->import_name);
             printf(": ");
 #endif
-            m1 = m->req_module_entries[mi->req_module_idx].module;
+            m1 = (JSModuleDef*)gc_deref(m->req_module_entries[mi->req_module_idx].module_handle);
             if (mi->is_star) {
                 GCValue val;
                 /* name space import */
@@ -31740,7 +31747,7 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
                     GCValue val;
                     JSModuleDef *m2;
                     /* name space import from */
-                    m2 = res_m->req_module_entries[res_me->u.req_module_idx].module;
+                    m2 = (JSModuleDef*)gc_deref(res_m->req_module_entries[res_me->u.req_module_idx].module_handle);
                     val = JS_GetModuleNamespace(ctx, m2);
                     if (JS_IsException(val))
                         goto fail;
@@ -31755,10 +31762,11 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
                     printf("namespace from\n");
 #endif
                 } else {
-                    var_ref = res_me->u.local.var_ref;
-                    if (!var_ref) {
+                    if (res_me->u.local.var_ref_handle != GC_HANDLE_NULL) {
+                        var_ref = (JSVarRef *)gc_deref(res_me->u.local.var_ref_handle);
+                    } else {
                         p1 = JS_VALUE_GET_OBJ(res_m->func_obj);
-                        var_ref = p1->u.func.var_refs[res_me->u.local.var_idx];
+                        var_ref = ((JSVarRef **)gc_deref(p1->u.func.var_refs_handle))[res_me->u.local.var_idx];
                     }
                     /* ref_count removed - using mark-and-sweep GC */
                     var_refs[mi->var_idx] = var_ref;
@@ -31777,7 +31785,7 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
             if (me->export_type == JS_EXPORT_TYPE_LOCAL) {
                 var_ref = var_refs[me->u.local.var_idx];
                 /* ref_count removed - using mark-and-sweep GC */
-                me->u.local.var_ref = var_ref;
+                me->u.local.var_ref_handle = var_ref ? GC_PTR_TO_HANDLE(var_ref) : GC_HANDLE_NULL;
             }
         }
 
@@ -31793,7 +31801,7 @@ static int js_inner_module_linking(JSContext *ctx, JSModuleDef *m,
         for(;;) {
             /* pop m1 from stack */
             m1 = *pstack_top;
-            *pstack_top = m1->stack_prev;
+            *pstack_top = (JSModuleDef*)gc_deref(m1->stack_prev_handle);
             m1->status = JS_MODULE_STATUS_LINKED;
             if (m1 == m)
                 break;
@@ -31830,7 +31838,7 @@ static int js_link_module(JSContext *ctx, JSModuleDef *m)
             m1 = stack_top;
             assert(m1->status == JS_MODULE_STATUS_LINKING);
             m1->status = JS_MODULE_STATUS_UNLINKED;
-            stack_top = m1->stack_prev;
+            stack_top = (JSModuleDef*)gc_deref(m1->stack_prev_handle);
         }
         return -1;
     }
@@ -31855,7 +31863,7 @@ JSAtom JS_GetScriptOrModuleName(JSContext *ctx, int n_stack_levels)
     if (!sf)
         return JS_ATOM_NULL;
     while (n_stack_levels-- > 0) {
-        sf = sf->prev_frame;
+        sf = (JSStackFrame *)gc_deref(sf->prev_frame_handle);
         if (!sf)
             return JS_ATOM_NULL;
     }
@@ -31865,13 +31873,13 @@ JSAtom JS_GetScriptOrModuleName(JSContext *ctx, int n_stack_levels)
         p = JS_VALUE_GET_OBJ(sf->cur_func);
         if (!js_class_has_bytecode(p->class_id))
             return JS_ATOM_NULL;
-        b = p->u.func.function_bytecode;
+        b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
         if (!b->is_direct_or_indirect_eval) {
             if (!b->has_debug)
                 return JS_ATOM_NULL;
             return JS_DupAtom(ctx, b->debug.filename);
         } else {
-            sf = sf->prev_frame;
+            sf = (JSStackFrame *)gc_deref(sf->prev_frame_handle);
             if (!sf)
                 return JS_ATOM_NULL;
         }
@@ -32167,7 +32175,7 @@ static void js_set_module_evaluated(JSContext *ctx, JSModuleDef *m)
     m->status = JS_MODULE_STATUS_EVALUATED;
     if (!JS_IsUndefined(m->promise)) {
         GCValue value, ret_val;
-        assert(m->cycle_root == m);
+        assert((JSModuleDef*)gc_deref(m->cycle_root_handle) == m);
         value = JS_UNDEFINED;
         ret_val = JS_Call(ctx, m->resolving_funcs[0], JS_UNDEFINED,
                           1, (GCValue *)&value);
@@ -32202,9 +32210,9 @@ static int gather_available_ancestors(JSContext *ctx, JSModuleDef *module,
         return -1;
     }
     for(i = 0; i < module->async_parent_modules_count; i++) {
-        JSModuleDef *m = module->async_parent_modules[i];
+        JSModuleDef *m = (JSModuleDef*)gc_deref(((GCHandle*)gc_deref(module->async_parent_modules_handle))[i]);
         if (!find_in_exec_module_list(exec_list, m) &&
-            !m->cycle_root->eval_has_exception) {
+            !((JSModuleDef*)gc_deref(m->cycle_root_handle))->eval_has_exception) {
             assert(m->status == JS_MODULE_STATUS_EVALUATING_ASYNC);
             assert(!m->eval_has_exception);
             assert(m->async_evaluation);
@@ -32274,14 +32282,14 @@ static GCValue js_async_module_execution_rejected(JSContext *ctx, GCValue this_v
 
     if (!JS_IsUndefined(module->promise)) {
         GCValue ret_val;
-        assert(module->cycle_root == module);
+        assert((JSModuleDef*)gc_deref(module->cycle_root_handle) == module);
         ret_val = JS_Call(ctx, module->resolving_funcs[1], JS_UNDEFINED,
                           1, &error);
         
     }
 
     for(i = 0; i < module->async_parent_modules_count; i++) {
-        JSModuleDef *m = module->async_parent_modules[i];
+        JSModuleDef *m = (JSModuleDef*)gc_deref(((GCHandle*)gc_deref(module->async_parent_modules_handle))[i]);
         GCValue m_obj = JS_NewModuleValue(ctx, m);
         js_async_module_execution_rejected(ctx, JS_UNDEFINED, 1, &error, 0,
                                            &m_obj);
@@ -32451,12 +32459,12 @@ static int js_inner_module_evaluation(JSContext *ctx, JSModuleDef *m,
     m->pending_async_dependencies = 0;
     index++;
     /* push 'm' on stack */
-    m->stack_prev = *pstack_top;
+    m->stack_prev_handle = GC_PTR_TO_HANDLE(*pstack_top);
     *pstack_top = m;
 
     for(i = 0; i < m->req_module_entries_count; i++) {
         JSReqModuleEntry *rme = &m->req_module_entries[i];
-        m1 = rme->module;
+        m1 = (JSModuleDef*)gc_deref(rme->module_handle);
         index = js_inner_module_evaluation(ctx, m1, index, pstack_top, pvalue);
         if (index < 0)
             return -1;
@@ -32467,7 +32475,7 @@ static int js_inner_module_evaluation(JSContext *ctx, JSModuleDef *m,
             m->dfs_ancestor_index = min_int(m->dfs_ancestor_index,
                                             m1->dfs_ancestor_index);
         } else {
-            m1 = m1->cycle_root;
+            m1 = (JSModuleDef*)gc_deref(m1->cycle_root_handle);
             assert(m1->status == JS_MODULE_STATUS_EVALUATING_ASYNC ||
                    m1->status == JS_MODULE_STATUS_EVALUATED);
             if (m1->eval_has_exception) {
@@ -32477,11 +32485,11 @@ static int js_inner_module_evaluation(JSContext *ctx, JSModuleDef *m,
         }
         if (m1->async_evaluation) {
             m->pending_async_dependencies++;
-            if (js_resize_array(ctx, (GCHandle *)&m1->async_parent_modules, sizeof(m1->async_parent_modules[0]), &m1->async_parent_modules_size, m1->async_parent_modules_count + 1)) {
+            if (js_resize_array(ctx, (GCHandle *)&m1->async_parent_modules_handle, sizeof(((GCHandle*)gc_deref(m1->async_parent_modules_handle))[0]), &m1->async_parent_modules_size, m1->async_parent_modules_count + 1)) {
                 *pvalue = JS_GetException(ctx);
                 return -1;
             }
-            m1->async_parent_modules[m1->async_parent_modules_count++] = m;
+            ((GCHandle*)gc_deref(m1->async_parent_modules_handle))[m1->async_parent_modules_count++] = GC_PTR_TO_HANDLE(m);
         }
     }
 
@@ -32506,14 +32514,14 @@ static int js_inner_module_evaluation(JSContext *ctx, JSModuleDef *m,
         for(;;) {
             /* pop m1 from stack */
             m1 = *pstack_top;
-            *pstack_top = m1->stack_prev;
+            *pstack_top = (JSModuleDef*)gc_deref(m1->stack_prev_handle);
             if (!m1->async_evaluation) {
                 m1->status = JS_MODULE_STATUS_EVALUATED;
             } else {
                 m1->status = JS_MODULE_STATUS_EVALUATING_ASYNC;
             }
             /* spec bug: cycle_root must be assigned before the test */
-            m1->cycle_root = m;
+            m1->cycle_root_handle = GC_PTR_TO_HANDLE(m);
             if (m1 == m)
                 break;
         }
@@ -32537,7 +32545,7 @@ static GCValue js_evaluate_module(JSContext *ctx, JSModuleDef *m)
            m->status == JS_MODULE_STATUS_EVALUATED);
     if (m->status == JS_MODULE_STATUS_EVALUATING_ASYNC ||
         m->status == JS_MODULE_STATUS_EVALUATED) {
-        m = m->cycle_root;
+        m = (JSModuleDef*)gc_deref(m->cycle_root_handle);
     }
     /* a promise may be created only on the cycle_root of a cycle */
     if (!JS_IsUndefined(m->promise))
@@ -32554,8 +32562,8 @@ static GCValue js_evaluate_module(JSContext *ctx, JSModuleDef *m)
             m1->status = JS_MODULE_STATUS_EVALUATED;
             m1->eval_has_exception = TRUE;
             m1->eval_exception = result;
-            m1->cycle_root = m; /* spec bug: should be present */
-            stack_top = m1->stack_prev;
+            m1->cycle_root_handle = GC_PTR_TO_HANDLE(m); /* spec bug: should be present */
+            stack_top = (JSModuleDef*)gc_deref(m1->stack_prev_handle);
         }
         
         assert(m->status == JS_MODULE_STATUS_EVALUATED);
@@ -37255,7 +37263,7 @@ static GCValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     b->arguments_allowed = fd->arguments_allowed;
     b->is_direct_or_indirect_eval = (fd->eval_type == JS_EVAL_TYPE_DIRECT ||
                                      fd->eval_type == JS_EVAL_TYPE_INDIRECT);
-    b->realm = JS_DupContext(ctx);
+    b->realm_handle = GC_PTR_TO_HANDLE(JS_DupContext(ctx));
     /* gc_alloc_js_object already set gc_obj_type to JS_GC_OBJ_TYPE_FUNCTION_BYTECODE */
 
 #if defined(DUMP_BYTECODE) && (DUMP_BYTECODE & 1)
@@ -37302,8 +37310,8 @@ static void free_function_bytecode(JSRuntime *rt, JSFunctionBytecode *b)
         JSClosureVar *cv = &b->closure_var[i];
         JS_FreeAtomRT(rt, cv->var_name);
     }
-    if (b->realm)
-        JS_FreeContext(b->realm);
+    if (b->realm_handle)
+        JS_FreeContext((JSContext*)gc_deref(b->realm_handle));
 
     JS_FreeAtomRT(rt, b->func_name);
     if (b->has_debug) {
@@ -38202,8 +38210,8 @@ static GCValue __JS_EvalInternal(JSContext *ctx, GCValue this_obj,
         assert(JS_VALUE_GET_TAG(sf->cur_func) == JS_TAG_OBJECT);
         p = JS_VALUE_GET_OBJ(sf->cur_func);
         assert(js_class_has_bytecode(p->class_id));
-        b = p->u.func.function_bytecode;
-        var_refs = p->u.func.var_refs;
+        b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
+        var_refs = (JSVarRef **)gc_deref(p->u.func.var_refs_handle);
         js_mode = b->js_mode;
     } else {
         sf = NULL;
@@ -39926,7 +39934,7 @@ static GCValue JS_ReadFunctionTag(BCReaderState *s)
         }
         bc_read_trace(s, "}\n");
     }
-    b->realm = JS_DupContext(ctx);
+    b->realm_handle = GC_PTR_TO_HANDLE(JS_DupContext(ctx));
     return obj;
  fail:
     
@@ -42297,7 +42305,7 @@ static GCValue *build_arg_list(JSContext *ctx, uint32_t *plen,
         len == p->u.array.count) {
         if (p->class_id == JS_CLASS_MAPPED_ARGUMENTS) {
             for(i = 0; i < len; i++) {
-                tab[i] = *p->u.array.u.var_refs[i]->pvalue;
+                tab[i] = *((JSVarRef **)gc_deref(p->u.array.u.var_refs_handle))[i]->pvalue;
             }
         } else {
             for(i = 0; i < len; i++) {
@@ -42454,7 +42462,7 @@ static GCValue js_function_toString(JSContext *ctx, GCValue this_val,
 
     p = JS_VALUE_GET_OBJ(this_val);
     if (js_class_has_bytecode(p->class_id)) {
-        JSFunctionBytecode *b = p->u.func.function_bytecode;
+        JSFunctionBytecode *b = (JSFunctionBytecode *)gc_deref(p->u.func.function_bytecode_handle);
         if (b->has_debug && b->debug.source) {
             return JS_NewStringLen(ctx, b->debug.source, b->debug.source_len);
         }
@@ -48677,8 +48685,8 @@ static GCValue JS_NewRegexp(JSContext *ctx, GCValue pattern, GCValue bc)
         goto fail;
     p = JS_VALUE_GET_OBJ(obj);
     re = &p->u.regexp;
-    re->pattern = JS_VALUE_GET_STRING(pattern);
-    re->bytecode = JS_VALUE_GET_STRING(bc);
+    re->pattern_handle = GC_PTR_TO_HANDLE(JS_VALUE_GET_STRING(pattern));
+    re->bytecode_handle = GC_PTR_TO_HANDLE(JS_VALUE_GET_STRING(bc));
     return obj;
  fail:
     
@@ -48706,8 +48714,8 @@ static GCValue js_regexp_set_internal(JSContext *ctx,
 
     p = JS_VALUE_GET_OBJ(obj);
     re = &p->u.regexp;
-    re->pattern = JS_VALUE_GET_STRING(pattern);
-    re->bytecode = JS_VALUE_GET_STRING(bc);
+    re->pattern_handle = GC_PTR_TO_HANDLE(JS_VALUE_GET_STRING(pattern));
+    re->bytecode_handle = GC_PTR_TO_HANDLE(JS_VALUE_GET_STRING(bc));
     /* Note: cannot fail because the field is preallocated */
     JS_DefinePropertyValue(ctx, obj, JS_ATOM_lastIndex, JS_NewInt32(ctx, 0),
                            JS_PROP_WRITABLE);
@@ -48773,9 +48781,9 @@ static GCValue js_regexp_constructor(JSContext *ctx, GCValue new_target,
     re = js_get_regexp(ctx, pat, FALSE);
     flags = JS_UNDEFINED;
     if (re) {
-        pattern = JS_MKPTR(JS_TAG_STRING, re->pattern);
+        pattern = JS_MKPTR(JS_TAG_STRING, (JSString *)gc_deref(re->pattern_handle));
         if (JS_IsUndefined(flags1)) {
-            bc = JS_MKPTR(JS_TAG_STRING, re->bytecode);
+            bc = JS_MKPTR(JS_TAG_STRING, (JSString *)gc_deref(re->bytecode_handle));
             obj = js_create_from_ctor(ctx, new_target, JS_CLASS_REGEXP);
             if (JS_IsException(obj))
                 goto fail;
@@ -48841,8 +48849,8 @@ static GCValue js_regexp_compile(JSContext *ctx, GCValue this_val,
     if (re1) {
         if (!JS_IsUndefined(flags1))
             return JS_ThrowTypeError(ctx, "flags must be undefined");
-        pattern = JS_MKPTR(JS_TAG_STRING, re1->pattern);
-        bc = JS_MKPTR(JS_TAG_STRING, re1->bytecode);
+        pattern = JS_MKPTR(JS_TAG_STRING, (JSString *)gc_deref(re1->pattern_handle));
+        bc = JS_MKPTR(JS_TAG_STRING, (JSString *)gc_deref(re1->bytecode_handle));
     } else {
         bc = JS_UNDEFINED;
         if (JS_IsUndefined(pattern1))
@@ -48857,8 +48865,8 @@ static GCValue js_regexp_compile(JSContext *ctx, GCValue this_val,
     }
     
     
-    re->pattern = JS_VALUE_GET_STRING(pattern);
-    re->bytecode = JS_VALUE_GET_STRING(bc);
+    re->pattern_handle = GC_PTR_TO_HANDLE(JS_VALUE_GET_STRING(pattern));
+    re->bytecode_handle = GC_PTR_TO_HANDLE(JS_VALUE_GET_STRING(bc));
     if (JS_SetProperty(ctx, this_val, JS_ATOM_lastIndex,
                        JS_NewInt32(ctx, 0)) < 0)
         return JS_EXCEPTION;
@@ -48886,7 +48894,7 @@ static GCValue js_regexp_get_source(JSContext *ctx, GCValue this_val)
     if (!re)
         return JS_EXCEPTION;
 
-    p = re->pattern;
+    p = (JSString *)gc_deref(re->pattern_handle);
 
     if (p->len == 0) {
     empty_regex:
@@ -48951,7 +48959,7 @@ static GCValue js_regexp_get_flag(JSContext *ctx, GCValue this_val, int mask)
             return JS_ThrowTypeErrorInvalidClass(ctx, JS_CLASS_REGEXP);
     }
 
-    flags = lre_get_flags(re->bytecode->u.str8);
+    flags = lre_get_flags(((JSString *)gc_deref(re->bytecode_handle))->u.str8);
     return JS_NewBool(ctx, flags & mask);
 }
 
@@ -49147,7 +49155,7 @@ static GCValue js_regexp_exec(JSContext *ctx, GCValue this_val,
     if (js_regexp_get_lastIndex(ctx, &last_index, this_val))
         goto fail;
 
-    re_bytecode = re->bytecode->u.str8;
+    re_bytecode = ((JSString *)gc_deref(re->bytecode_handle))->u.str8;
     re_flags = lre_get_flags(re_bytecode);
     if ((re_flags & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) == 0) {
         last_index = 0;
@@ -49349,7 +49357,7 @@ static GCValue js_regexp_replace(JSContext *ctx, GCValue this_val, GCValue arg,
     
     if (!re)
         return JS_EXCEPTION;
-    re_bytecode = re->bytecode->u.str8;
+    re_bytecode = ((JSString *)gc_deref(re->bytecode_handle))->u.str8;
     group_name_ptr = lre_get_groupnames(re_bytecode);
     if (group_name_ptr)
         return JS_UNDEFINED; /* group names are not supported yet */
