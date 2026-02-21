@@ -811,6 +811,16 @@ void js_quickjs_cleanup(void) {
     memset(g_captured_urls, 0, sizeof(g_captured_urls));
     pthread_mutex_unlock(&g_url_mutex);
     
+    /* Free the runtime and context */
+    if (g_js_context) {
+        JS_FreeContext(g_js_context);
+        g_js_context = NULL;
+    }
+    if (g_js_runtime) {
+        JS_FreeRuntime(g_js_runtime);
+        g_js_runtime = NULL;
+    }
+    
     // Cleanup unified GC
     gc_cleanup();
 }
@@ -1297,11 +1307,10 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
                 out_result->captured_url_count, out_result->status);
     
     // NOTE: We do NOT free the context or runtime here.
-    // The global runtime and context persist across script executions
-    // to maintain browser state (window, document, prototypes, etc.)
-    // as scripts from the same HTML document may reference shared state.
+    // Multiple scripts from the same HTML document share state (window, document, 
+    // prototypes, global variables, etc.) and should execute in the same context.
     // 
-    // The runtime will be cleaned up when the app exits via js_quickjs_cleanup().
+    // The runtime is cleaned up after each download submission via js_quickjs_cleanup().
     
     log_to_file("js_quickjs", "Execution complete, returning");
     

@@ -1151,13 +1151,43 @@ static void *worker_thread(void *arg) {
     
     LOGI("Processing URL: %s", args->url);
     file_log("Processing URL: %s", args->url);
-    ui_set_status(app, "Analyzing URL...");
+    ui_set_status(app, "Initializing...");
     
     time_t start_time = time(NULL);
     const int max_total_time = 300;  // 5 minute total timeout for entire operation
     
     /* Clear any previous session cookies */
     http_clear_youtube_cookies();
+
+    /* Initialize QuickJS runtime for this download session */
+    LOGI("Initializing QuickJS...");
+    file_log("Initializing QuickJS...");
+    if (!js_quickjs_init()) {
+        LOGE("QuickJS initialization failed!");
+        file_log("QuickJS initialization failed!");
+        ui_set_status(app, "JS init failed");
+        app->workerRunning = false;
+        free(args);
+        return NULL;
+    }
+    
+    LOGI("Creating QuickJS runtime...");
+    file_log("Creating QuickJS runtime...");
+    if (!js_quickjs_create_runtime()) {
+        LOGE("QuickJS runtime creation failed!");
+        file_log("QuickJS runtime creation failed!");
+        ui_set_status(app, "JS runtime failed");
+        js_quickjs_cleanup();
+        app->workerRunning = false;
+        free(args);
+        return NULL;
+    }
+    
+    LOGI("Setting up DOM...");
+    file_log("Setting up DOM...");
+    js_quickjs_setup_initial_dom();
+    
+    ui_set_status(app, "Analyzing URL...");
 
     /* Step 1: Analyze URL and extract media info */
     char err[512] = {0};
@@ -1170,9 +1200,7 @@ static void *worker_thread(void *arg) {
         char status_msg[280];
         snprintf(status_msg, sizeof(status_msg), "Analysis failed: %.200s", err);
         ui_set_status(app, status_msg);
-        app->workerRunning = false;
-        free(args);
-        return NULL;
+        goto cleanup;
     }
 
     LOGI("Media URL found: %.300s", media.url);
@@ -1182,9 +1210,7 @@ static void *worker_thread(void *arg) {
     if (time(NULL) - start_time > max_total_time) {
         LOGE("Operation timed out after %d seconds", max_total_time);
         ui_set_status(app, "Operation timeout");
-        app->workerRunning = false;
-        free(args);
-        return NULL;
+        goto cleanup;
     }
     
     /* Validate the URL before downloading */
@@ -1204,15 +1230,16 @@ static void *worker_thread(void *arg) {
 
     /* Step 2: Download the media file */
     HttpBuffer buffer = {0};
+    bool buffer_allocated = false;
+    
     if (!http_get_to_memory(media.url, &buffer, err, sizeof(err))) {
         LOGE("Download failed: %s", err);
         char status_msg[280];
         snprintf(status_msg, sizeof(status_msg), "Download failed: %.200s", err);
         ui_set_status(app, status_msg);
-        app->workerRunning = false;
-        free(args);
-        return NULL;
+        goto cleanup;
     }
+    buffer_allocated = true;
 
     LOGI("Downloaded %zu bytes", buffer.size);
     ui_set_progress(app, 0.9f);
@@ -1222,11 +1249,19 @@ static void *worker_thread(void *arg) {
     /* TODO: Integrate with media_store.c for actual file saving */
     LOGI("Would save to MediaStore: %s (%zu bytes)", media.url, buffer.size);
     
-    http_free_buffer(&buffer);
-    
     ui_set_progress(app, 1.0f);
     ui_set_status(app, "Download complete");
 
+cleanup:
+    /* Cleanup resources */
+    if (buffer_allocated) {
+        http_free_buffer(&buffer);
+    }
+    
+    LOGI("Cleaning up QuickJS...");
+    file_log("Cleaning up QuickJS...");
+    js_quickjs_cleanup();
+    
     app->workerRunning = false;
     free(args);
     return NULL;
@@ -2019,31 +2054,6 @@ void android_main(struct android_app *app) {
     snprintf(vk.statusText, sizeof(vk.statusText), "Idle");
     update_density_scale(app, &vk);
     app->userData = &vk;
-    
-    LOGI("Initializing QuickJS...");
-    if (js_quickjs_init()) {
-        LOGI("QuickJS GC initialized successfully!");
-        
-        // Create global runtime and context once for the app lifetime
-        // This persists across all script executions to maintain browser state
-        LOGI("Creating QuickJS runtime...");
-        if (js_quickjs_create_runtime()) {
-            LOGI("QuickJS runtime created successfully! rt=%p, ctx=%p", 
-                 (void*)g_js_runtime, (void*)g_js_context);
-            
-            // Set up initial DOM state (document, body, default video element)
-            // This is done once during initialization and persists across executions
-            LOGI("Setting up initial DOM state...");
-            js_quickjs_setup_initial_dom();
-            LOGI("DOM setup complete");
-        } else {
-            LOGI("QuickJS runtime creation failed!");
-            abort();
-        }
-    } else {
-        LOGI("QuickJS initialization failed!");
-        abort();
-    }
     
     // Normal Vulkan rendering loop
     while (true) {
