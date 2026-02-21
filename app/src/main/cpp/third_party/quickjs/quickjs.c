@@ -5607,6 +5607,8 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
     QJS_LOGI("js_new_shape_nohash: sh_handle=%u", sh_handle);
     sh = get_shape_from_alloc(sh_alloc, hash_size);
     QJS_LOGI("js_new_shape_nohash: sh=%p", (void*)sh);
+    /* Update handle to point to sh instead of sh_alloc so GC_SHAPE_DEREF works correctly */
+    g_gc.handles.ptrs[sh_handle] = sh;
     /* Store handle in shape for later retrieval (GC_PTR_TO_HANDLE won't work on sh directly) */
     sh->handle = sh_handle;
     /* Object already registered with GC by gc_alloc_js_object */
@@ -5685,6 +5687,8 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     memcpy(sh_alloc, sh_alloc1, size);
     
     sh = get_shape_from_alloc(sh_alloc, hash_size);
+    /* Update handle to point to sh instead of sh_alloc */
+    g_gc.handles.ptrs[sh_handle] = sh;
     /* Object already registered with GC by gc_alloc_js_object */
     sh->handle = sh_handle;  /* Store the correct handle */
     sh->is_hashed = FALSE;
@@ -5806,18 +5810,35 @@ static no_inline int resize_properties(JSContext *ctx, GCHandle *psh_handle,
     while (new_hash_size < new_size)
         new_hash_size = 2 * new_hash_size;
     /* resize the property shapes */
-    GCHandle sh_handle = gc_alloc(get_shape_size(new_hash_size, new_size), JS_GC_OBJ_TYPE_DATA);
+    uint32_t old_hash_size = sh->prop_hash_mask + 1;
+    GCHandle sh_handle = gc_alloc(get_shape_size(new_hash_size, new_size), JS_GC_OBJ_TYPE_SHAPE);
     if (sh_handle == GC_HANDLE_NULL)
         return -1;
     sh_alloc = gc_deref(sh_handle);
     sh = get_shape_from_alloc(sh_alloc, new_hash_size);
     /* CRITICAL: Re-dereference old_sh after gc_alloc which may trigger GC compaction */
     old_sh = GC_SHAPE_DEREF(old_sh_handle);
-    /* copy all the shape properties */
-    memcpy(sh, old_sh,
-           sizeof(JSShape) + sizeof(sh->prop[0]) * old_sh->prop_count);
+    /* copy shape fields individually - DO NOT use memcpy(sh, old_sh, sizeof(JSShape))
+       because when hash_size changes, the offset of sh->prop changes (hash table 
+       precedes the struct). We must copy fields individually to avoid corrupting
+       the prop pointer with the wrong offset. */
+    sh->is_hashed = old_sh->is_hashed;
+    sh->hash = old_sh->hash;
+    sh->prop_hash_mask = old_sh->prop_hash_mask;
+    sh->prop_size = old_sh->prop_size;
+    sh->prop_count = old_sh->prop_count;
+    sh->deleted_prop_count = old_sh->deleted_prop_count;
+    sh->shape_hash_next_handle = old_sh->shape_hash_next_handle;
+    sh->proto_handle = old_sh->proto_handle;
+    sh->handle = old_sh->handle;
+    /* copy properties to correct offset in new layout */
+    if (old_sh->prop_count > 0) {
+        JSShapeProperty *old_prop = get_shape_prop(old_sh);
+        JSShapeProperty *new_prop = get_shape_prop(sh);
+        memcpy(new_prop, old_prop, sizeof(JSShapeProperty) * old_sh->prop_count);
+    }
 
-    if (new_hash_size != (sh->prop_hash_mask + 1)) {
+    if (new_hash_size != old_hash_size) {
         /* resize the hash table and the properties */
         new_hash_mask = new_hash_size - 1;
         sh->prop_hash_mask = new_hash_mask;
@@ -5839,6 +5860,8 @@ static no_inline int resize_properties(JSContext *ctx, GCHandle *psh_handle,
     }
     /* Update the handle */
     *psh_handle = sh_handle;
+    /* Update handle to point to sh instead of sh_alloc so GC_SHAPE_DEREF works correctly */
+    g_gc.handles.ptrs[sh_handle] = sh;
     sh->prop_size = new_size;
     return 0;
 }
@@ -5867,11 +5890,22 @@ static int compact_properties(JSContext *ctx, JSObject *p)
 
     /* resize the hash table and the properties */
     old_sh = sh;
-    sh_alloc = gc_deref(gc_alloc(get_shape_size(new_hash_size, new_size), JS_GC_OBJ_TYPE_DATA));
+    sh_alloc = gc_deref(gc_alloc(get_shape_size(new_hash_size, new_size), JS_GC_OBJ_TYPE_SHAPE));
     if (!sh_alloc)
         return -1;
     sh = get_shape_from_alloc(sh_alloc, new_hash_size);
-    memcpy(sh, old_sh, sizeof(JSShape));
+    /* copy shape fields individually - DO NOT use memcpy for the same reason as resize_properties */
+    sh->is_hashed = old_sh->is_hashed;
+    sh->hash = old_sh->hash;
+    sh->prop_hash_mask = old_sh->prop_hash_mask;
+    sh->prop_size = old_sh->prop_size;
+    sh->prop_count = old_sh->prop_count;
+    sh->deleted_prop_count = old_sh->deleted_prop_count;
+    sh->shape_hash_next_handle = old_sh->shape_hash_next_handle;
+    sh->proto_handle = old_sh->proto_handle;
+    sh->handle = old_sh->handle;
+    /* Update handle to point to new sh instead of sh_alloc */
+    g_gc.handles.ptrs[sh->handle] = sh;
 
     memset(prop_hash_end(sh) - new_hash_size, 0,
            sizeof(prop_hash_end(sh)[0]) * new_hash_size);
@@ -5923,7 +5957,6 @@ static int add_shape_property(JSContext *ctx, GCHandle *psh_handle,
     /* update the shape hash */
     if (sh->is_hashed) {
         js_shape_hash_unlink(rt, sh);
-        new_shape_hash = shape_hash(shape_hash(sh->hash, atom), prop_flags);
     }
 
     if (unlikely(sh->prop_count >= sh->prop_size)) {
