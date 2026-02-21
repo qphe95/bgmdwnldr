@@ -981,6 +981,7 @@ struct JSShape {
     /* true if the shape is inserted in the shape hash table. If not,
        JSShape.hash is not valid */
     uint8_t is_hashed;
+    uint8_t hash_size; /* hash table size (power of 2), stored for GC dereference */
     uint32_t hash; /* current hash value */
     uint32_t prop_hash_mask;
     int prop_size; /* allocated properties */
@@ -1513,11 +1514,11 @@ static inline JSAtomStruct *js_get_atom_from_handle(JSRuntime *rt, GCHandle hand
         return GC_HANDLE_NULL;
     return (JSAtomStruct *)gc_deref(handle);
 }
-static GCValue js_instantiate_prototype(JSContext *ctx, JSObject *p, JSAtom atom, void *opaque);
+static GCValue js_instantiate_prototype(JSContext *ctx, JSObject *p, JSAtom atom, GCHandle opaque_handle);
 static GCValue js_module_ns_autoinit(JSContext *ctx, JSObject *p, JSAtom atom,
-                                 void *opaque);
+                                 GCHandle opaque_handle);
 static GCValue JS_InstantiateFunctionListItem2(JSContext *ctx, JSObject *p,
-                                               JSAtom atom, void *opaque);
+                                               JSAtom atom, GCHandle opaque_handle);
 static GCValue js_object_groupBy(JSContext *ctx, GCValue this_val,
                                  int argc, GCValue *argv, int is_map);
 static void map_delete_weakrefs(JSRuntime *rt, JSWeakRefHeader *wh);
@@ -5353,23 +5354,34 @@ static GCValue JS_ConcatString(JSContext *ctx, GCValue op1, GCValue op2)
 
 static inline size_t get_shape_size(size_t hash_size, size_t prop_size)
 {
-    return hash_size * sizeof(uint32_t) + sizeof(JSShape) +
-        prop_size * sizeof(JSShapeProperty);
+    return sizeof(JSShape) + prop_size * sizeof(JSShapeProperty) +
+        hash_size * sizeof(uint32_t);
 }
 
+/* Shape is now at the start of allocation, no offset needed */
 static inline JSShape *get_shape_from_alloc(void *sh_alloc, size_t hash_size)
 {
-    return (JSShape *)(void *)((uint32_t *)sh_alloc + hash_size);
+    (void)hash_size; /* unused now */
+    return (JSShape *)sh_alloc;
 }
 
+/* Hash table is now AFTER the shape + properties */
+static inline uint32_t *prop_hash_start(JSShape *sh)
+{
+    /* Hash table is right after the flexible array props[sh->prop_size] */
+    return (uint32_t *)(sh->prop + sh->prop_size);
+}
+
+/* For compatibility with old negative-index code, provide prop_hash_end */
 static inline uint32_t *prop_hash_end(JSShape *sh)
 {
-    return (uint32_t *)sh;
+    return prop_hash_start(sh);
 }
 
+/* Shape is at start of allocation */
 static inline void *get_alloc_from_shape(JSShape *sh)
 {
-    return prop_hash_end(sh) - ((intptr_t)sh->prop_hash_mask + 1);
+    return (void *)sh;
 }
 
 static inline JSShapeProperty *get_shape_prop(JSShape *sh)
@@ -5416,7 +5428,7 @@ int find_own_property_handle(GCHandle obj_handle, JSAtom atom,
     }
     
     h = (uintptr_t)atom & sh->prop_hash_mask;
-    h = prop_hash_end(sh)[-h - 1];
+    h = prop_hash_start(sh)[h];
     prop = get_shape_prop(sh);
     
     while (h) {
@@ -5529,7 +5541,7 @@ static int resize_shape_hash(JSRuntime *rt, int new_shape_hash_bits)
 static void js_shape_hash_link(JSRuntime *rt, JSShape *sh)
 {
     uint32_t h;
-    GCHandle sh_handle = GC_PTR_TO_HANDLE(sh);
+    GCHandle sh_handle = sh->handle;
     h = get_shape_hash(sh->hash, rt->shape_hash_bits);
     sh->shape_hash_next_handle = rt_shape_hash[h];
     rt_shape_hash[h] = sh_handle;
@@ -5540,7 +5552,7 @@ static void js_shape_hash_unlink(JSRuntime *rt, JSShape *sh)
 {
     uint32_t h;
     GCHandle *psh_handle;
-    GCHandle sh_handle = GC_PTR_TO_HANDLE(sh);
+    GCHandle sh_handle = sh->handle;
     JSShape *current_sh;
 
     QJS_LOGE("js_shape_hash_unlink: ENTER sh=%p handle=%u", (void*)sh, sh_handle);
@@ -5602,21 +5614,20 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
         return GC_HANDLE_NULL;
     }
     QJS_LOGI("js_new_shape_nohash: sh_alloc=%p", sh_alloc);
-    /* Get handle from sh_alloc (the base allocation) before offsetting */
+    /* Shape is now at the start of allocation, no offset needed */
     GCHandle sh_handle = GC_PTR_TO_HANDLE(sh_alloc);
     QJS_LOGI("js_new_shape_nohash: sh_handle=%u", sh_handle);
     sh = get_shape_from_alloc(sh_alloc, hash_size);
     QJS_LOGI("js_new_shape_nohash: sh=%p", (void*)sh);
-    /* Update handle to point to sh instead of sh_alloc so GC_SHAPE_DEREF works correctly */
-    g_gc.handles.ptrs[sh_handle] = sh;
-    /* Store handle in shape for later retrieval (GC_PTR_TO_HANDLE won't work on sh directly) */
+    /* Store handle in shape for later retrieval */
     sh->handle = sh_handle;
     /* Object already registered with GC by gc_alloc_js_object */
     sh->proto_handle = proto_handle;  /* Use saved handle */
     QJS_LOGI("js_new_shape_nohash: memset...");
-    memset(prop_hash_end(sh) - hash_size, 0, sizeof(prop_hash_end(sh)[0]) *
-           hash_size);
+    /* Clear hash table (now located after properties) */
+    memset(&sh->prop[prop_size], 0, sizeof(uint32_t) * hash_size);
     sh->prop_hash_mask = hash_size - 1;
+    sh->hash_size = hash_size;
     sh->prop_size = prop_size;
     sh->prop_count = 0;
     sh->deleted_prop_count = 0;
@@ -5665,7 +5676,7 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     size_t size;
     JSShapeProperty *pr;
     uint32_t i, hash_size;
-    GCHandle sh1_handle = GC_PTR_TO_HANDLE(sh1);  /* Save handle before allocation */
+    GCHandle sh1_handle = sh1->handle;  /* Save handle before allocation */
 
     hash_size = sh1->prop_hash_mask + 1;
     size = get_shape_size(hash_size, sh1->prop_size);
@@ -5842,21 +5853,21 @@ static no_inline int resize_properties(JSContext *ctx, GCHandle *psh_handle,
         /* resize the hash table and the properties */
         new_hash_mask = new_hash_size - 1;
         sh->prop_hash_mask = new_hash_mask;
-        memset(prop_hash_end(sh) - new_hash_size, 0,
-               sizeof(prop_hash_end(sh)[0]) * new_hash_size);
+        memset(prop_hash_start(sh), 0,
+               sizeof(uint32_t) * new_hash_size);
         for(i = 0, pr = sh->prop; i < sh->prop_count; i++, pr++) {
             if (pr->atom != JS_ATOM_NULL) {
                 h = ((uintptr_t)pr->atom & new_hash_mask);
-                pr->hash_next = prop_hash_end(sh)[-h - 1];
-                prop_hash_end(sh)[-h - 1] = i + 1;
+                pr->hash_next = prop_hash_start(sh)[h];
+                prop_hash_start(sh)[h] = i + 1;
             }
         }
     } else {
         /* just copy the previous hash table */
         /* CRITICAL: Re-dereference old_sh again before use */
         old_sh = GC_SHAPE_DEREF(old_sh_handle);
-        memcpy(prop_hash_end(sh) - new_hash_size, prop_hash_end(old_sh) - new_hash_size,
-               sizeof(prop_hash_end(sh)[0]) * new_hash_size);
+        memcpy(prop_hash_start(sh), prop_hash_start(old_sh),
+               sizeof(uint32_t) * new_hash_size);
     }
     /* Update the handle */
     *psh_handle = sh_handle;
@@ -5907,8 +5918,8 @@ static int compact_properties(JSContext *ctx, JSObject *p)
     /* Update handle to point to new sh instead of sh_alloc */
     g_gc.handles.ptrs[sh->handle] = sh;
 
-    memset(prop_hash_end(sh) - new_hash_size, 0,
-           sizeof(prop_hash_end(sh)[0]) * new_hash_size);
+    memset(prop_hash_start(sh), 0,
+           sizeof(uint32_t) * new_hash_size);
 
     j = 0;
     old_pr = old_sh->prop;
@@ -5919,8 +5930,8 @@ static int compact_properties(JSContext *ctx, JSObject *p)
             pr->atom = old_pr->atom;
             pr->flags = old_pr->flags;
             h = ((uintptr_t)old_pr->atom & new_hash_mask);
-            pr->hash_next = prop_hash_end(sh)[-h - 1];
-            prop_hash_end(sh)[-h - 1] = j + 1;
+            pr->hash_next = prop_hash_start(sh)[h];
+            prop_hash_start(sh)[h] = j + 1;
             prop[j] = prop[i];
             j++;
             pr++;
@@ -5933,7 +5944,7 @@ static int compact_properties(JSContext *ctx, JSObject *p)
     sh->deleted_prop_count = 0;
     sh->prop_count = j;
 
-    p->shape_handle = GC_PTR_TO_HANDLE(sh);
+    p->shape_handle = sh->handle;
     /* GC frees automatically */;
 
     /* reduce the size of the object properties */
@@ -5979,11 +5990,11 @@ static int add_shape_property(JSContext *ctx, GCHandle *psh_handle,
     pr = &prop[sh->prop_count++];
     pr->atom = JS_DupAtom(ctx, atom);
     pr->flags = prop_flags;
-    /* add in hash table */
+    /* add in hash table (now uses positive indices) */
     hash_mask = sh->prop_hash_mask;
     h = atom & hash_mask;
-    pr->hash_next = prop_hash_end(sh)[-h - 1];
-    prop_hash_end(sh)[-h - 1] = sh->prop_count;
+    pr->hash_next = prop_hash_start(sh)[h];
+    prop_hash_start(sh)[h] = sh->prop_count;
     return 0;
 }
 
@@ -6664,7 +6675,7 @@ static force_inline JSShapeProperty *find_own_property1(JSObject *p,
     intptr_t h;
     sh = GC_SHAPE_DEREF(p->shape_handle);
     h = (uintptr_t)atom & sh->prop_hash_mask;
-    h = prop_hash_end(sh)[-h - 1];
+    h = prop_hash_start(sh)[h];
     prop = get_shape_prop(sh);
     while (h) {
         pr = &prop[h - 1];
@@ -6722,7 +6733,7 @@ static force_inline JSShapeProperty *find_own_property(JSProperty **ppr,
     sh = GC_SHAPE_DEREF(p->shape_handle);
     QJS_LOGE("find_own_property: accessing sh->prop_hash_mask");
     h = (uintptr_t)atom & sh->prop_hash_mask;
-    h = prop_hash_end(sh)[-h - 1];
+    h = prop_hash_start(sh)[h];
     prop = get_shape_prop(sh);
     while (h) {
         pr = &prop[h - 1];
@@ -9101,7 +9112,7 @@ int JS_IsInstanceOf(JSContext *ctx, GCValue val, GCValue obj)
 }
 
 /* return the value associated to the autoinit property or an exception */
-typedef GCValue JSAutoInitFunc(JSContext *ctx, JSObject *p, JSAtom atom, void *opaque);
+typedef GCValue JSAutoInitFunc(JSContext *ctx, JSObject *p, JSAtom atom, GCHandle opaque_handle);
 
 static JSAutoInitFunc *js_autoinit_func_table[] = {
     js_instantiate_prototype, /* JS_AUTOINIT_ID_PROTOTYPE */
@@ -9125,7 +9136,7 @@ static int JS_AutoInitProperty(JSContext *ctx, JSObject *p, JSAtom prop,
     id = js_autoinit_get_id(pr);
     func = js_autoinit_func_table[id];
     /* 'func' shall not modify the object properties 'pr' */
-    val = func(realm, p, prop, gc_deref(pr->u.init.opaque_handle));
+    val = func(realm, p, prop, pr->u.init.opaque_handle);
     js_autoinit_free(ctx_rt, pr);
     prs->flags &= ~JS_PROP_TMASK;
     pr->u.value = JS_UNDEFINED;
@@ -10245,7 +10256,7 @@ static JSProperty *add_property(JSContext *ctx,
                 p->prop_handle = new_prop_handle;
                 p->prop_handle = new_prop_handle;
             }
-            p->shape_handle = GC_PTR_TO_HANDLE(js_dup_shape(new_sh));
+            p->shape_handle = new_sh->handle;
             /* Don't free the old shape here - let GC collect it when unreachable.
              * Other objects may still reference this shape through the shape hash table.
              * The shape will be freed during GC if no objects reference it anymore. */
@@ -10352,7 +10363,7 @@ static int delete_property(JSContext *ctx, JSObject *p, JSAtom atom)
  redo:
     sh = GC_SHAPE_DEREF(p->shape_handle);
     h1 = atom & sh->prop_hash_mask;
-    h = prop_hash_end(sh)[-h1 - 1];
+    h = prop_hash_start(sh)[h1];
     prop = get_shape_prop(sh);
     lpr = NULL;
     lpr_idx = 0;   /* prevent warning */
@@ -10373,7 +10384,7 @@ static int delete_property(JSContext *ctx, JSObject *p, JSAtom atom)
                 lpr = get_shape_prop(sh) + lpr_idx;
                 lpr->hash_next = pr->hash_next;
             } else {
-                prop_hash_end(sh)[-h1 - 1] = pr->hash_next;
+                prop_hash_start(sh)[h1] = pr->hash_next;
             }
             sh->deleted_prop_count++;
             /* free the entry */
@@ -11720,7 +11731,7 @@ int JS_DefineProperty(JSContext *ctx, GCValue this_obj,
 
 static int JS_DefineAutoInitProperty(JSContext *ctx, GCValue this_obj,
                                      JSAtom prop, JSAutoInitIDEnum id,
-                                     void *opaque, int flags)
+                                     GCHandle opaque_handle, int flags)
 {
     JSObject *p;
     JSProperty *pr;
@@ -11743,7 +11754,7 @@ static int JS_DefineAutoInitProperty(JSContext *ctx, GCValue this_obj,
     assert((pr->u.init.realm_and_id & 3) == 0);
     assert(id <= 3);
     pr->u.init.realm_and_id |= id;
-    pr->u.init.opaque_handle = gc_ptr_to_handle(opaque);
+    pr->u.init.opaque_handle = opaque_handle;
     return TRUE;
 }
 
@@ -18452,7 +18463,7 @@ static GCValue js_closure2(JSContext *ctx, GCValue func_obj,
     return JS_EXCEPTION;
 }
 
-static GCValue js_instantiate_prototype(JSContext *ctx, JSObject *p, JSAtom atom, void *opaque)
+static GCValue js_instantiate_prototype(JSContext *ctx, JSObject *p, JSAtom atom, GCHandle opaque_handle)
 {
     GCValue obj, this_val;
     int ret;
@@ -18525,7 +18536,7 @@ static GCValue js_closure(JSContext *ctx, GCValue bfunc,
            object is created on the fly when first accessed */
         JS_SetConstructorBit(ctx, func_obj, TRUE);
         JS_DefineAutoInitProperty(ctx, func_obj, JS_ATOM_prototype,
-                                  JS_AUTOINIT_ID_PROTOTYPE, NULL,
+                                  JS_AUTOINIT_ID_PROTOTYPE, GC_HANDLE_NULL,
                                   JS_PROP_WRITABLE);
     }
     return func_obj;
@@ -31490,9 +31501,9 @@ static int exported_names_cmp(const void *p1, const void *p2, void *opaque)
 }
 
 static GCValue js_module_ns_autoinit(JSContext *ctx, JSObject *p, JSAtom atom,
-                                     void *opaque)
+                                     GCHandle opaque_handle)
 {
-    JSModuleDef *m = opaque;
+    JSModuleDef *m = gc_deref(opaque_handle);
     JSResolveResultEnum res;
     JSExportEntry *res_me;
     JSModuleDef *res_m;
@@ -31598,11 +31609,16 @@ static GCValue js_build_module_ns(JSContext *ctx, JSModuleDef *m)
         case EXPORTED_NAME_DELAYED:
             /* the exported namespace or reference may depend on
                circular references, so we resolve it lazily */
-            if (JS_DefineAutoInitProperty(ctx, obj,
-                                          en->export_name,
-                                          JS_AUTOINIT_ID_MODULE_NS,
-                                          m, JS_PROP_ENUMERABLE | JS_PROP_WRITABLE) < 0)
-                goto fail;
+            {
+                GCHandle module_handle = gc_alloc_handle_for_ptr(m);
+                if (module_handle == GC_HANDLE_NULL)
+                    goto fail;
+                if (JS_DefineAutoInitProperty(ctx, obj,
+                                              en->export_name,
+                                              JS_AUTOINIT_ID_MODULE_NS,
+                                              module_handle, JS_PROP_ENUMERABLE | JS_PROP_WRITABLE) < 0)
+                    goto fail;
+            }
             break;
         default:
             break;
@@ -40724,9 +40740,9 @@ static GCValue JS_NewObjectProtoList(JSContext *ctx, GCValue proto,
 }
 
 static GCValue JS_InstantiateFunctionListItem2(JSContext *ctx, JSObject *p,
-                                               JSAtom atom, void *opaque)
+                                               JSAtom atom, GCHandle opaque_handle)
 {
-    const JSCFunctionListEntry *e = opaque;
+    const JSCFunctionListEntry *e = gc_deref(opaque_handle);
     GCValue val, proto;
 
     switch(e->def_type) {
@@ -40864,9 +40880,19 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, GCValue obj,
             /* Function.prototype[Symbol.hasInstance] is not writable nor configurable */
             prop_flags = 0;
         }
-        if (JS_DefineAutoInitProperty(ctx, obj, atom, JS_AUTOINIT_ID_PROP,
-                                      (void *)e, prop_flags) < 0)
-            return -1;
+        /* Allocate GC-managed copy of entry */
+        {
+            GCHandle entry_handle = gc_alloc(sizeof(*e), JS_GC_OBJ_TYPE_DATA);
+            if (entry_handle == GC_HANDLE_NULL)
+                return -1;
+            void *entry_copy = gc_deref(entry_handle);
+            if (!entry_copy)
+                return -1;
+            memcpy(entry_copy, e, sizeof(*e));
+            if (JS_DefineAutoInitProperty(ctx, obj, atom, JS_AUTOINIT_ID_PROP,
+                                          entry_handle, prop_flags) < 0)
+                return -1;
+        }
         return 0;
     case JS_DEF_CGETSET: /* XXX: use autoinit again ? */
     case JS_DEF_CGETSET_MAGIC:
@@ -40919,18 +40945,26 @@ static int JS_InstantiateFunctionListItem(JSContext *ctx, GCValue obj,
         break;
     case JS_DEF_PROP_STRING:
     case JS_DEF_OBJECT:
-        if (JS_DefineAutoInitProperty(ctx, obj, atom, JS_AUTOINIT_ID_PROP,
-                                      (void *)e, prop_flags) < 0)
-            return -1;
+        /* Allocate GC-managed copy of entry */
+        {
+            GCHandle entry_handle = gc_alloc(sizeof(*e), JS_GC_OBJ_TYPE_DATA);
+            if (entry_handle == GC_HANDLE_NULL)
+                return -1;
+            void *entry_copy = gc_deref(entry_handle);
+            if (!entry_copy)
+                return -1;
+            memcpy(entry_copy, e, sizeof(*e));
+            if (JS_DefineAutoInitProperty(ctx, obj, atom, JS_AUTOINIT_ID_PROP,
+                                          entry_handle, prop_flags) < 0)
+                return -1;
+        }
         return 0;
     default:
         /* Return error for unsupported types instead of aborting */
         return -1;
     }
-    QJS_LOGE("JS_InstantiateFunctionListItem: calling JS_DefinePropertyValue atom=%d", atom);
     if (JS_DefinePropertyValue(ctx, obj, atom, val, prop_flags) < 0)
         return -1;
-    QJS_LOGE("JS_InstantiateFunctionListItem: JS_DefinePropertyValue succeeded");
     return 0;
 }
 
@@ -50419,18 +50453,24 @@ int JS_AddIntrinsicRegExp(JSContext *ctx)
     if (JS_IsException(ctx_class_proto[JS_CLASS_REGEXP_STRING_ITERATOR]))
         return -1;
 
-    ctx->regexp_shape_handle = GC_PTR_TO_HANDLE(js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_REGEXP]),
-                                     JS_PROP_INITIAL_HASH_SIZE, 1));
-    if (!GC_SHAPE_DEREF(ctx->regexp_shape_handle))
-        return -1;
+    {
+        JSShape *sh = js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_REGEXP]),
+                                    JS_PROP_INITIAL_HASH_SIZE, 1);
+        if (!sh)
+            return -1;
+        ctx->regexp_shape_handle = sh->handle;
+    }
     if (add_shape_property(ctx, &ctx->regexp_shape_handle, NULL,
                            JS_ATOM_lastIndex, JS_PROP_WRITABLE))
         return -1;
 
-    ctx->regexp_result_shape_handle = GC_PTR_TO_HANDLE(js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_ARRAY]),
-                                     JS_PROP_INITIAL_HASH_SIZE, 4));
-    if (!GC_SHAPE_DEREF(ctx->regexp_result_shape_handle))
-        return -1;
+    {
+        JSShape *sh = js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_ARRAY]),
+                                    JS_PROP_INITIAL_HASH_SIZE, 4);
+        if (!sh)
+            return -1;
+        ctx->regexp_result_shape_handle = sh->handle;
+    }
     if (add_shape_property(ctx, &ctx->regexp_result_shape_handle, NULL,
                            JS_ATOM_length, JS_PROP_WRITABLE | JS_PROP_LENGTH))
         return -1;
@@ -57329,11 +57369,14 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
     }
     
     QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating array_shape...");
-    ctx->array_shape_handle = GC_PTR_TO_HANDLE(js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_ARRAY]),
-                                     JS_PROP_INITIAL_HASH_SIZE, 1));
-    if (!GC_SHAPE_DEREF(ctx->array_shape_handle)) {
-        QJS_LOGE("JS_AddIntrinsicBasicObjects: array_shape failed!");
-        return -1;
+    {
+        JSShape *sh = js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_ARRAY]),
+                                    JS_PROP_INITIAL_HASH_SIZE, 1);
+        if (!sh) {
+            QJS_LOGE("JS_AddIntrinsicBasicObjects: array_shape failed!");
+            return -1;
+        }
+        ctx->array_shape_handle = sh->handle;
     }
     if (add_shape_property(ctx, &ctx->array_shape_handle, NULL,
                            JS_ATOM_length, JS_PROP_WRITABLE | JS_PROP_LENGTH)) {
@@ -57343,11 +57386,14 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
     QJS_LOGI("JS_AddIntrinsicBasicObjects: array_shape created");
 
     QJS_LOGI("JS_AddIntrinsicBasicObjects: Creating arguments_shape...");
-    ctx->arguments_shape_handle = GC_PTR_TO_HANDLE(js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_OBJECT]),
-                                         JS_PROP_INITIAL_HASH_SIZE, 3));
-    if (!GC_SHAPE_DEREF(ctx->arguments_shape_handle)) {
-        QJS_LOGE("JS_AddIntrinsicBasicObjects: arguments_shape failed!");
-        return -1;
+    {
+        JSShape *sh = js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_OBJECT]),
+                                    JS_PROP_INITIAL_HASH_SIZE, 3);
+        if (!sh) {
+            QJS_LOGE("JS_AddIntrinsicBasicObjects: arguments_shape failed!");
+            return -1;
+        }
+        ctx->arguments_shape_handle = sh->handle;
     }
     if (add_shape_property(ctx, &ctx->arguments_shape_handle, NULL,
                            JS_ATOM_length, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE))
@@ -57359,10 +57405,13 @@ static int JS_AddIntrinsicBasicObjects(JSContext *ctx)
                            JS_ATOM_callee, JS_PROP_GETSET))
         return -1;
 
-    ctx->mapped_arguments_shape_handle = GC_PTR_TO_HANDLE(js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_OBJECT]),
-                                         JS_PROP_INITIAL_HASH_SIZE, 3));
-    if (!GC_SHAPE_DEREF(ctx->mapped_arguments_shape_handle))
-        return -1;
+    {
+        JSShape *sh = js_new_shape2(ctx, get_proto_obj(ctx_class_proto[JS_CLASS_OBJECT]),
+                                    JS_PROP_INITIAL_HASH_SIZE, 3);
+        if (!sh)
+            return -1;
+        ctx->mapped_arguments_shape_handle = sh->handle;
+    }
     if (add_shape_property(ctx, &ctx->mapped_arguments_shape_handle, NULL,
                            JS_ATOM_length, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE))
         return -1;

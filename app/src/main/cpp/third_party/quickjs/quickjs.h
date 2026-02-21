@@ -487,6 +487,11 @@ void gc_shape_set_proto_handle(GCHandle shape_handle, GCHandle val);
  * GC_SHAPE_DEREF - Dereference a shape handle to get a temporary JSShape pointer.
  * WARNING: The pointer is only valid until the next GC point.
  * NEVER store this pointer. Only use it for immediate field access.
+ * 
+ * NOTE: For shapes, we store a handle to the JSShape pointer itself (not the
+ * base allocation). This is because shapes have a hash table prefix, making
+ * the offset from base allocation variable. The handle stores the sh pointer
+ * directly, so gc_deref returns the correct JSShape*.
  */
 #define GC_SHAPE_DEREF(handle) ((JSShape *)gc_deref(handle))
 
