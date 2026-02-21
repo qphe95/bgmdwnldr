@@ -75,6 +75,10 @@ static char g_captured_urls[MAX_CAPTURED_URLS][URL_MAX_LEN];
 static int g_captured_url_count = 0;
 static pthread_mutex_t g_url_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* Global QuickJS runtime and context - initialized once in android_main */
+JSRuntime *g_js_runtime = NULL;
+JSContext *g_js_context = NULL;
+
 // Record a captured URL
 // BUG FIX #1: Fixed buffer overflow using memcpy with explicit length validation
 void record_captured_url(const char *url) {
@@ -705,17 +709,99 @@ bool js_quickjs_init(void) {
         if (!gc_init()) {
             return false;
         }
-    } else {
-        /* GC already initialized - do a full reset for fresh state.
-         * This is needed when js_quickjs_exec_scripts is called multiple times
-         * (e.g., downloading another video). The previous run may have left 
-         * the GC in an inconsistent state. We do a full memset + reinit to
-         * ensure we start completely fresh. */
-        gc_reset_full();
-        /* Also reset our class IDs since the runtime is fresh */
-        js_quickjs_reset_class_ids();
     }
     return true;
+}
+
+bool js_quickjs_create_runtime(void) {
+    if (!gc_is_initialized()) {
+        __android_log_print(ANDROID_LOG_ERROR, "js_quickjs", 
+            "GC not initialized, call js_quickjs_init first");
+        return false;
+    }
+    
+    // Create runtime using unified GC allocator
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "Creating global runtime...");
+    g_js_runtime = JS_NewRuntime();
+    if (!g_js_runtime) {
+        __android_log_print(ANDROID_LOG_ERROR, "js_quickjs", "Runtime creation failed");
+        return false;
+    }
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "Global runtime created: %p", g_js_runtime);
+    
+    // Set limits after successful runtime creation
+    JS_SetMemoryLimit(g_js_runtime, 256 * 1024 * 1024); // 256MB
+    JS_SetMaxStackSize(g_js_runtime, 8 * 1024 * 1024);  // 8MB
+    
+    // Create context - this initializes built-in objects
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "Creating global context...");
+    g_js_context = JS_NewContext(g_js_runtime);
+    
+    if (!g_js_context) {
+        __android_log_print(ANDROID_LOG_ERROR, "js_quickjs", "Context creation failed");
+        return false;
+    }
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "Global context created: %p", g_js_context);
+    
+    // Register custom classes
+    JSClassDef xhr_def = {"XMLHttpRequest", .finalizer = js_xhr_finalizer};
+    JSClassDef video_def = {"HTMLVideoElement", .finalizer = js_video_finalizer};
+    if (JS_NewClass(g_js_runtime, js_xhr_class_id, &xhr_def) < 0) {
+        __android_log_print(ANDROID_LOG_WARN, "js_quickjs", "Failed to register XMLHttpRequest class");
+    }
+    if (JS_NewClass(g_js_runtime, js_video_class_id, &video_def) < 0) {
+        __android_log_print(ANDROID_LOG_WARN, "js_quickjs", "Failed to register HTMLVideoElement class");
+    }
+    
+    // Initialize full browser environment with all necessary APIs
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "Initializing browser environment...");
+    init_browser_environment(g_js_context, g_asset_mgr);
+    __android_log_print(ANDROID_LOG_INFO, "js_quickjs", "Browser environment initialized");
+    
+    return true;
+}
+
+/* Set up initial DOM state - called once during app initialization.
+ * This creates the default video element and other basic DOM structure
+ * that should persist across script executions.
+ */
+void js_quickjs_setup_initial_dom(void) {
+    if (!g_js_context) {
+        log_to_file("js_quickjs", "Cannot setup DOM: context not initialized");
+        return;
+    }
+    
+    JSContext *ctx = g_js_context;
+    
+    // Create default video element for YouTube player
+    const char *default_video_js = 
+        "// Create default video element if none exists\n"
+        "if (typeof document !== 'undefined' && document.body) {\n"
+        "  try {\n"
+        "    if (!document.getElementById('movie_player')) {\n"
+        "      var video = document.createElement('video');\n"
+        "      if (video) {\n"
+        "        video.id = 'movie_player';\n"
+        "        document.body.appendChild(video);\n"
+        "        console.log('Created default video element with id=movie_player');\n"
+        "      }\n"
+        "    }\n"
+        "  } catch(e) {\n"
+        "    console.log('Error creating default video: ' + e.message);\n"
+        "  }\n"
+        "}\n"
+    ;
+    
+    GCValue result = JS_Eval(ctx, default_video_js, strlen(default_video_js), "<default_video>", 0);
+    if (JS_IsException(result)) {
+        GCValue exception = JS_GetException(ctx);
+        const char *error = JS_ToCString(ctx, exception);
+        __android_log_print(ANDROID_LOG_WARN, "js_quickjs", 
+            "Default video script threw exception: %s", error ? error : "(null)");
+        JS_FreeCString(ctx, error);
+    }
+    
+    log_to_file("js_quickjs", "Initial DOM setup complete");
 }
 
 void js_quickjs_cleanup(void) {
@@ -928,92 +1014,31 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
         return false;
     }
     
-    // Reset captured URLs
-    pthread_mutex_lock(&g_url_mutex);
-    g_captured_url_count = 0;
-    pthread_mutex_unlock(&g_url_mutex);
+    // NOTE: We do NOT reset any state between script executions.
+    // In a real browser, multiple <script> tags in the same HTML document
+    // share the same global context and state accumulates across executions.
+    // This allows later scripts to access variables/objects set up by earlier scripts.
     
     // Clear output
     memset(out_result, 0, sizeof(JsExecResult));
     out_result->status = JS_EXEC_ERROR;
     
-    // Initialize GC first (must happen before any other QuickJS calls)
-    log_to_file("js_quickjs", "Initializing GC...");
-    if (!js_quickjs_init()) {
-        log_to_file("js_quickjs", "GC init failed");
+    // Use global runtime and context (initialized once in android_main)
+    if (!g_js_runtime || !g_js_context) {
+        log_to_file("js_quickjs", "Global runtime/context not initialized");
         return false;
     }
-    log_to_file("js_quickjs", "GC initialized");
     
-    // Create runtime using unified GC allocator
-    log_to_file("js_quickjs", "Creating runtime...");
-    JSRuntime *rt = JS_NewRuntime();
-    if (!rt) {
-        log_to_file("js_quickjs", "Runtime creation failed");
-        return false;
-    }
-    log_to_file("js_quickjs", "Runtime created");
+    JSContext *ctx = g_js_context;
     
-    // Set limits after successful runtime creation
-    JS_SetMemoryLimit(rt, 256 * 1024 * 1024); // 256MB
-    JS_SetMaxStackSize(rt, 8 * 1024 * 1024);  // 8MB
-    
-    // Create context - this initializes built-in objects
-    log_to_file("js_quickjs", "Creating context...");
-    JSContext *ctx = JS_NewContext(rt);
-    
-    if (!ctx) {
-        log_to_file("js_quickjs", "Context creation failed");
-        JS_FreeRuntime(rt);
-        return false;
-    }
-    log_to_file("js_quickjs", "Context created");
-    
-    // NOW register custom classes after context is created
-    JSClassDef xhr_def = {"XMLHttpRequest", .finalizer = js_xhr_finalizer};
-    JSClassDef video_def = {"HTMLVideoElement", .finalizer = js_video_finalizer};
-    if (JS_NewClass(rt, js_xhr_class_id, &xhr_def) < 0) {
-    }
-    if (JS_NewClass(rt, js_video_class_id, &video_def) < 0) {
-    }
-    
-    // Initialize full browser environment with all necessary APIs
-    log_to_file("js_quickjs", "Initializing browser environment...");
-    init_browser_environment(ctx, asset_mgr);
-    log_to_file("js_quickjs", "Browser environment initialized");
+    log_to_file("js_quickjs", "Using global runtime=%p, context=%p", g_js_runtime, g_js_context);
 
-    // Parse HTML and create video elements BEFORE loading scripts
-    // This handles Scenario B: HTML has <video> tags directly
+    // Parse HTML and create video elements from <video> tags.
+    // This handles HTML that contains video elements directly (Scenario B).
+    // Note: The basic DOM (window, document, body) and default video element
+    // are set up once during app initialization in js_quickjs_setup_initial_dom().
     if (html && strlen(html) > 0) {
         int video_count = create_video_elements_from_html(ctx, html);
-    }
-    
-    // Also create default video element for Scenario A: JS creates video element
-    const char *default_video_js = 
-        "// Create default video element if none exists\n"
-        "if (typeof document !== 'undefined' && document.body) {\n"
-        "  try {\n"
-        "    if (!document.getElementById('movie_player')) {\n"
-        "      var video = document.createElement('video');\n"
-        "      if (video) {\n"
-        "        video.id = 'movie_player';\n"
-        "        document.body.appendChild(video);\n"
-        "        console.log('Created default video element with id=movie_player');\n"
-        "      }\n"
-        "    }\n"
-        "  } catch(e) {\n"
-        "    console.log('Error creating default video: ' + e.message);\n"
-        "  }\n"
-        "}\n"
-    ;
-    
-    GCValue default_result = JS_Eval(ctx, default_video_js, strlen(default_video_js), "<default_video>", 0);
-    if (JS_IsException(default_result)) {
-        GCValue exception = JS_GetException(ctx);
-        const char *error = JS_ToCString(ctx, exception);
-        __android_log_print(ANDROID_LOG_WARN, "js_quickjs", 
-            "Default video script threw exception: %s", error ? error : "(null)");
-        JS_FreeCString(ctx, error);
     }
 
     // Note: Data payload scripts (ytInitialPlayerResponse, ytInitialData, etc.)
@@ -1271,11 +1296,14 @@ bool js_quickjs_exec_scripts(const char **scripts, const size_t *script_lens,
     log_to_file("js_quickjs", "Finished, captured %d URLs, status=%d", 
                 out_result->captured_url_count, out_result->status);
     
-    // Cleanup
-    JS_FreeContext(ctx);
-    JS_FreeRuntime(rt);
+    // NOTE: We do NOT free the context or runtime here.
+    // The global runtime and context persist across script executions
+    // to maintain browser state (window, document, prototypes, etc.)
+    // as scripts from the same HTML document may reference shared state.
+    // 
+    // The runtime will be cleaned up when the app exits via js_quickjs_cleanup().
     
-    log_to_file("js_quickjs", "Cleanup complete, returning");
+    log_to_file("js_quickjs", "Execution complete, returning");
     
     return out_result->status == JS_EXEC_SUCCESS;
 }

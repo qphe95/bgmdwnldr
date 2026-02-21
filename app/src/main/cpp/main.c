@@ -2024,17 +2024,25 @@ void android_main(struct android_app *app) {
     if (js_quickjs_init()) {
         LOGI("QuickJS GC initialized successfully!");
         
-        // Test full runtime creation (includes atom initialization)
+        // Create global runtime and context once for the app lifetime
+        // This persists across all script executions to maintain browser state
         LOGI("Creating QuickJS runtime...");
-        JSRuntime *rt = JS_NewRuntime();
-        if (rt) {
-            LOGI("QuickJS runtime created successfully! rt=%p", rt);
+        if (js_quickjs_create_runtime()) {
+            LOGI("QuickJS runtime created successfully! rt=%p, ctx=%p", 
+                 (void*)g_js_runtime, (void*)g_js_context);
+            
+            // Set up initial DOM state (document, body, default video element)
+            // This is done once during initialization and persists across executions
+            LOGI("Setting up initial DOM state...");
+            js_quickjs_setup_initial_dom();
+            LOGI("DOM setup complete");
         } else {
             LOGI("QuickJS runtime creation failed!");
             abort();
         }
     } else {
         LOGI("QuickJS initialization failed!");
+        abort();
     }
     
     // Normal Vulkan rendering loop

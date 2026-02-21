@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* QuickJS headers */
+#include "quickjs.h"
+
 /* Forward declaration for Android AssetManager */
 struct AAssetManager;
 typedef struct AAssetManager AAssetManager;
@@ -11,6 +14,10 @@ typedef struct AAssetManager AAssetManager;
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Global QuickJS runtime and context - initialized once in android_main */
+extern JSRuntime *g_js_runtime;
+extern JSContext *g_js_context;
 
 /* Maximum number of captured URLs */
 #define JS_MAX_CAPTURED_URLS 64
@@ -29,8 +36,14 @@ typedef struct JsExecResult {
     char captured_urls[JS_MAX_CAPTURED_URLS][JS_MAX_URL_LEN];
 } JsExecResult;
 
-/* Initialize QuickJS runtime */
+/* Initialize QuickJS runtime (called once in android_main) */
 bool js_quickjs_init(void);
+
+/* Create global QuickJS runtime and context (called once in android_main after js_quickjs_init) */
+bool js_quickjs_create_runtime(void);
+
+/* Set up initial DOM state (called once in android_main after js_quickjs_create_runtime) */
+void js_quickjs_setup_initial_dom(void);
 
 /* Reset class IDs (called during GC full reset) */
 void js_quickjs_reset_class_ids(void);
@@ -38,7 +51,7 @@ void js_quickjs_reset_class_ids(void);
 /* Set the Android asset manager for loading browser stubs */
 void js_quickjs_set_asset_manager(AAssetManager *mgr);
 
-/* Cleanup QuickJS runtime */
+/* Cleanup QuickJS runtime (not needed - runtime lives for app lifetime) */
 void js_quickjs_cleanup(void);
 
 /* Execute multiple JS scripts in a browser-like environment
